@@ -37,6 +37,62 @@ func newActionButton(iconName, label string) *gtk.Button {
 	return btn
 }
 
+const previewHeight = 120
+
+// newPreview builds the card's screenshot area. Only a Machine can have
+// one — a Box has no display to capture, and CLAUDE.md's Security Model
+// forbids papering over that real difference, so a Box gets a plain,
+// honest label instead of a picture pretending equivalence.
+func (ec *experienceCenter) newPreview(env core.Environment) gtk.Widgetter {
+	if env.Kind != core.Machine {
+		label := gtk.NewLabel("Box — no display to preview")
+		label.AddCSSClass("dim-label")
+		label.AddCSSClass("caption")
+		label.SetVAlign(gtk.AlignCenter)
+		label.SetHAlign(gtk.AlignCenter)
+		label.SetSizeRequest(-1, previewHeight)
+		return label
+	}
+
+	picture := gtk.NewPicture()
+	picture.SetContentFit(gtk.ContentFitCover)
+	picture.SetCanShrink(true)
+	picture.SetSizeRequest(-1, previewHeight)
+	picture.SetVisible(false)
+	picture.AddCSSClass("card")
+
+	placeholder := gtk.NewLabel("Machine stopped — no preview")
+	placeholder.AddCSSClass("dim-label")
+	placeholder.AddCSSClass("caption")
+	placeholder.SetVAlign(gtk.AlignCenter)
+	placeholder.SetHAlign(gtk.AlignCenter)
+	placeholder.SetSizeRequest(-1, previewHeight)
+
+	stack := gtk.NewBox(gtk.OrientationVertical, 0)
+	stack.Append(picture)
+	stack.Append(placeholder)
+
+	go func() {
+		path, err := ec.svc.Preview(context.Background(), env.Name)
+		glib.IdleAdd(func() {
+			if err != nil {
+				placeholder.SetVisible(true)
+				picture.SetVisible(false)
+				return
+			}
+			// A fresh file at the same path: force the Picture to
+			// actually reread it rather than assume an unchanged path
+			// means unchanged content.
+			picture.SetFilename("")
+			picture.SetFilename(path)
+			picture.SetVisible(true)
+			placeholder.SetVisible(false)
+		})
+	}()
+
+	return stack
+}
+
 func (ec *experienceCenter) newCard(env core.Environment) gtk.Widgetter {
 	outer := gtk.NewBox(gtk.OrientationVertical, 8)
 	outer.AddCSSClass("card")
@@ -44,6 +100,8 @@ func (ec *experienceCenter) newCard(env core.Environment) gtk.Widgetter {
 	outer.SetMarginBottom(12)
 	outer.SetMarginStart(12)
 	outer.SetMarginEnd(12)
+
+	outer.Append(ec.newPreview(env))
 
 	nameLabel := gtk.NewLabel(env.Name)
 	nameLabel.AddCSSClass("title-3")

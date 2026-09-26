@@ -73,6 +73,7 @@ func (ec *experienceCenter) activate() {
 	ec.flow.SetMarginEnd(12)
 	ec.flow.SetVAlign(gtk.AlignStart)
 	ec.flow.SetVExpand(true)
+	ec.setUpResponsiveLayout()
 
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetChild(ec.flow)
@@ -89,6 +90,20 @@ func (ec *experienceCenter) activate() {
 	ec.window.Present()
 
 	ec.refresh()
+}
+
+// setUpResponsiveLayout registers AdwBreakpoints so the card grid
+// adapts to window width instead of just clipping — GNOME/Adwaita's
+// adaptive-design convention (research note, 2026-09-26: "responsivo"
+// per the Omarchy/Parallels UX pass), not a bespoke OmaVM layout system.
+func (ec *experienceCenter) setUpResponsiveLayout() {
+	narrow := adw.NewBreakpoint(adw.NewBreakpointConditionLength(adw.BreakpointConditionMaxWidth, 420, adw.LengthUnitSp))
+	narrow.AddSetter(ec.flow, "max-children-per-line", 1)
+	ec.window.AddBreakpoint(narrow)
+
+	medium := adw.NewBreakpoint(adw.NewBreakpointConditionLength(adw.BreakpointConditionMaxWidth, 700, adw.LengthUnitSp))
+	medium.AddSetter(ec.flow, "max-children-per-line", 2)
+	ec.window.AddBreakpoint(medium)
 }
 
 // notifyError surfaces a Core/backend error as a transient in-window

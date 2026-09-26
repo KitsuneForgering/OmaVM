@@ -12,7 +12,9 @@ makedepends=('go')
 optdepends=('podman: Box environments (preferred container engine)'
             'docker: Box environments (fallback container engine)'
             'qemu-base: Machine environments (QEMU/KVM)'
+            'virt-viewer: open a Machine'"'"'s graphical display (remote-viewer)'
             'xdg-terminal-exec: attach a terminal when opening a Box from the GUI')
+install=omavm.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('37a81009209a4c96707b6dd53d7607ebb23a558664e71f9a4401d9d2b4c65c8b')
 

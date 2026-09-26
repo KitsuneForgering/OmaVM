@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
-// qmpCommand sends a single QMP command over the machine's monitor
-// socket and returns after the reply, performing the capabilities
-// handshake QMP requires on every new connection. It's intentionally
-// minimal: OmaVM only needs "quit" today, not the full QMP protocol.
-func qmpCommand(socketPath string, command string) error {
+// qmpExecute sends a single QMP command (with optional arguments) over
+// the machine's monitor socket and returns after the reply, performing
+// the capabilities handshake QMP requires on every new connection. It's
+// intentionally minimal: OmaVM only needs "quit" and "screendump" today,
+// not the full QMP protocol.
+func qmpExecute(socketPath, command string, arguments map[string]any) error {
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial qmp socket: %w", err)
@@ -34,7 +35,11 @@ func qmpCommand(socketPath string, command string) error {
 		return fmt.Errorf("read qmp capabilities reply: %w", err)
 	}
 
-	if err := enc.Encode(map[string]any{"execute": command}); err != nil {
+	req := map[string]any{"execute": command}
+	if arguments != nil {
+		req["arguments"] = arguments
+	}
+	if err := enc.Encode(req); err != nil {
 		return fmt.Errorf("send qmp command %s: %w", command, err)
 	}
 	var reply map[string]any
@@ -45,4 +50,15 @@ func qmpCommand(socketPath string, command string) error {
 		return fmt.Errorf("qmp command %s failed: %v", command, errObj)
 	}
 	return nil
+}
+
+func qmpCommand(socketPath string, command string) error {
+	return qmpExecute(socketPath, command, nil)
+}
+
+// qmpScreendump asks QEMU to write the current framebuffer to dst as a
+// PPM image — no VNC/RFB client implementation needed, since QEMU does
+// the capture itself and writes straight to the local filesystem.
+func qmpScreendump(socketPath, dst string) error {
+	return qmpExecute(socketPath, "screendump", map[string]any{"filename": dst})
 }

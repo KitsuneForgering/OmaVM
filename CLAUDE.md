@@ -10,7 +10,7 @@ Neste momento o repositório contém apenas `README.md`, `LICENSE` e este `CLAUD
 
 **Linguagem: Go**, confirmado. Além disso, siga apenas as convenções idiomáticas padrão do Go (formatação via `gofmt`, nomes de pacote, etc.) — o layout de diretórios em si é uma decisão aberta (ver Open Technical Decisions).
 
-**GUI toolkit: GTK4 + libadwaita** (via bindings Go, ex. gotk4), confirmado — para seguir o padrão visual nativo do Omarchy (GNOME/Adwaita), conforme UX Principle 6. Não usar toolkits que não sigam automaticamente o tema do sistema (dark/light, cor de destaque) sem justificativa explícita.
+**GUI toolkit: GTK4 + libadwaita** (via bindings Go, ex. gotk4), confirmado — para seguir o padrão visual nativo do Omarchy (GNOME/Adwaita), conforme UX Principle 6. Não usar toolkits que não sigam automaticamente o tema do sistema (dark/light, cor de destaque) sem justificativa explícita. A janela principal usa `AdwBreakpoint` (não uma solução de responsividade própria da OmaVM) para adaptar a grade de cards à largura da janela — esse é o mecanismo padrão do Adwaita para isso, use-o em vez de reinventar.
 
 **Box backend: engine de containers próprio da OmaVM sobre Podman (preferencial) ou Docker**, confirmado — não sobre o binário externo `distrobox`. Ver Backend Rules.
 
@@ -246,6 +246,8 @@ Fase 1 — vertical slice mínimo:
 **Box (via engine de containers próprio sobre Podman/Docker):** Create, Start/Open, Stop, Status, Exec, Remove.
 
 **Machine (via QEMU/KVM):** Create, Start, Stop, Status, Open, Remove.
+
+**Implementado (2026-09-26)**: `Open` numa Machine agora abre de fato um userspace gráfico — QEMU escuta VNC em `127.0.0.1:590N` (TCP, não mais unix socket; a porta é descoberta livre e persistida em `vnc-display` no state dir da Machine) e `Open` lança o primeiro visualizador VNC encontrado no PATH (`remote-viewer`/`vncviewer`/`gvncviewer`), falhando de forma explícita — nunca em silêncio — se nenhum estiver instalado. Existe também `Previewer` (`internal/core/backend.go`), uma capability **opcional** do `Backend` (não faz parte da interface mínima acima): a Machine implementa via QMP `screendump` (sem cliente VNC/RFB próprio); Box não implementa — não tem display, e isso não deve ser escondido atrás de um placeholder que finja equivalência (Security Model). A GUI (`internal/gui/card.go`) usa isso para mostrar uma miniatura por card só quando o Backend a oferece.
 
 Não implementar ainda: Blend, guest agent completo, GPU passthrough, orchestration distribuída, cloud/remote hosts, marketplace, dezenas de distros, networking editor avançado, snapshots sofisticados, plugin system. Essas features entram apenas em resposta a necessidade real, não especulativamente.
 

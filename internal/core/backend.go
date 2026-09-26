@@ -42,3 +42,16 @@ type Backend interface {
 	Exec(ctx context.Context, env Environment, args []string) error
 	Remove(ctx context.Context, env Environment) error
 }
+
+// Previewer is an optional Backend capability: a screenshot of the
+// environment's current graphical state. Only Machines can implement
+// it — a Box has no display to preview, which is a real, honest
+// difference (Security Model), not a gap to paper over with a fake
+// placeholder pretending equivalence. Service.Preview returns
+// ErrUnsupported for a Backend that doesn't implement this.
+type Previewer interface {
+	// Preview returns a filesystem path to an image (format left to the
+	// Backend; the qemu adapter writes PPM, which gdk-pixbuf loads
+	// natively) representing the environment's current display.
+	Preview(ctx context.Context, env Environment) (imagePath string, err error)
+}

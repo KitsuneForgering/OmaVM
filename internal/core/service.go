@@ -121,6 +121,26 @@ func (s *Service) Open(ctx context.Context, name string) error {
 	return nil
 }
 
+// Preview returns a screenshot path for environments whose Backend
+// implements Previewer (currently only Machines). ErrUnsupported for
+// anything else — a Box has no display, and that's never hidden behind
+// a placeholder image pretending otherwise.
+func (s *Service) Preview(ctx context.Context, name string) (string, error) {
+	env, backend, err := s.resolve(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	previewer, ok := backend.(Previewer)
+	if !ok {
+		return "", fmt.Errorf("%w: %s has no preview capability", ErrUnsupported, name)
+	}
+	path, err := previewer.Preview(ctx, env)
+	if err != nil {
+		return "", fmt.Errorf("preview %s: %w", name, err)
+	}
+	return path, nil
+}
+
 func (s *Service) Stop(ctx context.Context, name string) error {
 	env, backend, err := s.resolve(ctx, name)
 	if err != nil {

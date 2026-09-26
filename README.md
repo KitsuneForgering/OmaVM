@@ -46,6 +46,10 @@ bin/omavm status kernels
 
 Requires `podman` (preferred) or `docker` on `PATH` for Boxes, and
 `qemu-img`/`qemu-system-x86_64` with `/dev/kvm` access for Machines.
+Opening a Machine's graphical display additionally needs a VNC client on
+`PATH` — `remote-viewer` (`virt-viewer`), `vncviewer` (`tigervnc`), or
+`gvncviewer`. Without one, `open` fails with a clear message and the
+`vnc://host:port` you can connect to manually instead of silently no-op'ing.
 
 `list` and `status` accept `--json` (in any position, e.g. both
 `omavm list --json` and `omavm status radic --json` work) for
@@ -68,6 +72,13 @@ Environment (Box) or a Virtual Machine (Machine).
 Install the `omavm` CLI binary alongside `omavm-gui` (same directory or
 on `PATH`) so a Box's "Open" can attach an interactive shell in your
 terminal.
+
+A running Machine's card shows a live screenshot of its display
+(captured via QEMU's QMP `screendump`, refreshed on every action or
+manual Refresh); a Box's card honestly says it has no display to
+preview instead of showing a placeholder that pretends otherwise. The
+window itself is responsive — the card grid drops to 2 columns, then 1,
+as it narrows (`AdwBreakpoint`), not just clipping.
 
 Errors and lifecycle events (created/removed) also surface as native
 desktop notifications, not just in-window toasts, so they're visible
