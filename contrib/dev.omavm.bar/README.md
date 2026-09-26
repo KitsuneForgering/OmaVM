@@ -1,7 +1,10 @@
 # OmaVM bar widget
 
-One bar entry showing how many OmaVM environments (Boxes + Machines)
-exist, and a click-through into the Experience Center GUI.
+A single icon in the tray cluster — no "VM N" text — that appears only
+when at least one OmaVM environment (Box or Machine) exists, and opens
+the Experience Center GUI on click. Same self-hiding convention as
+`omarchy.system-update` and `omarchy.weather`: nothing to report, nothing
+drawn.
 
 ## Data
 
@@ -11,7 +14,9 @@ manages environments itself and never talks to Podman/Docker/QEMU
 directly — that stays inside the `omavm` Core, per OmaVM's own
 CLI/GUI Contract (see [CLAUDE.md](../../CLAUDE.md) in the OmaVM repo).
 If `omavm` isn't on `PATH` or the call fails, the widget just shows 0
-rather than spamming the shell log.
+(hidden) rather than spamming the shell log. The count itself only
+appears in the tooltip on hover, matching how the other tray icons
+(network, bluetooth, volume) work.
 
 ## Interactions
 
@@ -40,3 +45,10 @@ omarchy plugin enable dev.omavm.bar
 
 Per Omarchy's own plugin trust model, review `OmaVM.qml` before enabling —
 plugins run unsandboxed inside `omarchy-shell`.
+
+Editing the QML after it's already enabled needs more than
+`rescanPlugins` or a disable/enable cycle to actually take effect —
+neither reloads a widget's source once loaded (verified: both left the
+old behavior running). `omarchy-restart-shell` does reload it, at the
+cost of restarting the whole shell (bar, panels, notifications) for a
+moment; it refuses to run while the session is locked.

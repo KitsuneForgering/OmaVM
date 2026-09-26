@@ -26,7 +26,13 @@ BarWidget {
     if (root.bar) root.bar.run("omavm-gui")
   }
 
-  implicitWidth: button.implicitWidth
+  // Self-hides at zero, same convention as omarchy.system-update and
+  // omarchy.weather: a machine with no OmaVM environments draws nothing
+  // rather than sitting in the tray with a "0". Loading (-1) also stays
+  // hidden so the icon doesn't flash in on shell startup only to vanish
+  // a moment later on a fresh machine.
+  visible: root.envCount > 0
+  implicitWidth: visible ? button.implicitWidth : 0
   implicitHeight: button.implicitHeight
 
   IpcHandler {
@@ -70,20 +76,16 @@ BarWidget {
     onTriggered: root.refresh()
   }
 
-  readonly property string label: root.envCount < 0 ? "VM …" : "VM " + root.envCount
-
+  // A plain glyph, not "VM N" text: with the widget now living in the
+  // tray cluster, the count belongs in the tooltip like every other tray
+  // icon (network/bluetooth/volume), not spelled out inline.
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.label
+    text: "▣"
     slotSize: Style.bar.statusSlot
-    fontSize: Style.font.caption
-    tooltipText: root.envCount < 0
-      ? "OmaVM — loading…"
-      : root.envCount === 0
-        ? "OmaVM — no environments yet, click to create one"
-        : "OmaVM — " + root.envCount + " environment" + (root.envCount === 1 ? "" : "s") + ", click to open"
+    tooltipText: "OmaVM — " + root.envCount + " environment" + (root.envCount === 1 ? "" : "s") + ", click to open"
     onPressed: function(b) {
       if (b === Qt.RightButton) root.refresh()
       else root.openExperienceCenter()

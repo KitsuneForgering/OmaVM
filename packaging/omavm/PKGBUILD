@@ -1,0 +1,43 @@
+# Maintainer: Arthur Augusto <arthuramagalhaes1312@gmail.com>
+
+pkgname=omavm
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Create, run and manage Boxes and Machines on Omarchy"
+arch=('x86_64')
+url="https://github.com/KitsuneSemCalda/OmaVM"
+license=('MIT')
+depends=('gtk4' 'libadwaita' 'glibc')
+makedepends=('go')
+optdepends=('podman: Box environments (preferred container engine)'
+            'docker: Box environments (fallback container engine)'
+            'qemu-base: Machine environments (QEMU/KVM)'
+            'xdg-terminal-exec: attach a terminal when opening a Box from the GUI')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('37a81009209a4c96707b6dd53d7607ebb23a558664e71f9a4401d9d2b4c65c8b')
+
+build() {
+  cd "OmaVM-$pkgver"
+  export CGO_ENABLED=1
+  go build -ldflags="-s -w" -buildvcs=false -trimpath -o bin/omavm ./cmd/omavm
+  go build -ldflags="-s -w" -buildvcs=false -trimpath -o bin/omavm-gui ./cmd/omavm-gui
+}
+
+package() {
+  cd "OmaVM-$pkgver"
+
+  install -Dm755 bin/omavm "$pkgdir/usr/bin/omavm"
+  install -Dm755 bin/omavm-gui "$pkgdir/usr/bin/omavm-gui"
+  install -Dm644 data/dev.omavm.app.desktop "$pkgdir/usr/share/applications/dev.omavm.app.desktop"
+  install -Dm644 data/icons/dev.omavm.app.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.omavm.app.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+  # Reference copy only, never auto-enabled: Omarchy's plugin trust model
+  # requires a human to review third-party QML and run
+  # `omarchy plugin enable` themselves before it runs unsandboxed inside
+  # the already-live shell. See the post-install message and
+  # contrib/dev.omavm.bar/README.md.
+  install -dm755 "$pkgdir/usr/share/doc/$pkgname/quickshell-plugin"
+  cp -r contrib/dev.omavm.bar/. "$pkgdir/usr/share/doc/$pkgname/quickshell-plugin/"
+}
