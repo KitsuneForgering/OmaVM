@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OmaVM
+GenericName=Environment Manager
+Comment=Create, run and manage Boxes and Machines on Omarchy
+Exec=omavm-gui
+Icon=dev.omavm.app
+Terminal=false
+Categories=System;Emulator;Utility;
+StartupWMClass=dev.omavm.app
+StartupNotify=true

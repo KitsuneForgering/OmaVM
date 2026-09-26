@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.omavm.bar",
+  "name": "OmaVM",
+  "version": "1.0.0",
+  "author": "OmaVM",
+  "license": "MIT",
+  "description": "Shows how many OmaVM environments exist and opens the Experience Center",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "OmaVM.qml" },
+  "barWidget": {
+    "displayName": "OmaVM",
+    "description": "One bar entry for OmaVM: hover for how many Boxes/Machines exist, click to open the Experience Center.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": { "refreshIntervalSec": 30 },
+    "schema": [
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 5, "max": 600, "step": 5, "defaultValue": 30 }
+    ]
+  }
+}
