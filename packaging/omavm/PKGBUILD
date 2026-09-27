@@ -17,7 +17,7 @@ optdepends=('distrobox: integrated Development Box environments'
             'xdg-terminal-exec: attach a terminal when opening a Box from the GUI')
 install=omavm.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('edc28b1feca64c73109d840c5a95203be081c30f6263ba9a2855e6ca0b195169')
 
 build() {
   cd "OmaVM-$pkgver"
