@@ -12,18 +12,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
 )
 
 const defaultDiskSize = "20G"
+const gracefulShutdownTimeout = 10 * time.Second
 
 // Backend implements core.Backend for Machine environments via
 // qemu-img and qemu-system-x86_64. It assumes KVM is available
@@ -48,9 +49,14 @@ func (b *Backend) dir(name string) string      { return filepath.Join(b.stateDir
 func (b *Backend) diskPath(name string) string { return filepath.Join(b.dir(name), "disk.qcow2") }
 func (b *Backend) pidPath(name string) string  { return filepath.Join(b.dir(name), "qemu.pid") }
 func (b *Backend) qmpPath(name string) string  { return filepath.Join(b.dir(name), "qmp.sock") }
-func (b *Backend) vncDisplayPath(name string) string {
-	return filepath.Join(b.dir(name), "vnc-display")
+func (b *Backend) qgaPath(name string) string  { return filepath.Join(b.dir(name), "qga.sock") }
+func (b *Backend) virtiofsPath(name string) string {
+	return filepath.Join(b.dir(name), "virtiofs.sock")
 }
+func (b *Backend) virtiofsPIDPath(name string) string {
+	return filepath.Join(b.dir(name), "virtiofs.pid")
+}
+func (b *Backend) vncPath(name string) string     { return filepath.Join(b.dir(name), "vnc.sock") }
 func (b *Backend) previewPath(name string) string { return filepath.Join(b.dir(name), "preview.ppm") }
 
 func (b *Backend) Create(ctx context.Context, env core.Environment) error {
@@ -77,22 +83,48 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 		return nil
 	}
 
-	display, err := findFreeVNCDisplay()
-	if err != nil {
-		return err
+	for _, socket := range []string{b.vncPath(env.Name), b.qgaPath(env.Name)} {
+		if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale socket: %w", err)
+		}
 	}
+	settings := env.EffectiveSettings()
+	virtiofsRunning := false
+	if settings.SharedPath != "" {
+		if err := b.startVirtiofs(ctx, env.Name, settings); err != nil {
+			return err
+		}
+		virtiofsRunning = true
+	}
+	vnc := b.vncPath(env.Name)
 
 	args := []string{
 		"-name", env.Name,
-		"-m", "2048",
-		"-smp", "2",
+		"-m", strconv.Itoa(settings.MemoryMiB),
+		"-smp", strconv.Itoa(settings.CPUs),
 		"-enable-kvm",
 		"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2", b.diskPath(env.Name)),
-		"-vnc", fmt.Sprintf("127.0.0.1:%d", display),
+		"-device", "virtio-vga-gl",
+		// egl-headless keeps virtio-vga-gl's GPU acceleration while
+		// headless; VNC is the display consumer QEMU pairs it with
+		// (no local GTK/SDL window, no SPICE).
+		"-display", "egl-headless",
+		"-vnc", "unix:" + vnc,
+		"-device", "virtio-serial-pci",
+		"-chardev", "socket,path=" + b.qgaPath(env.Name) + ",server=on,wait=off,id=qga0",
+		"-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
+		"-audiodev", "pipewire,id=audio0",
+		"-device", "virtio-sound-pci,audiodev=audio0",
 		"-qmp", "unix:" + b.qmpPath(env.Name) + ",server,nowait",
 		"-pidfile", b.pidPath(env.Name),
-		"-display", "none",
 		"-daemonize",
+	}
+	if virtiofsRunning {
+		args = append(args,
+			"-object", fmt.Sprintf("memory-backend-memfd,id=mem,size=%dM,share=on", settings.MemoryMiB),
+			"-machine", "memory-backend=mem",
+			"-chardev", "socket,id=virtiofs,path="+b.virtiofsPath(env.Name),
+			"-device", "vhost-user-fs-pci,chardev=virtiofs,tag=omavm-share")
 	}
 	if env.Image != "" {
 		args = append(args, "-cdrom", env.Image, "-boot", "d")
@@ -100,92 +132,116 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 
 	out, err := runOutput(ctx, "qemu-system-x86_64", args...)
 	if err != nil {
+		if virtiofsRunning {
+			_ = b.stopVirtiofs(env.Name)
+		}
 		return fmt.Errorf("qemu-system-x86_64: %w: %s", err, out)
-	}
-	if err := os.WriteFile(b.vncDisplayPath(env.Name), []byte(strconv.Itoa(display)), 0o644); err != nil {
-		return fmt.Errorf("record vnc display: %w", err)
 	}
 	return nil
 }
 
-// Open ensures the Machine is running, then launches a VNC viewer so
-// its graphical userspace is actually visible — not left as a socket
-// nobody's looking at. Requires a VNC client on PATH; without one, this
-// fails loudly with the connection endpoint and what to install,
-// instead of silently no-op'ing (Security/UX principle: never hide a
-// capability gap).
+func virtiofsdPath() (string, error) {
+	if path, err := exec.LookPath("virtiofsd"); err == nil {
+		return path, nil
+	}
+	if info, err := os.Stat("/usr/lib/virtiofsd"); err == nil && info.Mode().Perm()&0o111 != 0 {
+		return "/usr/lib/virtiofsd", nil
+	}
+	return "", fmt.Errorf("virtiofsd not found (install the virtiofsd package)")
+}
+
+func (b *Backend) startVirtiofs(ctx context.Context, name string, settings core.EnvironmentSettings) error {
+	path, err := virtiofsdPath()
+	if err != nil {
+		return fmt.Errorf("shared folder: %w", err)
+	}
+	if err := os.Remove(b.virtiofsPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale virtiofs socket: %w", err)
+	}
+	args := []string{"--shared-dir", settings.SharedPath, "--socket-path", b.virtiofsPath(name), "--sandbox", "namespace", "--tag", "omavm-share"}
+	if settings.SharedReadOnly {
+		args = append(args, "--readonly")
+	}
+	cmd := exec.CommandContext(context.Background(), path, args...)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start virtiofsd: %w", err)
+	}
+	if err := os.WriteFile(b.virtiofsPIDPath(name), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("record virtiofsd pid: %w", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(b.virtiofsPath(name)); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			_ = b.stopVirtiofs(name)
+			return ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	_ = b.stopVirtiofs(name)
+	return fmt.Errorf("virtiofsd did not create its socket")
+}
+
+func (b *Backend) stopVirtiofs(name string) error {
+	data, err := os.ReadFile(b.virtiofsPIDPath(name))
+	if err == nil {
+		if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil {
+			if proc, findErr := os.FindProcess(pid); findErr == nil {
+				_ = proc.Signal(syscall.SIGTERM)
+			}
+		}
+	}
+	_ = os.Remove(b.virtiofsPIDPath(name))
+	_ = os.Remove(b.virtiofsPath(name))
+	return nil
+}
+
+// Open ensures the Machine is running, then launches omavm-gui in its
+// native VNC viewer mode so the graphical userspace is actually visible —
+// not left as a socket nobody's looking at. Requires omavm-gui to be
+// installed; without it, this fails loudly with what to install, instead
+// of silently no-op'ing (Security/UX principle: never hide a capability
+// gap).
 func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 	if err := b.Start(ctx, env); err != nil {
 		return err
 	}
-	addr, err := b.vncAddress(env.Name)
+	viewer, err := guiBinaryPath()
 	if err != nil {
-		return err
-	}
-
-	viewer, viewerArgs, err := vncViewerCommand(addr)
-	if err != nil {
-		return fmt.Errorf("%w: no VNC client found on PATH (install virt-viewer or tigervnc) — connect to vnc://%s yourself", core.ErrUnsupported, addr)
+		return fmt.Errorf("%w: omavm-gui not found (install OmaVM's GUI to view a Machine's display)", core.ErrUnsupported)
 	}
 
 	// Detached on purpose: the viewer is a GUI the user drives for a
 	// while, not something that should die when this call's context
 	// ends (same reasoning as the GUI's own openInTerminal).
-	cmd := exec.CommandContext(context.Background(), viewer, viewerArgs...)
+	cmd := exec.CommandContext(context.Background(), viewer,
+		"--viewer", b.vncPath(env.Name),
+		"--title", env.Name+" — OmaVM")
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch VNC viewer: %w", err)
 	}
 	return nil
 }
 
-// findFreeVNCDisplay probes 127.0.0.1:5900+N upward for the first port
-// that binds. QEMU's -vnc option takes a display number (an offset from
-// 5900), not a raw port. The probe-then-close-then-let-qemu-bind
-// sequence has a small unavoidable race — acceptable for a local dev
-// tool; a stolen port just surfaces as a clear qemu-system-x86_64 error
-// to retry.
-func findFreeVNCDisplay() (int, error) {
-	for display := 0; display < 100; display++ {
-		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", 5900+display))
-		if err != nil {
-			continue
+// guiBinaryPath locates omavm-gui the same way the GUI itself locates the
+// omavm CLI (gui/backend.cpp's cliPath): next to this process's own binary
+// first, falling back to PATH.
+func guiBinaryPath() (string, error) {
+	if exe, err := os.Executable(); err == nil {
+		sibling := filepath.Join(filepath.Dir(exe), "omavm-gui")
+		if info, statErr := os.Stat(sibling); statErr == nil && !info.IsDir() {
+			return sibling, nil
 		}
-		l.Close()
-		return display, nil
 	}
-	return 0, errors.New("no free VNC display found in range 5900-5999")
-}
-
-// vncViewerCommand picks the first available VNC client on PATH.
-// remote-viewer (virt-viewer) understands a vnc:// URI directly; plain
-// VNC viewers take a bare host:port.
-func vncViewerCommand(addr string) (string, []string, error) {
-	if path, err := exec.LookPath("remote-viewer"); err == nil {
-		return path, []string{"vnc://" + addr}, nil
-	}
-	if path, err := exec.LookPath("vncviewer"); err == nil {
-		return path, []string{addr}, nil
-	}
-	if path, err := exec.LookPath("gvncviewer"); err == nil {
-		return path, []string{addr}, nil
-	}
-	return "", nil, errors.New("no VNC client on PATH")
-}
-
-func (b *Backend) vncAddress(name string) (string, error) {
-	data, err := os.ReadFile(b.vncDisplayPath(name))
-	if err != nil {
-		return "", fmt.Errorf("read vnc display: %w", err)
-	}
-	display, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return "", fmt.Errorf("parse vnc display: %w", err)
-	}
-	return fmt.Sprintf("127.0.0.1:%d", 5900+display), nil
+	return exec.LookPath("omavm-gui")
 }
 
 // Preview captures a screenshot of a running Machine's graphical
-// userspace via QMP screendump — no VNC/RFB client implementation
+// userspace via QMP screendump — no SPICE client implementation
 // needed, since QEMU writes the framebuffer straight to a local file.
 // Returns a PPM image path; gdk-pixbuf loads PNM natively, so the GUI
 // can hand this straight to a Picture/Image widget.
@@ -211,10 +267,80 @@ func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 		return err
 	}
 	if !running {
+		_ = b.stopVirtiofs(env.Name)
 		return nil
 	}
+	if status, err := qmpStatus(b.qmpPath(env.Name)); err == nil && (status == "paused" || status == "suspended") {
+		if err := qmpCommand(b.qmpPath(env.Name), "cont"); err != nil {
+			return fmt.Errorf("resume machine before shutdown: %w", err)
+		}
+	}
 
+	// Ask the guest to shut down through ACPI first. If it does not exit in
+	// time (for example, an installer has no ACPI handler), force-stop QEMU.
+	if err := qmpCommand(b.qmpPath(env.Name), "system_powerdown"); err == nil {
+		deadline := time.Now().Add(gracefulShutdownTimeout)
+		for time.Now().Before(deadline) {
+			if running, _ := b.isRunning(env.Name); !running {
+				_ = b.stopVirtiofs(env.Name)
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	return b.ForceStop(ctx, env)
+}
+
+func (b *Backend) Restart(ctx context.Context, env core.Environment) error {
+	if running, err := b.isRunning(env.Name); err != nil {
+		return err
+	} else if !running {
+		return b.Start(ctx, env)
+	}
+	status, err := qmpStatus(b.qmpPath(env.Name))
+	if err != nil {
+		return err
+	}
+	if err := qmpCommand(b.qmpPath(env.Name), "system_reset"); err != nil {
+		return err
+	}
+	if status == "paused" || status == "suspended" {
+		return qmpCommand(b.qmpPath(env.Name), "cont")
+	}
+	return nil
+}
+
+func (b *Backend) Pause(ctx context.Context, env core.Environment) error {
+	if running, err := b.isRunning(env.Name); err != nil {
+		return err
+	} else if !running {
+		return fmt.Errorf("%w: machine is not running", core.ErrUnsupported)
+	}
+	return qmpCommand(b.qmpPath(env.Name), "stop")
+}
+
+func (b *Backend) Resume(ctx context.Context, env core.Environment) error {
+	if running, err := b.isRunning(env.Name); err != nil {
+		return err
+	} else if !running {
+		return fmt.Errorf("%w: machine is not running", core.ErrUnsupported)
+	}
+	return qmpCommand(b.qmpPath(env.Name), "cont")
+}
+
+func (b *Backend) ForceStop(ctx context.Context, env core.Environment) error {
+	if running, err := b.isRunning(env.Name); err != nil {
+		return err
+	} else if !running {
+		_ = b.stopVirtiofs(env.Name)
+		return nil
+	}
 	if err := qmpCommand(b.qmpPath(env.Name), "quit"); err == nil {
+		_ = b.stopVirtiofs(env.Name)
 		return nil
 	}
 
@@ -229,6 +355,7 @@ func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("stop machine process: %w", err)
 	}
+	_ = b.stopVirtiofs(env.Name)
 	return nil
 }
 
@@ -240,11 +367,42 @@ func (b *Backend) Status(ctx context.Context, env core.Environment) (core.Status
 	if !running {
 		return core.Status{State: core.StateStopped}, nil
 	}
-	detail := "vnc: unreachable"
-	if addr, err := b.vncAddress(env.Name); err == nil {
-		detail = "vnc: " + addr
+	status, err := qmpStatus(b.qmpPath(env.Name))
+	if err != nil {
+		return core.Status{State: core.StateUnknown, Detail: err.Error()}, nil
 	}
-	return core.Status{State: core.StateRunning, Detail: detail}, nil
+	return statusFromQMP(status), nil
+}
+
+func (b *Backend) Integration(ctx context.Context, env core.Environment) (core.IntegrationReport, error) {
+	running, err := b.isRunning(env.Name)
+	if err != nil {
+		return core.IntegrationReport{}, err
+	}
+	if !running {
+		return core.IntegrationReport{GuestAgent: "stopped", Hint: "Start the Machine to check guest tools"}, nil
+	}
+	if err := qgaPing(ctx, b.qgaPath(env.Name)); err != nil {
+		return core.IntegrationReport{GuestAgent: "unavailable", Hint: "Install and start qemu-guest-agent inside the guest"}, nil
+	}
+	return core.IntegrationReport{GuestAgent: "connected"}, nil
+}
+
+func statusFromQMP(status string) core.Status {
+	switch status {
+	case "running":
+		return core.Status{State: core.StateRunning, Detail: "VNC display available"}
+	case "paused", "suspended":
+		return core.Status{State: core.StatePaused}
+	case "prelaunch", "inmigrate", "restore-vm":
+		return core.Status{State: core.StateStarting, Detail: status}
+	case "shutdown":
+		return core.Status{State: core.StateStopping}
+	case "internal-error", "io-error", "watchdog", "guest-panicked":
+		return core.Status{State: core.StateError, Detail: status}
+	default:
+		return core.Status{State: core.StateUnknown, Detail: status}
+	}
 }
 
 // Exec has no guest command channel yet (no omavm-guest agent, see

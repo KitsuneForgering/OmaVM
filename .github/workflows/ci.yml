@@ -15,10 +15,10 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install GTK4/libadwaita build dependencies
+      - name: Install Qt Quick build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
+          sudo apt-get install -y qt6-base-dev qt6-declarative-dev qmake6
 
       - name: gofmt
         run: |
@@ -34,6 +34,9 @@ jobs:
 
       - name: go build
         run: go build ./...
+
+      - name: Qt GUI build
+        run: make build-gui
 
       - name: go test
         run: go test ./...

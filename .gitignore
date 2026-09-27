@@ -26,6 +26,7 @@ go.work.sum
 
 # Makefile build output
 /bin/
+/build/
 
 # env file
 .env

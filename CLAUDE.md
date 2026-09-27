@@ -10,15 +10,15 @@ Neste momento o repositório contém apenas `README.md`, `LICENSE` e este `CLAUD
 
 **Linguagem: Go**, confirmado. Além disso, siga apenas as convenções idiomáticas padrão do Go (formatação via `gofmt`, nomes de pacote, etc.) — o layout de diretórios em si é uma decisão aberta (ver Open Technical Decisions).
 
-**GUI toolkit: GTK4 + libadwaita** (via bindings Go, ex. gotk4), confirmado — para seguir o padrão visual nativo do Omarchy (GNOME/Adwaita), conforme UX Principle 6. Não usar toolkits que não sigam automaticamente o tema do sistema (dark/light, cor de destaque) sem justificativa explícita. A janela principal usa `AdwBreakpoint` (não uma solução de responsividade própria da OmaVM) para adaptar a grade de cards à largura da janela — esse é o mecanismo padrão do Adwaita para isso, use-o em vez de reinventar.
+**GUI toolkit: Qt 6 + Qt Quick/QML**, confirmado, no mesmo stack de OMAcut, OMAwrite, OMAcalc e Quickshell. Use Qt Quick Controls com Material, leia `~/.local/state/omarchy/current/theme/colors.toml`, acompanhe sua troca e respeite dark/light, accent, background, foreground e escala de texto. Não crie um sistema de temas próprio. O layout deve refluir durante resize contínuo de janelas tiled no Hyprland e nunca depender de tamanhos fixos para monitores específicos.
 
-**Box backend: engine de containers próprio da OmaVM sobre Podman (preferencial) ou Docker**, confirmado — não sobre o binário externo `distrobox`. Ver Backend Rules.
+**Box backend: Distrobox sobre Podman (preferencial) ou Docker**, confirmado. O Distrobox fornece a integração madura com HOME, Wayland/X11, áudio, dispositivos e aplicações gráficas; a OmaVM fornece o modelo de produto e lifecycle unificado. Containers diretos ficam reservados a ambientes Disposable e à compatibilidade com Boxes legadas. Ver Backend Rules.
 
 ## Project Mission
 
 > OmaVM é uma experiência integrada para criar, executar e administrar ambientes no Omarchy.
 
-OmaVM é um gerenciador de **ambientes computacionais** para o ecossistema Omarchy — não um frontend para QEMU, não um fork do Distrobox, não um hypervisor próprio. O valor do produto está no modelo conceitual, na UX, na orquestração e na integração com o host, não em reimplementar engines de virtualização/containers que já existem e são maduras.
+OmaVM é um gerenciador de **ambientes computacionais** para o ecossistema Omarchy — não apenas um frontend para QEMU/Distrobox e não um hypervisor ou container runtime próprio. O valor do produto está no modelo conceitual, na UX e na orquestração coerente dessas ferramentas maduras.
 
 ## Product Model
 
@@ -37,7 +37,7 @@ O usuário pensa em "quero um ambiente Fedora", nunca em "quero um container Pod
 Regra de decisão:
 
 ```text
-Linux userspace only  -> Box     (backend: engine de containers próprio sobre Podman/Docker)
+Linux userspace only  -> Box     (backend: Distrobox sobre Podman/Docker)
 Independent kernel     -> Machine (backend: QEMU/KVM)
 ```
 
@@ -65,13 +65,14 @@ CLI ───── OmaVM Core (domínio)
               │
          Backend Layer (adapters)
           /                    \
-  Container backend        QEMU/KVM backend
-  (Podman/Docker)
+  Development Box          Machine backend
+  (Distrobox -> Podman/    (QEMU/KVM)
+   Docker)
 ```
 
-- **Core/domínio**: modela `Environment`, `Box`, `Machine`, `Image`, `Template`, `Snapshot`, `Project`, `Integration`, `Backend`. Não depende de ferramentas externas específicas.
-- **Backend layer**: interface própria do OmaVM (não é a API do Podman/Docker nem do libvirt/QEMU exposta diretamente). Deve permitir adicionar backends futuros (Incus, Remote, Cloud) sem contaminar o domínio — mas não construa essas abstrações antes de existir um segundo backend real além de Container/QEMU.
-- Detalhes de infraestrutura (`podman`, `docker`, `qemu-system-x86_64`, `virsh`, caminhos de qcow2, comandos específicos do container engine) ficam confinados aos adapters/backends e nunca vazam para UI, CLI de alto nível ou domínio.
+- **Core/domínio**: modela `Environment`, `Box`, `Machine`, `Image`, `Template`, `Snapshot`, `Project`, `Integration`, `Backend`. Não depende de ferramentas externas específicas. O frontend QML acessa esse Core pelo contrato JSON estável do CLI via `QProcess`, sempre com programa e argumentos separados (nunca por shell).
+- **Backend layer**: interface própria do OmaVM (não é a API do Distrobox/Podman/Docker nem do libvirt/QEMU exposta diretamente). Deve permitir adicionar backends futuros (Incus, Remote, Cloud) sem contaminar o domínio — mas não construa essas abstrações antes de existir necessidade real.
+- Detalhes de infraestrutura (`distrobox`, `podman`, `docker`, `qemu-system-x86_64`, `virsh`, caminhos de qcow2 e comandos específicos) ficam confinados aos adapters/backends e nunca vazam para UI, CLI de alto nível ou domínio.
 - Modelo conceitual de referência (não é API obrigatória — preserve/evolua o que já existir no código):
 
 ```go
@@ -110,8 +111,9 @@ Meta de longo prazo: aplicações de um Environment aparecem como janelas normai
 
 ## Backend Rules
 
-- Boxes usam um engine de containers próprio da OmaVM, construído diretamente sobre Podman (preferencial, detectado via PATH) ou Docker como fallback, via adapter — não sobre o binário externo `distrobox`. **Decisão explícita, tomada em 2026-09-26** substituindo a regra anterior ("Boxes usam Distrobox"); ver histórico da conversa se precisar do racional completo.
-- Esse engine deve permanecer mínimo e disciplinado: orquestra containers (create/start/stop/exec/remove, mount de home directory, network) via Podman/Docker, mas **nunca reimplementa o motor de containers em si** (runc/OCI, storage de imagens, etc. continuam sendo responsabilidade do Podman/Docker). Não busque paridade completa com o Distrobox (não é meta replicar cada capacidade de host-integration dele); cresça apenas em resposta a necessidade real de produto.
+- Development Boxes usam Distrobox via adapter próprio da OmaVM. Distrobox escolhe Podman ou Docker como container manager e é responsável pela integração madura com o host; não replique essa integração no Core.
+- Containers diretos sobre Podman/Docker são um backend distinto, reservado ao futuro modo Disposable (CI local, agentes e tarefas efêmeras) e à compatibilidade de lifecycle com Boxes criadas antes desta decisão. Novas Development Boxes nunca devem cair silenciosamente no adapter legado quando Distrobox estiver ausente: falhe com instrução clara de instalação.
+- A UI básica nunca pergunta por QEMU, Distrobox, Podman ou Docker. Ela pergunta pela intenção: Desktop, Development Box ou, quando implementado, Disposable.
 - Machines usam QEMU/KVM via adapter.
 - Antes de construir infraestrutura nova, pergunte: **"isso é parte da experiência exclusiva do OmaVM, ou já é resolvido pelo backend?"**. Se já resolvido por Podman/Docker/QEMU/KVM/virtio/ferramentas maduras, integre — não reimplemente o motor subjacente.
 
@@ -123,6 +125,7 @@ Referência filosófica: **Parallels Desktop** — não visualmente, mas na idei
 2. Linux userspace deve preferir Box; kernel independente deve usar Machine.
 3. O usuário não precisa entender QEMU, KVM, qcow2, Podman, Docker, bridges, sockets, virtio, vsock, namespaces para criar/usar um ambiente — esses detalhes vivem em áreas avançadas/diagnóstico.
 4. Backend não deve dominar a interface: nunca pergunte "qual backend deseja usar?" — pergunte "o que você quer executar?" (ex.: escolher a distro, e para Linux escolher entre "Development Environment" → Box ou "Virtual Machine" → Machine; para sistemas não-Linux, `Machine` é selecionado automaticamente).
+   Na implementação Qt atual, essa decisão aparece primeiro como **Desktop** (Machine, exige uma ISO x86_64 e abre display gráfico) ou **Development Box** (Distrobox sobre imagem OCI, abre terminal e pode executar/exportar aplicações gráficas integradas). Nunca passe uma referência OCI como `fedora:latest` ao QEMU como se fosse mídia de boot. Box não é um desktop com kernel próprio, embora possa abrir aplicações gráficas.
 5. Tela principal = **Experience Center**, um control center onde ambientes aparecem como objetos simples (nome, distro, kind, status) com ações: Open, Start, Stop, Clone, Snapshot, Settings, Delete. Detalhes de infraestrutura não pertencem a essa tela. Se agrupamento/reordenação de ambientes for implementado algum dia, deve funcionar de verdade (arrastar-e-soltar persistente, grupos reais) — o Control Center do Parallels é criticado por usuários justamente por ter listagem que não reordena manualmente nem agrupa (pesquisa de 2026-09-26); não é meta atual, só uma armadilha a evitar se/quando for construído.
 6. Um Environment aberto deve parecer parte do Omarchy.
 7. Configurações avançadas existem sem contaminar o fluxo básico; defaults devem ser seguros e razoáveis.
@@ -132,7 +135,7 @@ Referência filosófica: **Parallels Desktop** — não visualmente, mas na idei
 
 ## CLI/GUI Contract
 
-- Toda operação importante tem representação programática. A GUI **não** contém lógica exclusiva de gerenciamento de ambientes — ela chama o mesmo OmaVM Core que a CLI.
+- Toda operação importante tem representação programática. A GUI **não** contém lógica exclusiva de gerenciamento de ambientes — ela usa o CLI `omavm`, que chama o mesmo OmaVM Core. Essa fronteira entre Qt/C++ e Go é intencional; não duplique o domínio em C++.
 - Nunca acoplar GUI diretamente a comandos shell/infra.
 - Exemplos futuros de CLI (não implementar tudo agora, apenas manter compatível):
 
@@ -155,7 +158,7 @@ omavm status radic --json
 
 OmaVM é **Omarchy-first**. Integração com o host é feature central, não avançada. Tratar como capacidades de primeira classe (quando aplicável ao backend): clipboard, compartilhamento de diretórios, project folders, Wayland, áudio, microfone, notificações, resolução dinâmica, SSH, execução de comandos, transferência de arquivos, GPU acceleration. A UI expõe capacidades/intenções, não os mecanismos internos usados para implementá-las.
 
-Implementado até agora: notificações nativas de desktop via `GNotification` (erros e eventos de ciclo de vida como criação/remoção, além do toast in-app do Adwaita); entrada `.desktop` + ícone (`data/`) para o `omavm-gui` aparecer no app launcher/taskbar com identidade própria (`make install`, sem root). O tema (dark/light, cor de destaque) é herdado automaticamente do sistema via libadwaita/portal — não é implementado manualmente e não deve virar um sistema de temas próprio da OmaVM.
+Implementado até agora: frontend Qt Quick/QML com toast in-app; entrada `.desktop` + ícone (`data/`) para o `omavm-gui` aparecer no launcher/taskbar com app-id próprio; sincronização direta com o tema Omarchy ativo (dark/light, background, foreground, accent e selection), acompanhando trocas em runtime. A aplicação apenas consome `colors.toml`; não mantém tema próprio. Como OMAcut/OMAwrite, a janela principal é tiled por padrão; não adicione regra Hyprland para fazê-la flutuar. OMAcalc é uma exceção compacta explicitamente marcada como floating, não um precedente para a OmaVM.
 
 **Quickshell (`omarchy-shell`)**: `contrib/dev.omavm.bar` é um plugin `bar-widget` real para o shell Quickshell plugin-based do Omarchy (`/usr/share/omarchy/shell`), não especulativo — mostra a contagem de Environments (via `omavm list --json`) e abre o `omavm-gui` ao clicar. Instalado via `make install-quickshell-plugin`, mas **nunca habilitado automaticamente**: plugins de terceiros rodam sem sandbox dentro do shell já ativo do usuário, então habilitar é sempre um passo manual e explícito do usuário (`omarchy plugin enable`), nunca algo que um agente/instalador faz sozinho. Isso desbloqueou `omavm list`/`status --json` na CLI (já citado como aspiração no CLI/GUI Contract) — mantenha esse contrato JSON estável, é consumido por automação externa agora, não só hipoteticamente.
 
@@ -189,7 +192,7 @@ Evitar:
 - CLI deve ser testável invocando o Core diretamente, sem precisar de GUI.
 - Baseline padrão de Go a manter assim que houver `go.mod`: `go build ./...`, `go test ./...` (com `-run <TestName>` para um teste único), `go vet ./...`, `gofmt -l .`. Comandos mais específicos (lint adicional, tags de build para testes de integração, etc.) devem ser adicionados a este arquivo assim que existirem de fato no repositório — não documentar ferramentas ainda não escolhidas.
 - `Makefile` disponível como atalho para esses mesmos comandos (`make build`, `make test`, `make vet`, `make fmt-check`, `make check`); ele não substitui os comandos Go diretos, apenas os agrupa.
-- CI (`.github/workflows/ci.yml`, GitHub Actions) roda `gofmt -l .`, `go vet ./...`, `go build ./...` e `go test ./...` em toda push/PR para `master`. Ele instala `libgtk-4-dev`/`libadwaita-1-dev` via `apt-get` porque a GUI depende delas em tempo de build (CGO) — atualize esse passo se a dependência de GUI mudar.
+- CI (`.github/workflows/ci.yml`, GitHub Actions) roda `gofmt -l .`, `go vet ./...`, `go build ./...`, `go test ./...` e compila a GUI com qmake6 em toda push/PR para `master`. Ele instala Qt 6 Base/Declarative para o frontend.
 
 ## Security Model
 
@@ -243,11 +246,17 @@ Nunca começar pela GUI chamando comandos de infraestrutura diretamente.
 
 Fase 1 — vertical slice mínimo:
 
-**Box (via engine de containers próprio sobre Podman/Docker):** Create, Start/Open, Stop, Status, Exec, Remove.
+**Development Box (via Distrobox sobre Podman/Docker):** Create, Start/Open, Stop, Status, Exec, Remove. O adapter direto anterior permanece apenas para lifecycle de Environments cujo campo `backend` já seja `podman` ou `docker`.
 
 **Machine (via QEMU/KVM):** Create, Start, Stop, Status, Open, Remove.
 
-**Implementado (2026-09-26)**: `Open` numa Machine agora abre de fato um userspace gráfico — QEMU escuta VNC em `127.0.0.1:590N` (TCP, não mais unix socket; a porta é descoberta livre e persistida em `vnc-display` no state dir da Machine) e `Open` lança o primeiro visualizador VNC encontrado no PATH (`remote-viewer`/`vncviewer`/`gvncviewer`), falhando de forma explícita — nunca em silêncio — se nenhum estiver instalado. Existe também `Previewer` (`internal/core/backend.go`), uma capability **opcional** do `Backend` (não faz parte da interface mínima acima): a Machine implementa via QMP `screendump` (sem cliente VNC/RFB próprio); Box não implementa — não tem display, e isso não deve ser escondido atrás de um placeholder que finja equivalência (Security Model). A GUI (`internal/gui/card.go`) usa isso para mostrar uma miniatura por card só quando o Backend a oferece.
+**Implementado (2026-09-26)**: `Open` numa Machine abre de fato um userspace gráfico via **VNC**, headless — QEMU expõe `virtio-vga-gl` sobre `-display egl-headless` (GPU acelerada mesmo sem display local) e escuta num socket unix (`-vnc unix:<state dir>/vnc.sock`, mesmo modelo de confiança local-only que o antigo socket SPICE). `Open` não chama mais um visualizador externo: lança o próprio `omavm-gui` em modo `--viewer <socket> --title <nome>`, que carrega `gui/Viewer.qml` num `Window` fullscreen falhando de forma explícita — nunca em silêncio — se `omavm-gui` não estiver instalado. O protocolo RFB é implementado do zero em `gui/vncclient.h/.cpp` (handshake 3.8, segurança "None", só encoding Raw) em vez de linkar `libvncserver`/`libvncclient`: essa lib é GPL-2.0 e o projeto é MIT, e para um socket local sem autenticação nem compressão o protocolo necessário é pequeno o suficiente pra não justificar a dependência. `gui/vncview.h/.cpp` (`QQuickPaintedItem`) desenha o framebuffer e encaminha mouse/teclado de volta (PointerEvent/KeyEvent) — é um viewer interativo, não só uma prévia.
+
+Trade-off aceito ao sair de SPICE: perdeu-se o canal `spicevmc`/vdagent (clipboard automático host↔guest, resize dinâmico de resolução). RFB tem sua própria extensão de clipboard (`ClientCutText`/`ServerCutText`) mas isso fica para depois, não construído especulativamente — é exatamente o tipo de feature adjacente a guest agent que a seção abaixo marca como fora do escopo até haver necessidade real. Áudio (`virtio-sound-pci`/pipewire), virtiofs (shared folders) e o canal QGA (`org.qemu.guest_agent.0`, usado só para `guest-ping`/`Integration`) são independentes do protocolo de display e não mudaram.
+
+O posicionamento da janela do viewer (fullscreen, workspace dedicado) é feito por uma regra Hyprland opt-in (`contrib/hypr/omavm-viewer.lua`, `o.window("dev.omavm.viewer", { workspace = "special:omavm", fullscreen = true })`) — nunca por `hyprctl dispatch` em runtime: a build de Hyprland em uso configura via Lua (`hl.window_rule`/`hl.dispatch`) e dispatches brutos com seletores tipo `class:...` quebram nesse parser. Como o plugin Quickshell, essa regra não é injetada automaticamente no config do usuário — é um `require` manual documentado no README.
+
+Existe também `Previewer` (`internal/core/backend.go`), uma capability **opcional** do `Backend` (não faz parte da interface mínima acima): a Machine implementa via QMP `screendump` (independente do protocolo de display); Box não implementa — não tem display, e isso não deve ser escondido atrás de um placeholder que finja equivalência (Security Model). A GUI é o frontend Qt Quick/QML em `gui/` (`gui/EnvironmentCard.qml` mostra a miniatura por card só quando o Backend a oferece) — o antigo binding Go em `internal/gui/` foi removido.
 
 Não implementar ainda: Blend, guest agent completo, GPU passthrough, orchestration distribuída, cloud/remote hosts, marketplace, dezenas de distros, networking editor avançado, snapshots sofisticados, plugin system. Essas features entram apenas em resposta a necessidade real, não especulativamente.
 
@@ -284,7 +293,7 @@ Do not establish one of these approaches as a repository-wide standard until rea
 
 Ao trabalhar neste repositório, nunca:
 
-1. fazer o Box engine buscar paridade completa com o Distrobox ou virar um motor de containers genérico — ele deve permanecer mínimo (create/start/stop/exec/remove sobre Podman/Docker) e nunca reimplementar o motor de containers em si (runc/OCI);
+1. reimplementar capacidades maduras de integração do Distrobox ou transformar a OmaVM em container runtime genérico;
 2. tratar o OmaVM como se fosse apenas um frontend de QEMU;
 3. acoplar a GUI diretamente a comandos shell/infraestrutura;
 4. confundir Box com VM, ou aplicar a regra simplista "Linux = container, non-Linux = VM";

@@ -1,28 +1,35 @@
 # Maintainer: Arthur Augusto <arthuramagalhaes1312@gmail.com>
 
 pkgname=omavm
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Create, run and manage Boxes and Machines on Omarchy"
 arch=('x86_64')
 url="https://github.com/KitsuneSemCalda/OmaVM"
 license=('MIT')
-depends=('gtk4' 'libadwaita' 'glibc')
-makedepends=('go')
-optdepends=('podman: Box environments (preferred container engine)'
-            'docker: Box environments (fallback container engine)'
-            'qemu-base: Machine environments (QEMU/KVM)'
-            'virt-viewer: open a Machine'"'"'s graphical display (remote-viewer)'
+depends=('qt6-base' 'qt6-declarative' 'glibc')
+makedepends=('go' 'qt6-tools')
+optdepends=('distrobox: integrated Development Box environments'
+            'podman: preferred Distrobox container engine'
+            'docker: alternative Distrobox container engine and legacy Boxes'
+            'qemu-desktop: Machine environments with a graphical display (QEMU/KVM)'
+            'virtiofsd: share host folders with Machine guests'
             'xdg-terminal-exec: attach a terminal when opening a Box from the GUI')
 install=omavm.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('37a81009209a4c96707b6dd53d7607ebb23a558664e71f9a4401d9d2b4c65c8b')
+# Placeholder until the v$pkgver tag/tarball exists on GitHub (chicken-and-egg:
+# the real hash can only be computed after the tag is pushed). Update with
+# `updpkgsums` once the release is out.
+sha256sums=('SKIP')
 
 build() {
   cd "OmaVM-$pkgver"
-  export CGO_ENABLED=1
   go build -ldflags="-s -w" -buildvcs=false -trimpath -o bin/omavm ./cmd/omavm
-  go build -ldflags="-s -w" -buildvcs=false -trimpath -o bin/omavm-gui ./cmd/omavm-gui
+  mkdir -p build/gui
+  cd build/gui
+  qmake6 ../../omavm-gui.pro
+  make
+  cp omavm-gui ../../bin/omavm-gui
 }
 
 package() {
@@ -42,4 +49,10 @@ package() {
   # contrib/dev.omavm.bar/README.md.
   install -dm755 "$pkgdir/usr/share/doc/$pkgname/quickshell-plugin"
   cp -r contrib/dev.omavm.bar/. "$pkgdir/usr/share/doc/$pkgname/quickshell-plugin/"
+
+  # Reference copy only: placing a Machine viewer window on its own
+  # workspace is an opt-in choice about the user's own Hyprland config,
+  # never edited on their behalf. See README.md and the file itself.
+  install -Dm644 contrib/hypr/omavm-viewer.lua \
+    "$pkgdir/usr/share/doc/$pkgname/hypr/omavm-viewer.lua"
 }

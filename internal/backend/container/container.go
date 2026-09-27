@@ -1,6 +1,5 @@
-// Package container is OmaVM's own Box engine: a minimal adapter built
-// directly on Podman (preferred) or Docker, not on the external
-// `distrobox` binary. Per CLAUDE.md's Backend Rules, it stays
+// Package container is OmaVM's legacy Box engine: a minimal adapter built
+// directly on Podman (preferred) or Docker. Per CLAUDE.md's Backend Rules, it stays
 // deliberately small — create/start/stop/exec/remove plus a home
 // directory mount and host networking — and never reimplements the
 // container engine itself (image storage, runc/OCI): that stays Podman
@@ -13,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
 )
@@ -29,21 +29,42 @@ type Backend struct {
 	runtime string
 }
 
-// New detects the available container engine, preferring podman. If
-// neither is found on PATH, it still returns a Backend defaulting to
-// "podman": operations then fail with a clear "executable not found"
-// error from exec, the same way a missing engine has always surfaced.
+// New prefers a working Podman, then falls back to a working Docker.
+// Finding a binary is insufficient: a stale rootless Podman setup or an
+// unreachable daemon must not prevent an otherwise healthy Docker fallback.
 func New() *Backend {
-	if _, err := exec.LookPath("podman"); err == nil {
-		return &Backend{runtime: "podman"}
+	for _, runtime := range []string{"podman", "docker"} {
+		if runtimeReady(runtime) {
+			return &Backend{runtime: runtime}
+		}
 	}
-	if _, err := exec.LookPath("docker"); err == nil {
-		return &Backend{runtime: "docker"}
+	// Preserve a useful operation error when neither engine is healthy.
+	// Prefer an installed binary so its own diagnostic reaches the user.
+	for _, runtime := range []string{"podman", "docker"} {
+		if _, err := exec.LookPath(runtime); err == nil {
+			return &Backend{runtime: runtime}
+		}
 	}
 	return &Backend{runtime: "podman"}
 }
 
+func runtimeReady(runtime string) bool {
+	if _, err := exec.LookPath(runtime); err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, runtime, "info").Run() == nil
+}
+
 func (b *Backend) Name() string { return b.runtime }
+
+func (b *Backend) runtimeFor(env core.Environment) string {
+	if env.Backend == "podman" || env.Backend == "docker" {
+		return env.Backend
+	}
+	return b.runtime
+}
 
 func containerName(env core.Environment) string {
 	return containerPrefix + env.Name
@@ -64,11 +85,11 @@ func (b *Backend) Create(ctx context.Context, env core.Environment) error {
 		env.Image,
 		"infinity",
 	}
-	return b.run(ctx, args...)
+	return b.run(ctx, b.runtimeFor(env), args...)
 }
 
 func (b *Backend) Start(ctx context.Context, env core.Environment) error {
-	return b.run(ctx, "start", containerName(env))
+	return b.run(ctx, b.runtimeFor(env), "start", containerName(env))
 }
 
 // Open attaches an interactive shell, starting the container first if
@@ -77,18 +98,19 @@ func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 	if err := b.Start(ctx, env); err != nil {
 		return err
 	}
-	return b.runInteractive(ctx, "exec", "-it", containerName(env), shellFor(env))
+	return b.runInteractive(ctx, b.runtimeFor(env), "exec", "-it", containerName(env), shellFor(env))
 }
 
 func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
-	return b.run(ctx, "stop", containerName(env))
+	return b.run(ctx, b.runtimeFor(env), "stop", containerName(env))
 }
 
 func (b *Backend) Status(ctx context.Context, env core.Environment) (core.Status, error) {
-	cmd := exec.CommandContext(ctx, b.runtime, "inspect", "--format", "{{.State.Status}}", containerName(env))
+	runtime := b.runtimeFor(env)
+	cmd := exec.CommandContext(ctx, runtime, "inspect", "--format", "{{.State.Status}}", containerName(env))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return core.Status{}, fmt.Errorf("%w: %s has no container named %s: %s", core.ErrNotFound, b.runtime, env.Name, strings.TrimSpace(string(out)))
+		return core.Status{}, fmt.Errorf("%w: %s has no container named %s: %s", core.ErrNotFound, runtime, env.Name, strings.TrimSpace(string(out)))
 	}
 	rawStatus := strings.TrimSpace(string(out))
 	state := core.StateStopped
@@ -100,11 +122,11 @@ func (b *Backend) Status(ctx context.Context, env core.Environment) (core.Status
 
 func (b *Backend) Exec(ctx context.Context, env core.Environment, args []string) error {
 	full := append([]string{"exec", containerName(env)}, args...)
-	return b.runInteractive(ctx, full...)
+	return b.runInteractive(ctx, b.runtimeFor(env), full...)
 }
 
 func (b *Backend) Remove(ctx context.Context, env core.Environment) error {
-	return b.run(ctx, "rm", "--force", containerName(env))
+	return b.run(ctx, b.runtimeFor(env), "rm", "--force", containerName(env))
 }
 
 func shellFor(env core.Environment) string {
@@ -114,22 +136,22 @@ func shellFor(env core.Environment) string {
 	return "/bin/sh"
 }
 
-func (b *Backend) run(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, b.runtime, args...)
+func (b *Backend) run(ctx context.Context, runtime string, args ...string) error {
+	cmd := exec.CommandContext(ctx, runtime, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s %s: %w: %s", b.runtime, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s %s: %w: %s", runtime, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-func (b *Backend) runInteractive(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, b.runtime, args...)
+func (b *Backend) runInteractive(ctx context.Context, runtime string, args ...string) error {
+	cmd := exec.CommandContext(ctx, runtime, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s %s: %w", b.runtime, strings.Join(args, " "), err)
+		return fmt.Errorf("%s %s: %w", runtime, strings.Join(args, " "), err)
 	}
 	return nil
 }

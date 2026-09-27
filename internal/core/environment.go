@@ -74,13 +74,43 @@ func (k *EnvironmentKind) UnmarshalJSON(data []byte) error {
 
 // Environment is a computational environment the user creates, runs and
 // manages. Backend is the name of the Backend that owns it (e.g.
-// "podman", "qemu"); it is set by the Service on Create and is an
+// "distrobox", "qemu"); it is set by the Service on Create and is an
 // implementation detail that higher layers may display but never branch
 // product behavior on beyond what Kind already implies.
 type Environment struct {
-	ID      string          `json:"id"`
-	Name    string          `json:"name"`
-	Image   string          `json:"image"`
-	Backend string          `json:"backend"`
-	Kind    EnvironmentKind `json:"kind"`
+	ID       string              `json:"id"`
+	Name     string              `json:"name"`
+	Image    string              `json:"image"`
+	Backend  string              `json:"backend"`
+	Kind     EnvironmentKind     `json:"kind"`
+	Settings EnvironmentSettings `json:"settings,omitempty"`
+}
+
+type EnvironmentSettings struct {
+	Description    string `json:"description,omitempty"`
+	CPUs           int    `json:"cpus,omitempty"`
+	MemoryMiB      int    `json:"memory_mib,omitempty"`
+	SharedPath     string `json:"shared_path,omitempty"`
+	SharedReadOnly bool   `json:"shared_read_only,omitempty"`
+}
+
+func (e Environment) EffectiveSettings() EnvironmentSettings {
+	settings := e.Settings
+	if e.Kind == Machine {
+		if settings.CPUs == 0 {
+			settings.CPUs = 2
+		}
+		if settings.MemoryMiB == 0 {
+			settings.MemoryMiB = 2048
+		}
+	}
+	return settings
+}
+
+type SettingsPatch struct {
+	Description    *string
+	CPUs           *int
+	MemoryMiB      *int
+	SharedPath     *string
+	SharedReadOnly *bool
 }

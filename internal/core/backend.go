@@ -8,9 +8,13 @@ import "context"
 type State string
 
 const (
-	StateRunning State = "running"
-	StateStopped State = "stopped"
-	StateUnknown State = "unknown"
+	StateRunning  State = "running"
+	StatePaused   State = "paused"
+	StateStarting State = "starting"
+	StateStopping State = "stopping"
+	StateStopped  State = "stopped"
+	StateError    State = "error"
+	StateUnknown  State = "unknown"
 )
 
 // Status is the observed state of an Environment as reported by its Backend.
@@ -20,9 +24,9 @@ type Status struct {
 }
 
 // Backend executes the lifecycle of environments of one Kind on top of a
-// specific engine (Podman/Docker, QEMU/KVM, ...). It is OmaVM's own
+// specific integration (Distrobox, QEMU/KVM, ...). It is OmaVM's own
 // interface, not the underlying tool's API exposed directly: adapters
-// translate to and from Podman/Docker/QEMU/KVM without leaking their
+// translate to and from Distrobox/Podman/Docker/QEMU/KVM without leaking their
 // infrastructure details (commands, sockets, qcow2 paths) to the domain
 // or above.
 //
@@ -31,7 +35,7 @@ type Status struct {
 // operation it cannot support (e.g. Exec on a Machine without a guest
 // channel) — return ErrUnsupported instead.
 type Backend interface {
-	// Name identifies the backend for display and persistence (e.g. "podman", "qemu").
+	// Name identifies the backend for display and persistence (e.g. "distrobox", "qemu").
 	Name() string
 
 	Create(ctx context.Context, env Environment) error
@@ -54,4 +58,24 @@ type Previewer interface {
 	// Backend; the qemu adapter writes PPM, which gdk-pixbuf loads
 	// natively) representing the environment's current display.
 	Preview(ctx context.Context, env Environment) (imagePath string, err error)
+}
+
+// AdvancedLifecycle is an optional Backend capability for environments that
+// can be controlled beyond the common start/open/stop lifecycle.
+type AdvancedLifecycle interface {
+	Restart(ctx context.Context, env Environment) error
+	Pause(ctx context.Context, env Environment) error
+	Resume(ctx context.Context, env Environment) error
+	ForceStop(ctx context.Context, env Environment) error
+}
+
+// IntegrationReporter is an optional Backend capability that reports whether
+// host/guest integration components are actually reachable.
+type IntegrationReporter interface {
+	Integration(ctx context.Context, env Environment) (IntegrationReport, error)
+}
+
+type IntegrationReport struct {
+	GuestAgent string `json:"guest_agent"`
+	Hint       string `json:"hint,omitempty"`
 }

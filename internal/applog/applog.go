@@ -1,5 +1,5 @@
 // Package applog opens the structured logger shared by the omavm CLI
-// and the omavm-gui Experience Center.
+// and other OmaVM processes.
 //
 // /var/log is root-owned (0755 root:root) on a stock Linux install, and
 // CLAUDE.md's Security Model forbids silently elevating privileges to
@@ -27,14 +27,8 @@ const SystemLogDir = "/var/log/omavm"
 // "omavm-gui") plus a close function to flush/release the underlying
 // file.
 //
-// It deliberately does NOT call slog.SetDefault: gotk4 installs a GLib
-// log writer that forwards every GTK/GDK-internal message (including
-// noisy driver/Vulkan chatter unrelated to OmaVM) to whatever the
-// process's default slog logger is. Replacing that default with our
-// file-backed logger would flood it with library internals having
-// nothing to do with OmaVM's own behavior. Callers that don't embed a
-// GTK toolkit (the CLI) may reasonably call slog.SetDefault themselves
-// with the returned logger; the GUI must not.
+// It deliberately does NOT call slog.SetDefault; each process decides
+// whether this component logger should also become its global logger.
 func Open(component string) (*slog.Logger, func() error, error) {
 	dir, err := logDir()
 	if err != nil {

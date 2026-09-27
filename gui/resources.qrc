@@ -1,0 +1,9 @@
+<RCC>
+  <qresource prefix="/">
+    <file alias="Main.qml">Main.qml</file>
+    <file alias="EnvironmentCard.qml">EnvironmentCard.qml</file>
+    <file alias="CreateDialog.qml">CreateDialog.qml</file>
+    <file alias="SettingsDialog.qml">SettingsDialog.qml</file>
+    <file alias="Viewer.qml">Viewer.qml</file>
+  </qresource>
+</RCC>

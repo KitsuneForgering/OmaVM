@@ -10,7 +10,10 @@ build-cli:
 	go build -o bin/omavm ./cmd/omavm
 
 build-gui:
-	go build -o bin/omavm-gui ./cmd/omavm-gui
+	mkdir -p build/gui bin
+	cd build/gui && qmake6 ../../omavm-gui.pro && $(MAKE)
+	cp build/gui/omavm-gui bin/omavm-gui.new
+	mv bin/omavm-gui.new bin/omavm-gui
 
 test:
 	go test ./...
@@ -20,6 +23,7 @@ vet:
 
 fmt:
 	gofmt -w .
+	-clang-format -i gui/*.cpp gui/*.h
 
 fmt-check:
 	@fmted=$$(gofmt -l .); \
@@ -32,11 +36,11 @@ check: fmt-check vet test build
 run: build-cli
 	./bin/omavm $(ARGS)
 
-run-gui: build-gui
+run-gui: build-cli build-gui
 	./bin/omavm-gui
 
 clean:
-	rm -rf bin
+	rm -rf bin build
 
 # User-level install (no root): binaries on PATH, a .desktop entry so
 # omavm-gui shows up in the app launcher/taskbar with its own icon, and

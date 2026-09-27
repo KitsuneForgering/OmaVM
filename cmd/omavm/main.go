@@ -13,15 +13,16 @@ import (
 	"os"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/applog"
+	"github.com/KitsuneSemCalda/OmaVM/internal/backend/box"
 	"github.com/KitsuneSemCalda/OmaVM/internal/backend/container"
+	"github.com/KitsuneSemCalda/OmaVM/internal/backend/distrobox"
 	"github.com/KitsuneSemCalda/OmaVM/internal/backend/qemu"
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
 )
 
 func main() {
-	// Safe to install as the global slog default here (unlike the GUI):
-	// the CLI never loads GTK, so there's no library-internal log
-	// spam that could get redirected into this file.
+	// Safe to install as the global slog default here: the CLI owns no
+	// GUI toolkit whose internal messages could pollute this log.
 	if logger, closeLog, err := applog.Open("omavm"); err != nil {
 		fmt.Fprintln(os.Stderr, "omavm: warning: logging disabled:", err)
 	} else {
@@ -50,7 +51,8 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	svc := core.NewService(store, container.New(), qemuBackend)
+	boxBackend := box.New(distrobox.New(), container.New())
+	svc := core.NewService(store, boxBackend, qemuBackend)
 
 	ctx := context.Background()
 	cmd, rest := args[0], args[1:]
@@ -65,8 +67,22 @@ func run(args []string) error {
 		return cmdSimple(ctx, rest, "open", svc.Open)
 	case "stop":
 		return cmdSimple(ctx, rest, "stop", svc.Stop)
+	case "restart":
+		return cmdSimple(ctx, rest, "restart", svc.Restart)
+	case "pause":
+		return cmdSimple(ctx, rest, "pause", svc.Pause)
+	case "resume":
+		return cmdSimple(ctx, rest, "resume", svc.Resume)
+	case "force-stop":
+		return cmdSimple(ctx, rest, "force-stop", svc.ForceStop)
 	case "status":
 		return cmdStatus(ctx, svc, rest)
+	case "integration":
+		return cmdIntegration(ctx, svc, rest)
+	case "settings", "configure":
+		return cmdSettings(ctx, svc, rest)
+	case "preview":
+		return cmdPreview(ctx, svc, rest)
 	case "exec":
 		return cmdExec(ctx, svc, rest)
 	case "rm", "remove":
@@ -138,6 +154,116 @@ func cmdStatus(ctx context.Context, svc *core.Service, args []string) error {
 	return nil
 }
 
+func cmdPreview(ctx context.Context, svc *core.Service, args []string) error {
+	if len(args) != 1 {
+		return errors.New("preview: expected exactly one environment name")
+	}
+	path, err := svc.Preview(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
+}
+
+func cmdIntegration(ctx context.Context, svc *core.Service, args []string) error {
+	args, jsonOut := extractBoolFlag(args, "json")
+	if len(args) != 1 {
+		return errors.New("integration: expected exactly one environment name")
+	}
+	report, err := svc.Integration(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(report)
+	}
+	fmt.Printf("guest agent: %s", report.GuestAgent)
+	if report.Hint != "" {
+		fmt.Printf(" (%s)", report.Hint)
+	}
+	fmt.Println()
+	return nil
+}
+
+func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
+	if len(args) == 0 {
+		return errors.New("settings: expected an environment name")
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
+	description := fs.String("description", "", "human-readable description")
+	cpus := fs.Int("cpus", 0, "virtual CPUs (Machines only)")
+	memory := fs.Int("memory-mib", 0, "memory in MiB (Machines only)")
+	sharedPath := fs.String("shared-path", "", "host directory to share (Machines only)")
+	sharedReadOnly := fs.Bool("shared-read-only", false, "make the shared folder read-only")
+	sharedWritable := fs.Bool("shared-writable", false, "make the shared folder writable")
+	jsonOut := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("settings: unexpected positional arguments")
+	}
+	patch := core.SettingsPatch{}
+	changed := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "description":
+			patch.Description = description
+			changed = true
+		case "cpus":
+			patch.CPUs = cpus
+			changed = true
+		case "memory-mib":
+			patch.MemoryMiB = memory
+			changed = true
+		case "shared-path":
+			patch.SharedPath = sharedPath
+			changed = true
+		case "shared-read-only":
+			if *sharedWritable {
+				return
+			}
+			patch.SharedReadOnly = sharedReadOnly
+			changed = true
+		case "shared-writable":
+			patch.SharedReadOnly = new(bool)
+			changed = true
+		}
+	})
+	if *sharedReadOnly && *sharedWritable {
+		return errors.New("settings: choose only one of --shared-read-only or --shared-writable")
+	}
+	var settings core.EnvironmentSettings
+	var err error
+	if changed {
+		settings, err = svc.Configure(ctx, name, patch)
+	} else {
+		settings, err = svc.Settings(ctx, name)
+	}
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(settings)
+	}
+	if settings.Description != "" {
+		fmt.Println("description:", settings.Description)
+	}
+	if settings.CPUs != 0 {
+		fmt.Printf("hardware: %d CPUs, %d MiB memory\n", settings.CPUs, settings.MemoryMiB)
+	}
+	if settings.SharedPath != "" {
+		mode := "writable"
+		if settings.SharedReadOnly {
+			mode = "read-only"
+		}
+		fmt.Printf("shared folder: %s (%s)\n", settings.SharedPath, mode)
+	}
+	return nil
+}
+
 func cmdExec(ctx context.Context, svc *core.Service, args []string) error {
 	if len(args) < 2 {
 		return errors.New("exec: usage: omavm exec <name> -- <command> [args...]")
@@ -203,7 +329,14 @@ commands:
   start NAME                                              start an environment
   open NAME                                                start (if needed) and attach
   stop NAME                                                stop an environment
+  restart NAME                                             restart a Machine
+  pause NAME                                               pause a Machine
+  resume NAME                                              resume a Machine
+  force-stop NAME                                          immediately stop a Machine
   status NAME [--json]                                     show environment status
+  integration NAME [--json]                                check Machine guest tools
+  settings NAME [--description TEXT] [--cpus N]            view or change settings
+  preview NAME                                             capture a Machine screenshot
   exec NAME -- CMD [ARGS...]                               run a command inside a Box
   rm NAME                                                  remove an environment
   list [--json]                                            list known environments`)

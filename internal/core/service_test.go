@@ -138,6 +138,37 @@ func TestCreateStartStopStatus(t *testing.T) {
 	}
 }
 
+func TestConfigureMachineSettings(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: "system.iso", Kind: core.Machine}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := svc.Settings(ctx, "desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.CPUs != 2 || initial.MemoryMiB != 2048 {
+		t.Fatalf("unexpected defaults: %+v", initial)
+	}
+	description, cpus, memory := "Work desktop", 4, 4096
+	sharedPath := t.TempDir()
+	sharedReadOnly := true
+	updated, err := svc.Configure(ctx, "desktop", core.SettingsPatch{
+		Description:    &description,
+		CPUs:           &cpus,
+		MemoryMiB:      &memory,
+		SharedPath:     &sharedPath,
+		SharedReadOnly: &sharedReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Description != description || updated.CPUs != cpus || updated.MemoryMiB != memory || updated.SharedPath != sharedPath || !updated.SharedReadOnly {
+		t.Fatalf("settings were not persisted: %+v", updated)
+	}
+}
+
 func TestCreateDuplicateNameFails(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newTestService()

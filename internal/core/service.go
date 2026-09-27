@@ -5,6 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 // Service is the OmaVM Core: the single entry point the CLI and, later,
@@ -70,11 +73,12 @@ func (s *Service) Create(ctx context.Context, env Environment) (Environment, err
 		return Environment{}, err
 	}
 	env.ID = id
-	env.Backend = backend.Name()
 
 	if err := backend.Create(ctx, env); err != nil {
 		return Environment{}, fmt.Errorf("create %s: %w", env.Name, err)
 	}
+	// Persist ownership only after the backend completed creation.
+	env.Backend = backend.Name()
 
 	envs = append(envs, env)
 	if err := s.store.Save(envs); err != nil {
@@ -152,6 +156,50 @@ func (s *Service) Stop(ctx context.Context, name string) error {
 	return nil
 }
 
+func (s *Service) advancedLifecycle(ctx context.Context, name string) (Environment, AdvancedLifecycle, error) {
+	env, backend, err := s.resolve(ctx, name)
+	if err != nil {
+		return Environment{}, nil, err
+	}
+	lifecycle, ok := backend.(AdvancedLifecycle)
+	if !ok {
+		return Environment{}, nil, fmt.Errorf("%w: %s does not support advanced lifecycle", ErrUnsupported, name)
+	}
+	return env, lifecycle, nil
+}
+
+func (s *Service) Restart(ctx context.Context, name string) error {
+	env, lifecycle, err := s.advancedLifecycle(ctx, name)
+	if err != nil {
+		return err
+	}
+	return lifecycle.Restart(ctx, env)
+}
+
+func (s *Service) Pause(ctx context.Context, name string) error {
+	env, lifecycle, err := s.advancedLifecycle(ctx, name)
+	if err != nil {
+		return err
+	}
+	return lifecycle.Pause(ctx, env)
+}
+
+func (s *Service) Resume(ctx context.Context, name string) error {
+	env, lifecycle, err := s.advancedLifecycle(ctx, name)
+	if err != nil {
+		return err
+	}
+	return lifecycle.Resume(ctx, env)
+}
+
+func (s *Service) ForceStop(ctx context.Context, name string) error {
+	env, lifecycle, err := s.advancedLifecycle(ctx, name)
+	if err != nil {
+		return err
+	}
+	return lifecycle.ForceStop(ctx, env)
+}
+
 func (s *Service) Status(ctx context.Context, name string) (Status, error) {
 	env, backend, err := s.resolve(ctx, name)
 	if err != nil {
@@ -162,6 +210,92 @@ func (s *Service) Status(ctx context.Context, name string) (Status, error) {
 		return Status{}, fmt.Errorf("status %s: %w", name, err)
 	}
 	return status, nil
+}
+
+func (s *Service) Integration(ctx context.Context, name string) (IntegrationReport, error) {
+	env, backend, err := s.resolve(ctx, name)
+	if err != nil {
+		return IntegrationReport{}, err
+	}
+	reporter, ok := backend.(IntegrationReporter)
+	if !ok {
+		return IntegrationReport{}, fmt.Errorf("%w: %s has no guest integration report", ErrUnsupported, name)
+	}
+	return reporter.Integration(ctx, env)
+}
+
+func (s *Service) Settings(ctx context.Context, name string) (EnvironmentSettings, error) {
+	env, _, err := s.resolve(ctx, name)
+	if err != nil {
+		return EnvironmentSettings{}, err
+	}
+	return env.EffectiveSettings(), nil
+}
+
+func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatch) (EnvironmentSettings, error) {
+	envs, err := s.store.Load()
+	if err != nil {
+		return EnvironmentSettings{}, err
+	}
+	env, idx := findEnvironment(envs, name)
+	if idx == -1 {
+		return EnvironmentSettings{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+	}
+	settings := env.EffectiveSettings()
+	if patch.Description != nil {
+		settings.Description = strings.TrimSpace(*patch.Description)
+		if len(settings.Description) > 500 {
+			return EnvironmentSettings{}, fmt.Errorf("description must be at most 500 characters")
+		}
+	}
+	if patch.CPUs != nil || patch.MemoryMiB != nil {
+		if env.Kind != Machine {
+			return EnvironmentSettings{}, fmt.Errorf("%w: CPU and memory settings only apply to Machines", ErrUnsupported)
+		}
+	}
+	if patch.SharedPath != nil || patch.SharedReadOnly != nil {
+		if env.Kind != Machine {
+			return EnvironmentSettings{}, fmt.Errorf("%w: shared folders only apply to Machines", ErrUnsupported)
+		}
+	}
+	if patch.SharedPath != nil {
+		path := strings.TrimSpace(*patch.SharedPath)
+		if path != "" {
+			path, err = filepath.Abs(path)
+			if err != nil {
+				return EnvironmentSettings{}, fmt.Errorf("resolve shared folder: %w", err)
+			}
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				return EnvironmentSettings{}, fmt.Errorf("shared folder: %w", statErr)
+			}
+			if !info.IsDir() {
+				return EnvironmentSettings{}, fmt.Errorf("shared folder must be a directory")
+			}
+		}
+		settings.SharedPath = path
+	}
+	if patch.SharedReadOnly != nil {
+		settings.SharedReadOnly = *patch.SharedReadOnly
+	}
+	if patch.CPUs != nil {
+		if *patch.CPUs < 1 || *patch.CPUs > 64 {
+			return EnvironmentSettings{}, fmt.Errorf("cpus must be between 1 and 64")
+		}
+		settings.CPUs = *patch.CPUs
+	}
+	if patch.MemoryMiB != nil {
+		if *patch.MemoryMiB < 256 || *patch.MemoryMiB > 262144 {
+			return EnvironmentSettings{}, fmt.Errorf("memory-mib must be between 256 and 262144")
+		}
+		settings.MemoryMiB = *patch.MemoryMiB
+	}
+	env.Settings = settings
+	envs[idx] = env
+	if err := s.store.Save(envs); err != nil {
+		return EnvironmentSettings{}, err
+	}
+	return settings, nil
 }
 
 func (s *Service) Exec(ctx context.Context, name string, args []string) error {

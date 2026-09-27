@@ -1,0 +1,18 @@
+-- Opt-in Hyprland window rule for OmaVM's Machine display viewer
+-- (omavm-gui --viewer, launched by `omavm open`/`Open` on a Machine).
+--
+-- Not loaded automatically: like OmaVM's Quickshell plugin
+-- (contrib/dev.omavm.bar), this only takes effect once you explicitly
+-- require it from your own Hyprland config, e.g. by adding to
+-- ~/.config/hypr/windows.lua:
+--
+--   require("omavm-viewer")
+--
+-- (with this file's directory added to Hyprland's Lua package.path, or
+-- copied straight into ~/.config/hypr/). See README.md for the full step.
+--
+-- Places the viewer on its own special workspace — guaranteed empty by
+-- construction, no "find an unused workspace" heuristic needed — and
+-- fullscreens it there, so a Machine's display always opens the same
+-- way instead of tiling into whatever workspace you happened to be on.
+o.window("dev.omavm.viewer", { workspace = "special:omavm", fullscreen = true })
