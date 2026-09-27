@@ -139,5 +139,5 @@ private slots:
   }
 };
 
-QTEST_MAIN(TerminalTest)
+QTEST_GUILESS_MAIN(TerminalTest)
 #include "terminal_test.moc"
