@@ -1,5 +1,7 @@
 #include "vncview.h"
 
+#include <QCursor>
+#include <QHoverEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -73,7 +75,13 @@ quint32 keysymFor(QKeyEvent *event) {
 
 VncView::VncView(QQuickItem *parent) : QQuickPaintedItem(parent) {
   setAcceptedMouseButtons(Qt::AllButtons);
-  setAcceptHoverEvents(false);
+  // Hover (not just drag) moves the remote pointer, and the host's own
+  // cursor is hidden over the view: the guest already draws its own
+  // cursor into the framebuffer pixels we render (we don't request VNC's
+  // cursor pseudo-encoding), so showing the host arrow on top as well
+  // just gives two visibly independent cursors.
+  setAcceptHoverEvents(true);
+  setCursor(QCursor(Qt::BlankCursor));
   setFlag(QQuickItem::ItemAcceptsInputMethod, true);
   connect(&m_client, &VncClient::frameUpdated, this,
           [this] { update(); });
@@ -131,6 +139,10 @@ void VncView::mouseReleaseEvent(QMouseEvent *event) {
 }
 
 void VncView::mouseMoveEvent(QMouseEvent *event) {
+  sendPointer(event->position(), m_buttonMask);
+}
+
+void VncView::hoverMoveEvent(QHoverEvent *event) {
   sendPointer(event->position(), m_buttonMask);
 }
 
