@@ -1,7 +1,7 @@
 # Maintainer: Arthur Augusto <arthuramagalhaes1312@gmail.com>
 
 pkgname=omavm
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="Create, run and manage Boxes and Machines on Omarchy"
 arch=('x86_64')
@@ -17,7 +17,7 @@ optdepends=('distrobox: integrated Development Box environments'
             'xdg-terminal-exec: attach a terminal when opening a Box from the GUI')
 install=omavm.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('842408d959af16342824ee55d65e3b780e8411a69ffff391c24d531407fc08da')
+sha256sums=('SKIP')
 
 build() {
   cd "OmaVM-$pkgver"
