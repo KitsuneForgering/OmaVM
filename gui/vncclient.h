@@ -25,8 +25,15 @@ public:
 
   Q_INVOKABLE void sendPointerEvent(int buttonMask, int x, int y);
   Q_INVOKABLE void sendKeyEvent(bool down, quint32 keysym);
+  void resizeDesktop(int width, int height);
+  void setClipboardEnabled(bool enabled);
+  void sendClipboard(const QString &text);
 
 signals:
+  void clipboardReady();
+  void clipboardReceived(const QString &text);
+  void clipboardError(const QString &message);
+  void resizeSupported();
   void frameUpdated();
   void errorOccurred(const QString &message);
 
@@ -42,6 +49,7 @@ private:
     FramebufferUpdateHeader,
     RectHeader,
     RectData,
+    DesktopScreens,
     BellOrSkip,
     ServerCutTextHeader,
     ServerCutTextData,
@@ -53,6 +61,10 @@ private:
   QByteArray take(qint64 n);
   void fail(const QString &message);
   void requestUpdate(bool incremental);
+  bool resizeFrame(int width, int height);
+  void finishRect();
+  void clipboardMessage(quint32 flags, const QByteArray &payload = {});
+  void receiveClipboard(const QByteArray &data);
 
   QLocalSocket m_socket;
   QByteArray m_buffer;
@@ -71,4 +83,11 @@ private:
   qint32 m_rectEncoding = 0;
 
   QImage m_frame;
+  bool m_ready = false;
+  bool m_resizeSupported = false;
+  bool m_failed = false;
+  bool m_extendedClipboard = false;
+  bool m_clipboardEnabled = false;
+  bool m_clipboardSupported = false;
+  QByteArray m_clipboardText;
 };

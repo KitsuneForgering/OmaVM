@@ -9,6 +9,8 @@ Pane {
     signal removeRequested(string name)
     signal forceStopRequested(string name)
     signal settingsRequested(var environment)
+    signal snapshotsRequested(var environment)
+    signal appsRequested(var environment)
     readonly property bool running: environment.status === "running"
     readonly property bool paused: environment.status === "paused"
     readonly property bool stopped: environment.status === "stopped"
@@ -51,12 +53,23 @@ Pane {
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 5
-            Label {
+            RowLayout {
                 Layout.fillWidth: true
-                text: card.environment.name
-                font.pixelSize: 19
-                font.weight: Font.DemiBold
-                elide: Text.ElideRight
+                spacing: 8
+                Rectangle {
+                    visible: !!(card.environment.settings && card.environment.settings.color)
+                    implicitWidth: 10
+                    implicitHeight: 10
+                    radius: 5
+                    color: card.environment.settings ? card.environment.settings.color || "transparent" : "transparent"
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: card.environment.name
+                    font.pixelSize: 19
+                    font.weight: Font.DemiBold
+                    elide: Text.ElideRight
+                }
             }
             Label {
                 Layout.fillWidth: true
@@ -140,6 +153,8 @@ Pane {
                 MenuItem { text: qsTr("Shut Down"); enabled: card.active && !card.transitioning; onTriggered: backend.stop(card.environment.name) }
                 MenuItem { text: qsTr("Force Stop…"); visible: card.environment.kind === "machine"; enabled: card.active; onTriggered: card.forceStopRequested(card.environment.name) }
                 MenuSeparator {}
+                MenuItem { text: qsTr("Snapshots…"); visible: card.environment.kind === "machine"; onTriggered: card.snapshotsRequested(card.environment) }
+                MenuItem { text: qsTr("Applications…"); visible: card.environment.kind !== "machine"; onTriggered: card.appsRequested(card.environment) }
                 MenuItem { text: qsTr("Settings…"); onTriggered: card.settingsRequested(card.environment) }
                 MenuItem { text: qsTr("Delete…"); onTriggered: card.removeRequested(card.environment.name) }
             }

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import QtQuick.Controls
 import OmaVM 1.0
 
 Window {
@@ -18,15 +19,32 @@ Window {
     // end up NOT fullscreen. Without that opt-in rule, this just opens as
     // an ordinary window — see README.md.
 
+    // Clipboard sharing is a Machine Settings toggle (opt-out, on by
+    // default — see gui/SettingsDialog.qml), not a per-window checkbox:
+    // the user shouldn't have to remember to re-enable it every time
+    // they open the viewer. main.cpp passes the Machine's current
+    // setting in as vncShareClipboard.
     VncView {
         id: view
         anchors.fill: parent
         focus: true
+        shareClipboard: vncShareClipboard
+        onClipboardWarning: message => { clipboardNote.text = message; clipboardNote.visible = true }
         socketPath: vncSocketPath
         onConnectionFailed: message => {
             errorLabel.text = message
             errorLabel.visible = true
         }
+    }
+
+    Label {
+        id: clipboardNote
+        visible: false
+        anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 8 }
+        width: Math.min(parent.width - 32, 600)
+        wrapMode: Text.Wrap
+        color: "white"
+        background: Rectangle { color: "#333333" }
     }
 
     Text {

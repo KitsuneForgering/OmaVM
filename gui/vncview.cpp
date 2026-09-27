@@ -1,10 +1,14 @@
 #include "vncview.h"
 
+#include <QClipboard>
 #include <QCursor>
+#include <QGuiApplication>
 #include <QHoverEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QQuickWindow>
+#include <QScopedValueRollback>
 #include <QWheelEvent>
 
 namespace {
@@ -74,6 +78,24 @@ quint32 keysymFor(QKeyEvent *event) {
 } // namespace
 
 VncView::VncView(QQuickItem *parent) : QQuickPaintedItem(parent) {
+  connect(QGuiApplication::clipboard(), &QClipboard::dataChanged, this,
+          &VncView::syncClipboard);
+  connect(&m_client, &VncClient::clipboardReady, this, &VncView::syncClipboard);
+  connect(&m_client, &VncClient::clipboardError, this,
+          &VncView::clipboardWarning);
+  connect(&m_client, &VncClient::clipboardReceived, this,
+          [this](const QString &text) {
+            if (!m_shareClipboard || !window() || !window()->isActive())
+              return;
+            if (QGuiApplication::clipboard()->text() == text)
+              return;
+            QScopedValueRollback<bool> receiving(m_receivingClipboard, true);
+            QGuiApplication::clipboard()->setText(text);
+          });
+  connect(this, &QQuickItem::windowChanged, this, [this](QQuickWindow *window) {
+    if (window)
+      connect(window, &QWindow::activeChanged, this, &VncView::syncClipboard);
+  });
   setAcceptedMouseButtons(Qt::AllButtons);
   // Hover (not just drag) moves the remote pointer, and the host's own
   // cursor is hidden over the view: the guest already draws its own
@@ -83,10 +105,49 @@ VncView::VncView(QQuickItem *parent) : QQuickPaintedItem(parent) {
   setAcceptHoverEvents(true);
   setCursor(QCursor(Qt::BlankCursor));
   setFlag(QQuickItem::ItemAcceptsInputMethod, true);
-  connect(&m_client, &VncClient::frameUpdated, this,
-          [this] { update(); });
+  connect(&m_client, &VncClient::frameUpdated, this, [this] { update(); });
   connect(&m_client, &VncClient::errorOccurred, this,
           &VncView::connectionFailed);
+  m_resizeTimer.setSingleShot(true);
+  m_resizeTimer.setInterval(250);
+  connect(&m_resizeTimer, &QTimer::timeout, this, [this] {
+    m_client.resizeDesktop(qRound(width()), qRound(height()));
+  });
+  connect(&m_client, &VncClient::resizeSupported, this,
+          [this] { m_resizeTimer.start(); });
+}
+
+void VncView::setShareClipboard(bool enabled) {
+  if (m_shareClipboard == enabled)
+    return;
+  m_shareClipboard = enabled;
+  emit shareClipboardChanged();
+  syncClipboard();
+}
+
+void VncView::syncClipboard() {
+  const bool active = m_shareClipboard && window() && window()->isActive();
+  m_client.setClipboardEnabled(active);
+  if (active && !m_receivingClipboard)
+    m_client.sendClipboard(QGuiApplication::clipboard()->text());
+}
+
+void VncView::geometryChange(const QRectF &newGeometry,
+                             const QRectF &oldGeometry) {
+  QQuickPaintedItem::geometryChange(newGeometry, oldGeometry);
+  if (newGeometry.size() != oldGeometry.size())
+    m_resizeTimer.start();
+}
+
+QRectF VncView::displayRect() const {
+  const QImage frame = m_client.frame();
+  if (frame.isNull())
+    return {};
+  QSizeF size = frame.size();
+  size.scale(boundingRect().size(), Qt::KeepAspectRatio);
+  return QRectF(
+      QPointF((width() - size.width()) / 2, (height() - size.height()) / 2),
+      size);
 }
 
 void VncView::setSocketPath(const QString &path) {
@@ -100,11 +161,12 @@ void VncView::setSocketPath(const QString &path) {
 
 void VncView::paint(QPainter *painter) {
   const QImage frame = m_client.frame();
+  painter->fillRect(boundingRect(), Qt::black);
   if (frame.isNull()) {
     painter->fillRect(boundingRect(), Qt::black);
     return;
   }
-  painter->drawImage(boundingRect(), frame);
+  painter->drawImage(displayRect(), frame);
 }
 
 int VncView::currentButtonMask(Qt::MouseButtons buttons) const {
@@ -122,8 +184,11 @@ void VncView::sendPointer(const QPointF &localPos, int buttonMask) {
   const QImage frame = m_client.frame();
   if (frame.isNull() || width() <= 0 || height() <= 0)
     return;
-  const int x = int(localPos.x() * frame.width() / width());
-  const int y = int(localPos.y() * frame.height() / height());
+  const QRectF rect = displayRect();
+  if (rect.isEmpty())
+    return;
+  const int x = int((localPos.x() - rect.x()) * frame.width() / rect.width());
+  const int y = int((localPos.y() - rect.y()) * frame.height() / rect.height());
   m_client.sendPointerEvent(buttonMask, x, y);
 }
 

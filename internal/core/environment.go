@@ -6,6 +6,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // EnvironmentKind distinguishes a userspace-only Box from a Machine with
@@ -78,20 +79,47 @@ func (k *EnvironmentKind) UnmarshalJSON(data []byte) error {
 // implementation detail that higher layers may display but never branch
 // product behavior on beyond what Kind already implies.
 type Environment struct {
-	ID       string              `json:"id"`
-	Name     string              `json:"name"`
-	Image    string              `json:"image"`
-	Backend  string              `json:"backend"`
-	Kind     EnvironmentKind     `json:"kind"`
-	Settings EnvironmentSettings `json:"settings,omitempty"`
+	ID        string              `json:"id"`
+	Name      string              `json:"name"`
+	Image     string              `json:"image"`
+	Backend   string              `json:"backend"`
+	Kind      EnvironmentKind     `json:"kind"`
+	Settings  EnvironmentSettings `json:"settings,omitempty"`
+	Snapshots []Snapshot          `json:"snapshots,omitempty"`
 }
 
+// Snapshot is a point-in-time state of an Environment the user can return
+// to. Label is the significant, user-facing text (UX Principle #9:
+// snapshots are never presented by internal ID); ID is the technical tag
+// the owning Backend uses to address it and is exposed in JSON output for
+// automation, never as the primary way a human identifies a snapshot.
+type Snapshot struct {
+	ID        string    `json:"id"`
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// defaultSnapshotLimit caps automatic snapshot history per Environment
+// when SnapshotLimit isn't set, so history doesn't grow unbounded (UX
+// Principle #9).
+const defaultSnapshotLimit = 10
+
 type EnvironmentSettings struct {
+	DisconnectISO  bool   `json:"disconnect_iso,omitempty"`
 	Description    string `json:"description,omitempty"`
 	CPUs           int    `json:"cpus,omitempty"`
 	MemoryMiB      int    `json:"memory_mib,omitempty"`
 	SharedPath     string `json:"shared_path,omitempty"`
 	SharedReadOnly bool   `json:"shared_read_only,omitempty"`
+	SnapshotLimit  int    `json:"snapshot_limit,omitempty"`
+	Color          string `json:"color,omitempty"`
+	// ClipboardDisabled and TravelModeDisabled are stored inverted so the
+	// Go zero value (false) means "enabled" — both are opt-out Machine
+	// behaviors: on by default, persisted per Machine like every other
+	// setting here, never a per-session UI checkbox the user has to
+	// remember to re-enable.
+	ClipboardDisabled  bool `json:"clipboard_disabled,omitempty"`
+	TravelModeDisabled bool `json:"travel_mode_disabled,omitempty"`
 }
 
 func (e Environment) EffectiveSettings() EnvironmentSettings {
@@ -104,13 +132,35 @@ func (e Environment) EffectiveSettings() EnvironmentSettings {
 			settings.MemoryMiB = 2048
 		}
 	}
+	if settings.SnapshotLimit == 0 {
+		settings.SnapshotLimit = defaultSnapshotLimit
+	}
 	return settings
 }
 
+// EnvironmentColors is the fixed palette Color must come from — an open
+// hex value would fight the Omarchy theme instead of complementing it
+// (CLAUDE.md: "não crie um sistema de temas próprio").
+var EnvironmentColors = []string{"red", "orange", "yellow", "green", "blue", "purple", "gray"}
+
+func validColor(c string) bool {
+	for _, v := range EnvironmentColors {
+		if v == c {
+			return true
+		}
+	}
+	return false
+}
+
 type SettingsPatch struct {
+	DisconnectISO  *bool
 	Description    *string
 	CPUs           *int
 	MemoryMiB      *int
 	SharedPath     *string
 	SharedReadOnly *bool
+	SnapshotLimit  *int
+	Color          *string
+	ShareClipboard *bool
+	TravelMode     *bool
 }

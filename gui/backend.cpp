@@ -1,4 +1,5 @@
 #include "backend.h"
+#include "colorstoml.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -7,7 +8,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
-#include <QTextStream>
 
 Backend::Backend(QObject *parent) : QObject(parent) {
   connect(&m_themeWatcher, &QFileSystemWatcher::fileChanged, this,
@@ -204,15 +204,24 @@ void Backend::forceStop(const QString &name) {
 }
 void Backend::configure(const QString &name, const QString &description,
                         int cpus, int memoryMiB, bool machine,
-                        const QString &sharedPath, bool sharedReadOnly) {
-  QStringList arguments{QStringLiteral("settings"), name,
-                        QStringLiteral("--description"), description};
+                        const QString &sharedPath, bool sharedReadOnly,
+                        bool disconnectISO, const QString &color,
+                        bool shareClipboard, bool travelMode) {
+  QStringList arguments{QStringLiteral("settings"),      name,
+                        QStringLiteral("--description"), description,
+                        QStringLiteral("--color"),       color};
   if (machine) {
+    arguments << (disconnectISO ? QStringLiteral("--disconnect-iso=true")
+                                : QStringLiteral("--disconnect-iso=false"));
     arguments << QStringLiteral("--cpus") << QString::number(cpus)
               << QStringLiteral("--memory-mib") << QString::number(memoryMiB)
               << QStringLiteral("--shared-path") << sharedPath;
     arguments << (sharedReadOnly ? QStringLiteral("--shared-read-only")
                                  : QStringLiteral("--shared-writable"));
+    arguments << (shareClipboard ? QStringLiteral("--share-clipboard=true")
+                                 : QStringLiteral("--share-clipboard=false"));
+    arguments << (travelMode ? QStringLiteral("--travel-mode=true")
+                             : QStringLiteral("--travel-mode=false"));
   }
   run(arguments);
 }
@@ -220,18 +229,109 @@ void Backend::remove(const QString &name) {
   run({QStringLiteral("remove"), name});
 }
 
-void Backend::open(const QString &name, const QString &kind) {
-  if (kind == QStringLiteral("box")) {
-    const QString terminal =
-        QStandardPaths::findExecutable(QStringLiteral("xdg-terminal-exec"));
-    if (terminal.isEmpty()) {
-      emit message(
-          QStringLiteral("xdg-terminal-exec is required to open a Box"), true);
+void Backend::runForApps(const QStringList &arguments, const QString &name) {
+  if (m_busy)
+    return;
+  setBusy(true);
+  auto *process = new QProcess(this);
+  connect(process, &QProcess::errorOccurred, this,
+          [this, process](QProcess::ProcessError error) {
+            if (error != QProcess::FailedToStart)
+              return;
+            setBusy(false);
+            emit message(QStringLiteral("Could not start omavm: ") +
+                             process->errorString(),
+                         true);
+            process->deleteLater();
+          });
+  connect(process, &QProcess::finished, this, [this, process, name](int code) {
+    const QString errorText =
+        QString::fromUtf8(process->readAllStandardError()).trimmed();
+    process->deleteLater();
+    setBusy(false);
+    if (code != 0) {
+      emit message(errorText.isEmpty() ? QStringLiteral("Action failed")
+                                       : errorText,
+                   true);
       return;
     }
-    QProcess::startDetached(terminal, {QStringLiteral("--title=") + name,
-                                       QStringLiteral("--"), cliPath(),
-                                       QStringLiteral("open"), name});
+    refreshApps(name);
+  });
+  process->start(cliPath(), arguments);
+}
+
+void Backend::refreshApps(const QString &name) {
+  if (m_busy)
+    return;
+  setBusy(true);
+  auto *process = new QProcess(this);
+  connect(process, &QProcess::errorOccurred, this,
+          [this, process](QProcess::ProcessError error) {
+            if (error != QProcess::FailedToStart)
+              return;
+            setBusy(false);
+            emit message(QStringLiteral("Could not start omavm: ") +
+                             process->errorString(),
+                         true);
+            process->deleteLater();
+          });
+  connect(process, &QProcess::finished, this, [this, process](int code) {
+    const QByteArray output = process->readAllStandardOutput();
+    const QString errorText =
+        QString::fromUtf8(process->readAllStandardError()).trimmed();
+    process->deleteLater();
+    setBusy(false);
+    if (code != 0) {
+      emit message(errorText.isEmpty()
+                       ? QStringLiteral("Could not list applications")
+                       : errorText,
+                   true);
+      return;
+    }
+    const QJsonDocument document = QJsonDocument::fromJson(output);
+    QVariantList next;
+    for (const QJsonValue &value : document.array())
+      next.append(value.toObject().toVariantMap());
+    m_apps = next;
+    emit appsChanged();
+  });
+  process->start(cliPath(),
+                 {QStringLiteral("apps"), name, QStringLiteral("--json")});
+}
+
+void Backend::exportApp(const QString &name, const QString &id) {
+  runForApps({QStringLiteral("apps"), name, QStringLiteral("--export"), id},
+             name);
+}
+
+void Backend::unexportApp(const QString &name, const QString &id) {
+  runForApps({QStringLiteral("apps"), name, QStringLiteral("--unexport"), id},
+             name);
+}
+
+void Backend::createSnapshot(const QString &name, const QString &label) {
+  run({QStringLiteral("snapshot"), QStringLiteral("create"), name,
+       QStringLiteral("--label"), label});
+}
+void Backend::goToSnapshot(const QString &name, const QString &id) {
+  run({QStringLiteral("snapshot"), QStringLiteral("go-to"), name, id});
+}
+void Backend::removeSnapshot(const QString &name, const QString &id) {
+  run({QStringLiteral("snapshot"), QStringLiteral("remove"), name, id});
+}
+
+void Backend::open(const QString &name, const QString &kind) {
+  if (kind == QStringLiteral("box")) {
+    // Relaunch this same omavm-gui binary in its embedded terminal mode
+    // (gui/main.cpp's --terminal, gui/TerminalViewer.qml) — same pattern
+    // as a Machine's Open spawning omavm-gui --viewer
+    // (internal/backend/qemu/qemu.go), so a Box opens inside OmaVM's own
+    // window instead of whatever external terminal emulator the user has
+    // configured.
+    QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                            {QStringLiteral("--terminal"), name,
+                             QStringLiteral("--title"),
+                             name + QStringLiteral(" — OmaVM")});
     return;
   }
   run({QStringLiteral("open"), name});
@@ -253,41 +353,22 @@ void Backend::loadTheme() {
   m_themeGreen = QStringLiteral("#65a765");
   m_themeRed = QStringLiteral("#d35f5f");
 
-  QFile file(path);
-  if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    QTextStream in(&file);
-    while (!in.atEnd()) {
-      const QString line = in.readLine().trimmed();
-      const qsizetype equals = line.indexOf(QLatin1Char('='));
-      if (line.isEmpty() || line.startsWith(QLatin1Char('#')) || equals < 0)
-        continue;
-      const QString key = line.left(equals).trimmed();
-      QString value = line.mid(equals + 1).trimmed();
-      if (value.size() >= 2 && (value.front() == QLatin1Char('"') ||
-                                value.front() == QLatin1Char('\'')))
-        value = value.mid(1, value.size() - 2);
-      if (key == QStringLiteral("mode"))
-        m_themeMode = value;
-      else if (key == QStringLiteral("background"))
-        m_themeBackground = value;
-      else if (key == QStringLiteral("foreground"))
-        m_themeForeground = value;
-      else if (key == QStringLiteral("accent"))
-        m_themeAccent = value;
-      else if (key == QStringLiteral("selection"))
-        m_themeSelection = value;
-      else if (key == QStringLiteral("muted"))
-        m_themeMuted = value;
-      else if (key == QStringLiteral("lighter_background"))
-        m_themeSurface = value;
-      else if (key == QStringLiteral("dark_background"))
-        m_themeDarkSurface = value;
-      else if (key == QStringLiteral("green"))
-        m_themeGreen = value;
-      else if (key == QStringLiteral("red"))
-        m_themeRed = value;
-    }
-  }
+  const QHash<QString, QString> values = loadColorsToml(path);
+  auto take = [&values](const QString &key, QString &target) {
+    const auto it = values.constFind(key);
+    if (it != values.constEnd())
+      target = it.value();
+  };
+  take(QStringLiteral("mode"), m_themeMode);
+  take(QStringLiteral("background"), m_themeBackground);
+  take(QStringLiteral("foreground"), m_themeForeground);
+  take(QStringLiteral("accent"), m_themeAccent);
+  take(QStringLiteral("selection"), m_themeSelection);
+  take(QStringLiteral("muted"), m_themeMuted);
+  take(QStringLiteral("lighter_background"), m_themeSurface);
+  take(QStringLiteral("dark_background"), m_themeDarkSurface);
+  take(QStringLiteral("green"), m_themeGreen);
+  take(QStringLiteral("red"), m_themeRed);
 
   const QStringList watched =
       m_themeWatcher.files() + m_themeWatcher.directories();

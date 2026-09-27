@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +90,16 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 		}
 	}
 	settings := env.EffectiveSettings()
+	if !settings.TravelModeDisabled && env.Settings.CPUs == 0 && onBattery() {
+		// Travel Mode: the host is unplugged and the user hasn't pinned
+		// CPUs explicitly, so trim this session's allocation — never the
+		// persisted setting — instead of running full tilt on battery.
+		// Real host automation, not a manual toggle (UX Principles #4/#7).
+		if reduced := settings.CPUs / 2; reduced >= 1 {
+			settings.CPUs = reduced
+		}
+		slog.Info("travel mode: reduced CPU allocation while on battery", "machine", env.Name, "cpus", settings.CPUs)
+	}
 	virtiofsRunning := false
 	if settings.SharedPath != "" {
 		if err := b.startVirtiofs(ctx, env.Name, settings); err != nil {
@@ -111,6 +122,8 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 		"-display", "egl-headless",
 		"-vnc", "unix:" + vnc,
 		"-device", "virtio-serial-pci",
+		"-chardev", "qemu-vdagent,id=clipboard,clipboard=on,mouse=off",
+		"-device", "virtserialport,chardev=clipboard,name=com.redhat.spice.0",
 		"-chardev", "socket,path=" + b.qgaPath(env.Name) + ",server=on,wait=off,id=qga0",
 		"-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
 		"-audiodev", "pipewire,id=audio0",
@@ -126,8 +139,8 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 			"-chardev", "socket,id=virtiofs,path="+b.virtiofsPath(env.Name),
 			"-device", "vhost-user-fs-pci,chardev=virtiofs,tag=omavm-share")
 	}
-	if env.Image != "" {
-		args = append(args, "-cdrom", env.Image, "-boot", "d")
+	if env.Image != "" && !settings.DisconnectISO {
+		args = append(args, "-cdrom", env.Image, "-boot", "order=cd,menu=on")
 	}
 
 	out, err := runOutput(ctx, "qemu-system-x86_64", args...)
@@ -218,9 +231,11 @@ func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 	// Detached on purpose: the viewer is a GUI the user drives for a
 	// while, not something that should die when this call's context
 	// ends (same reasoning as the GUI's own openInTerminal).
+	settings := env.EffectiveSettings()
 	cmd := exec.CommandContext(context.Background(), viewer,
 		"--viewer", b.vncPath(env.Name),
-		"--title", env.Name+" — OmaVM")
+		"--title", env.Name+" — OmaVM",
+		"--share-clipboard", strconv.FormatBool(!settings.ClipboardDisabled))
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch VNC viewer: %w", err)
 	}
@@ -261,6 +276,74 @@ func (b *Backend) Preview(ctx context.Context, env core.Environment) (string, er
 	return dst, nil
 }
 
+// CreateSnapshot captures the Machine's current state as an internal
+// qcow2 snapshot tagged with tag. Stopped Machines have no QMP monitor
+// to talk to, so qemu-img operates on the qcow2 file directly; running
+// Machines go through QMP's HMP savevm passthrough instead.
+func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) error {
+	running, err := b.isRunning(env.Name)
+	if err != nil {
+		return err
+	}
+	if !running {
+		out, err := runOutput(ctx, "qemu-img", "snapshot", "-c", tag, b.diskPath(env.Name))
+		if err != nil {
+			return fmt.Errorf("qemu-img snapshot -c: %w: %s", err, out)
+		}
+		return nil
+	}
+	if _, err := qmpHumanMonitorCommand(b.qmpPath(env.Name), "savevm "+tag); err != nil {
+		return fmt.Errorf("savevm: %w", err)
+	}
+	return nil
+}
+
+// GoToSnapshot restores a prior CreateSnapshot capture. A running Machine
+// is paused around the restore (QMP stop/loadvm/cont): loadvm replaces
+// the entire machine state including RAM, which is not a supported
+// operation against a still-executing vCPU.
+func (b *Backend) GoToSnapshot(ctx context.Context, env core.Environment, tag string) error {
+	running, err := b.isRunning(env.Name)
+	if err != nil {
+		return err
+	}
+	if !running {
+		out, err := runOutput(ctx, "qemu-img", "snapshot", "-a", tag, b.diskPath(env.Name))
+		if err != nil {
+			return fmt.Errorf("qemu-img snapshot -a: %w: %s", err, out)
+		}
+		return nil
+	}
+	if err := qmpCommand(b.qmpPath(env.Name), "stop"); err != nil {
+		return fmt.Errorf("pause machine before restoring snapshot: %w", err)
+	}
+	if _, err := qmpHumanMonitorCommand(b.qmpPath(env.Name), "loadvm "+tag); err != nil {
+		return fmt.Errorf("loadvm: %w", err)
+	}
+	if err := qmpCommand(b.qmpPath(env.Name), "cont"); err != nil {
+		return fmt.Errorf("resume machine after restoring snapshot: %w", err)
+	}
+	return nil
+}
+
+func (b *Backend) RemoveSnapshot(ctx context.Context, env core.Environment, tag string) error {
+	running, err := b.isRunning(env.Name)
+	if err != nil {
+		return err
+	}
+	if !running {
+		out, err := runOutput(ctx, "qemu-img", "snapshot", "-d", tag, b.diskPath(env.Name))
+		if err != nil {
+			return fmt.Errorf("qemu-img snapshot -d: %w: %s", err, out)
+		}
+		return nil
+	}
+	if _, err := qmpHumanMonitorCommand(b.qmpPath(env.Name), "delvm "+tag); err != nil {
+		return fmt.Errorf("delvm: %w", err)
+	}
+	return nil
+}
+
 func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 	running, err := b.isRunning(env.Name)
 	if err != nil {
@@ -276,12 +359,17 @@ func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 		}
 	}
 
-	// Ask the guest to shut down through ACPI first. If it does not exit in
-	// time (for example, an installer has no ACPI handler), force-stop QEMU.
-	if err := qmpCommand(b.qmpPath(env.Name), "system_powerdown"); err == nil {
+	// A slow guest must never turn an ordinary shutdown into a power cut.
+	if err := qmpCommand(b.qmpPath(env.Name), "system_powerdown"); err != nil {
+		return fmt.Errorf("request shutdown: %w (use Force Stop only if necessary; unsaved work may be lost)", err)
+	} else {
 		deadline := time.Now().Add(gracefulShutdownTimeout)
 		for time.Now().Before(deadline) {
-			if running, _ := b.isRunning(env.Name); !running {
+			running, err := b.isRunning(env.Name)
+			if err != nil {
+				return err
+			}
+			if !running {
 				_ = b.stopVirtiofs(env.Name)
 				return nil
 			}
@@ -292,7 +380,7 @@ func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 			}
 		}
 	}
-	return b.ForceStop(ctx, env)
+	return fmt.Errorf("shutdown is taking longer than expected; the machine was left running to protect your work. Wait or use Force Stop if necessary")
 }
 
 func (b *Backend) Restart(ctx context.Context, env core.Environment) error {
@@ -301,17 +389,10 @@ func (b *Backend) Restart(ctx context.Context, env core.Environment) error {
 	} else if !running {
 		return b.Start(ctx, env)
 	}
-	status, err := qmpStatus(b.qmpPath(env.Name))
-	if err != nil {
+	if err := b.Stop(ctx, env); err != nil {
 		return err
 	}
-	if err := qmpCommand(b.qmpPath(env.Name), "system_reset"); err != nil {
-		return err
-	}
-	if status == "paused" || status == "suspended" {
-		return qmpCommand(b.qmpPath(env.Name), "cont")
-	}
-	return nil
+	return b.Start(ctx, env)
 }
 
 func (b *Backend) Pause(ctx context.Context, env core.Environment) error {

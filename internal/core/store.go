@@ -1,18 +1,52 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
+	"time"
 )
 
 // Store persists the set of known environments. There is no omavmd yet,
 // so each CLI invocation is a fresh process: state must round-trip
 // through disk rather than live in memory.
 type Store interface {
+	Lock(context.Context) (func(), error)
 	Load() ([]Environment, error)
 	Save([]Environment) error
+}
+
+// Lock serializes read-modify-write operations across CLI processes.
+// ponytail: one registry lock; use per-environment locks if contention matters.
+func (s *FileStore) Lock(ctx context.Context) (func(), error) {
+	f, err := os.OpenFile(s.Path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			f.Close()
+			return nil, err
+		}
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { f.Close() }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			f.Close()
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			f.Close()
+			return nil, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 }
 
 // FileStore is a Store backed by a single JSON file.

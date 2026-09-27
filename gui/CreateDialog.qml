@@ -12,6 +12,7 @@ Dialog {
     width: Math.min(parent.width - 32, 680)
     height: Math.min(parent.height - 32, 540)
     padding: 24
+    Overlay.modal: ThemeScrim {}
 
     property int step: 0
     property bool machine: true

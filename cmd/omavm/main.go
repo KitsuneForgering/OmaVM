@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/applog"
 	"github.com/KitsuneSemCalda/OmaVM/internal/backend/box"
@@ -83,6 +84,10 @@ func run(args []string) error {
 		return cmdSettings(ctx, svc, rest)
 	case "preview":
 		return cmdPreview(ctx, svc, rest)
+	case "snapshot":
+		return cmdSnapshot(ctx, svc, rest)
+	case "apps":
+		return cmdApps(ctx, svc, rest)
 	case "exec":
 		return cmdExec(ctx, svc, rest)
 	case "rm", "remove":
@@ -166,6 +171,116 @@ func cmdPreview(ctx context.Context, svc *core.Service, args []string) error {
 	return nil
 }
 
+func cmdSnapshot(ctx context.Context, svc *core.Service, args []string) error {
+	if len(args) == 0 {
+		return errors.New("snapshot: expected a subcommand (create, list, go-to, remove)")
+	}
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "create":
+		// Not flag.FlagSet: as with cmdStatus's --json, the CLI examples
+		// put --label after the positional name, which stdlib flag can't
+		// parse (it stops at the first non-flag argument).
+		rest, label, err := extractValueFlag(rest, "label")
+		if err != nil {
+			return fmt.Errorf("snapshot create: %w", err)
+		}
+		if len(rest) != 1 {
+			return errors.New("snapshot create: expected exactly one environment name")
+		}
+		snap, err := svc.CreateSnapshot(ctx, rest[0], label)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("created snapshot %q (%s)\n", snap.Label, snap.ID)
+		return nil
+	case "list":
+		rest, jsonOut := extractBoolFlag(rest, "json")
+		if len(rest) != 1 {
+			return errors.New("snapshot list: expected exactly one environment name")
+		}
+		snapshots, err := svc.ListSnapshots(ctx, rest[0])
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			if snapshots == nil {
+				snapshots = []core.Snapshot{}
+			}
+			return json.NewEncoder(os.Stdout).Encode(snapshots)
+		}
+		if len(snapshots) == 0 {
+			fmt.Println("no snapshots yet")
+			return nil
+		}
+		for _, snap := range snapshots {
+			fmt.Printf("%s\t%s\t%s\n", snap.Label, snap.CreatedAt.Local().Format("2006-01-02 15:04"), snap.ID)
+		}
+		return nil
+	case "go-to":
+		if len(rest) != 2 {
+			return errors.New("snapshot go-to: usage: omavm snapshot go-to <name> <id>")
+		}
+		return svc.GoToSnapshot(ctx, rest[0], rest[1])
+	case "remove", "rm":
+		if len(rest) != 2 {
+			return errors.New("snapshot remove: usage: omavm snapshot remove <name> <id>")
+		}
+		return svc.RemoveSnapshot(ctx, rest[0], rest[1])
+	default:
+		return fmt.Errorf("snapshot: unknown subcommand %q", sub)
+	}
+}
+
+func cmdApps(ctx context.Context, svc *core.Service, args []string) error {
+	args, jsonOut := extractBoolFlag(args, "json")
+	args, exportID, err := extractValueFlag(args, "export")
+	if err != nil {
+		return fmt.Errorf("apps: %w", err)
+	}
+	args, unexportID, err := extractValueFlag(args, "unexport")
+	if err != nil {
+		return fmt.Errorf("apps: %w", err)
+	}
+	if len(args) != 1 {
+		return errors.New("apps: expected exactly one environment name")
+	}
+	name := args[0]
+
+	if exportID != "" && unexportID != "" {
+		return errors.New("apps: choose only one of --export or --unexport")
+	}
+	if exportID != "" {
+		return svc.ExportApp(ctx, name, exportID)
+	}
+	if unexportID != "" {
+		return svc.UnexportApp(ctx, name, unexportID)
+	}
+
+	apps, err := svc.ListApps(ctx, name)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		if apps == nil {
+			apps = []core.App{}
+		}
+		return json.NewEncoder(os.Stdout).Encode(apps)
+	}
+	if len(apps) == 0 {
+		fmt.Println("no exportable applications found")
+		return nil
+	}
+	for _, app := range apps {
+		exported := ""
+		if app.Exported {
+			exported = " (exported)"
+		}
+		fmt.Printf("%s%s\t%s\n", app.Name, exported, app.ID)
+	}
+	return nil
+}
+
 func cmdIntegration(ctx context.Context, svc *core.Service, args []string) error {
 	args, jsonOut := extractBoolFlag(args, "json")
 	if len(args) != 1 {
@@ -198,6 +313,11 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	sharedPath := fs.String("shared-path", "", "host directory to share (Machines only)")
 	sharedReadOnly := fs.Bool("shared-read-only", false, "make the shared folder read-only")
 	sharedWritable := fs.Bool("shared-writable", false, "make the shared folder writable")
+	disconnectISO := fs.Bool("disconnect-iso", false, "disconnect installation media on next start (Machines only)")
+	snapshotLimit := fs.Int("snapshot-limit", 0, "max snapshots to keep, oldest discarded first (1-100)")
+	color := fs.String("color", "", "tag color: "+strings.Join(core.EnvironmentColors, ", "))
+	shareClipboard := fs.Bool("share-clipboard", false, "share the text clipboard with the guest while the viewer is open (Machines only, on by default)")
+	travelMode := fs.Bool("travel-mode", false, "reduce CPU allocation automatically while the host is on battery (Machines only, on by default)")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -209,6 +329,9 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	changed := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
+		case "disconnect-iso":
+			patch.DisconnectISO = disconnectISO
+			changed = true
 		case "description":
 			patch.Description = description
 			changed = true
@@ -217,6 +340,18 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 			changed = true
 		case "memory-mib":
 			patch.MemoryMiB = memory
+			changed = true
+		case "snapshot-limit":
+			patch.SnapshotLimit = snapshotLimit
+			changed = true
+		case "color":
+			patch.Color = color
+			changed = true
+		case "share-clipboard":
+			patch.ShareClipboard = shareClipboard
+			changed = true
+		case "travel-mode":
+			patch.TravelMode = travelMode
 			changed = true
 		case "shared-path":
 			patch.SharedPath = sharedPath
@@ -253,6 +388,9 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	}
 	if settings.CPUs != 0 {
 		fmt.Printf("hardware: %d CPUs, %d MiB memory\n", settings.CPUs, settings.MemoryMiB)
+		fmt.Printf("installation media disconnected on next start: %t\n", settings.DisconnectISO)
+		fmt.Printf("share clipboard: %t\n", !settings.ClipboardDisabled)
+		fmt.Printf("travel mode (reduce CPUs on battery): %t\n", !settings.TravelModeDisabled)
 	}
 	if settings.SharedPath != "" {
 		mode := "writable"
@@ -260,6 +398,9 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 			mode = "read-only"
 		}
 		fmt.Printf("shared folder: %s (%s)\n", settings.SharedPath, mode)
+	}
+	if settings.Color != "" {
+		fmt.Println("color:", settings.Color)
 	}
 	return nil
 }
@@ -321,6 +462,33 @@ func extractBoolFlag(args []string, name string) ([]string, bool) {
 	return out, found
 }
 
+// extractValueFlag pulls a --name VALUE (or --name=VALUE) flag out of
+// args regardless of position, for the same reason extractBoolFlag
+// exists: Go's flag package stops parsing at the first positional
+// argument, which breaks "flag after the positional name" CLI ordering.
+func extractValueFlag(args []string, name string) ([]string, string, error) {
+	prefix := "--" + name
+	out := make([]string, 0, len(args))
+	value := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if eq, ok := strings.CutPrefix(a, prefix+"="); ok {
+			value = eq
+			continue
+		}
+		if a == prefix {
+			if i+1 >= len(args) {
+				return nil, "", fmt.Errorf("%s requires a value", prefix)
+			}
+			value = args[i+1]
+			i++
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, value, nil
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `usage: omavm <command> [arguments]
 
@@ -335,8 +503,16 @@ commands:
   force-stop NAME                                          immediately stop a Machine
   status NAME [--json]                                     show environment status
   integration NAME [--json]                                check Machine guest tools
-  settings NAME [--description TEXT] [--cpus N]            view or change settings
+  settings NAME [--description TEXT] [--cpus N] [--color C] view or change settings
+    [--share-clipboard=BOOL] [--travel-mode=BOOL]           (Machines only, both on by default)
   preview NAME                                             capture a Machine screenshot
+  snapshot create NAME --label TEXT                        capture the environment's current state
+  snapshot list NAME [--json]                              list snapshots
+  snapshot go-to NAME ID                                   restore a prior snapshot
+  snapshot remove NAME ID                                  delete a snapshot
+  apps NAME [--json]                                       list exportable applications (Boxes only)
+  apps NAME --export APP_ID                                export an app as a host launcher
+  apps NAME --unexport APP_ID                              remove a previously exported launcher
   exec NAME -- CMD [ARGS...]                               run a command inside a Box
   rm NAME                                                  remove an environment
   list [--json]                                            list known environments`)

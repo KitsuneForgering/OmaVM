@@ -79,3 +79,54 @@ type IntegrationReport struct {
 	GuestAgent string `json:"guest_agent"`
 	Hint       string `json:"hint,omitempty"`
 }
+
+// SnapshotManager is an optional Backend capability for environments whose
+// engine supports point-in-time state capture natively (QEMU/qcow2 internal
+// snapshots for Machines). The Core owns the meaningful Label and the
+// history (Environment.Snapshots); the Backend only executes against the
+// technical tag the Core generated. A Backend without this capability
+// (e.g. Box today) makes Service.CreateSnapshot/GoToSnapshot/RemoveSnapshot
+// fail with ErrUnsupported rather than pretending to support it.
+type SnapshotManager interface {
+	CreateSnapshot(ctx context.Context, env Environment, tag string) error
+	GoToSnapshot(ctx context.Context, env Environment, tag string) error
+	RemoveSnapshot(ctx context.Context, env Environment, tag string) error
+}
+
+// App is an application discovered inside a Box that can be exported as a
+// normal-looking launcher on the host — the first step toward Blend Mode
+// (Architecture → Blend Mode). ID is the Backend's own handle for it
+// (for Distrobox, the absolute path to the .desktop file inside the Box:
+// distrobox-export accepts that directly and it sidesteps the ambiguity
+// of matching by app name); Name is what CLI/GUI show a human.
+type App struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Exported bool   `json:"exported"`
+}
+
+// AppExporter is an optional Backend capability for environments whose
+// engine can natively export an installed application as a host-visible
+// launcher (distrobox-export for Boxes). This is the Blend Mode base:
+// reusing a mature Distrobox feature (Backend Rules), not building a
+// window-integration mechanism of OmaVM's own. Machines don't implement
+// this — seamless guest window integration is the gated "complete" Blend
+// Mode, not the base.
+type AppExporter interface {
+	ListApps(ctx context.Context, env Environment) ([]App, error)
+	ExportApp(ctx context.Context, env Environment, id string) error
+	UnexportApp(ctx context.Context, env Environment, id string) error
+}
+
+// HostLinker is an optional Backend capability that gives an Environment a
+// visible presence on the host filesystem (e.g. a Machine's disk image
+// exposed under ~/OmaVM/<name>), used to carry a Color tag into the host
+// file manager on a best-effort basis. Not implementing it is not an
+// error: Service.Configure only calls it when present.
+type HostLinker interface {
+	// Link ensures the host-visible path exists (creating/updating it as
+	// needed) and applies the given color tag to it best-effort. Returns
+	// the path for display/automation.
+	Link(ctx context.Context, env Environment, color string) (path string, err error)
+	Unlink(ctx context.Context, env Environment) error
+}

@@ -10,6 +10,7 @@ class Backend final : public QObject {
   Q_PROPERTY(
       QVariantList environments READ environments NOTIFY environmentsChanged)
   Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+  Q_PROPERTY(QVariantList apps READ apps NOTIFY appsChanged)
   Q_PROPERTY(QString themeMode READ themeMode NOTIFY themeChanged)
   Q_PROPERTY(QString themeBackground READ themeBackground NOTIFY themeChanged)
   Q_PROPERTY(QString themeForeground READ themeForeground NOTIFY themeChanged)
@@ -25,6 +26,7 @@ public:
   explicit Backend(QObject *parent = nullptr);
 
   QVariantList environments() const { return m_environments; }
+  QVariantList apps() const { return m_apps; }
   bool busy() const { return m_busy; }
   QString themeMode() const { return m_themeMode; }
   QString themeBackground() const { return m_themeBackground; }
@@ -49,23 +51,34 @@ public:
   Q_INVOKABLE void forceStop(const QString &name);
   Q_INVOKABLE void configure(const QString &name, const QString &description,
                              int cpus, int memoryMiB, bool machine,
-                             const QString &sharedPath, bool sharedReadOnly);
+                             const QString &sharedPath, bool sharedReadOnly,
+                             bool disconnectISO, const QString &color,
+                             bool shareClipboard, bool travelMode);
   Q_INVOKABLE void remove(const QString &name);
+  Q_INVOKABLE void createSnapshot(const QString &name, const QString &label);
+  Q_INVOKABLE void goToSnapshot(const QString &name, const QString &id);
+  Q_INVOKABLE void removeSnapshot(const QString &name, const QString &id);
+  Q_INVOKABLE void refreshApps(const QString &name);
+  Q_INVOKABLE void exportApp(const QString &name, const QString &id);
+  Q_INVOKABLE void unexportApp(const QString &name, const QString &id);
 
 signals:
   void environmentsChanged();
+  void appsChanged();
   void busyChanged();
   void themeChanged();
   void message(const QString &text, bool error);
 
 private:
   void run(const QStringList &arguments, bool refreshAfter = true);
+  void runForApps(const QStringList &arguments, const QString &name);
   void enrichEnvironment(int index);
   void loadTheme();
   QString cliPath() const;
   void setBusy(bool busy);
 
   QVariantList m_environments;
+  QVariantList m_apps;
   QFileSystemWatcher m_themeWatcher;
   bool m_busy = false;
   QString m_themeMode = QStringLiteral("dark");

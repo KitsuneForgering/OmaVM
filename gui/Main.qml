@@ -16,6 +16,7 @@ ApplicationWindow {
     Material.theme: backend.themeMode === "light" ? Material.Light : Material.Dark
     Material.accent: backend.themeAccent
     Material.primary: backend.themeBackground
+    Material.background: backend.themeBackground
     Material.foreground: backend.themeForeground
 
     header: ToolBar {
@@ -61,6 +62,14 @@ ApplicationWindow {
                     settingsDialog.environment = environment
                     settingsDialog.open()
                 }
+                onSnapshotsRequested: environment => {
+                    snapshotsDialog.environment = environment
+                    snapshotsDialog.open()
+                }
+                onAppsRequested: environment => {
+                    appsDialog.environment = environment
+                    appsDialog.open()
+                }
             }
         }
     }
@@ -78,6 +87,8 @@ ApplicationWindow {
     BusyIndicator { anchors.centerIn: parent; running: backend.busy; visible: running }
     CreateDialog { id: createDialog }
     SettingsDialog { id: settingsDialog }
+    SnapshotsDialog { id: snapshotsDialog }
+    AppsDialog { id: appsDialog }
     Dialog {
         id: confirmForceStop
         property string environmentName
@@ -86,6 +97,7 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(parent.width - 32, 420)
         standardButtons: Dialog.Cancel | Dialog.Yes
+        Overlay.modal: ThemeScrim {}
         contentItem: Label {
             text: qsTr("Force stop “%1”? Unsaved data in the guest may be lost.").arg(confirmForceStop.environmentName)
             wrapMode: Text.Wrap
@@ -101,6 +113,7 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(parent.width - 32, 420)
         standardButtons: Dialog.Cancel | Dialog.Yes
+        Overlay.modal: ThemeScrim {}
         contentItem: Label {
             text: qsTr("Delete “%1”? This cannot be undone.").arg(confirmDelete.environmentName)
             wrapMode: Text.Wrap

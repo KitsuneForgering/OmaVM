@@ -18,6 +18,9 @@ func qmpExecute(socketPath, command string, arguments map[string]any) (json.RawM
 		return nil, fmt.Errorf("dial qmp socket: %w", err)
 	}
 	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, err
+	}
 
 	dec := json.NewDecoder(conn)
 	enc := json.NewEncoder(conn)
@@ -72,6 +75,23 @@ func qmpCommand(socketPath string, command string) error {
 func qmpScreendump(socketPath, dst string) error {
 	_, err := qmpExecute(socketPath, "screendump", map[string]any{"filename": dst})
 	return err
+}
+
+// qmpHumanMonitorCommand runs a legacy HMP command (savevm/loadvm/delvm)
+// through QMP's human-monitor-command passthrough. QMP's newer job-based
+// snapshot-save/-load commands need named block nodes this project
+// doesn't set up; HMP's savevm/loadvm/delvm work uniformly for simple
+// internal qcow2 snapshots across the QEMU versions this project targets.
+func qmpHumanMonitorCommand(socketPath, command string) (string, error) {
+	raw, err := qmpExecute(socketPath, "human-monitor-command", map[string]any{"command-line": command})
+	if err != nil {
+		return "", err
+	}
+	var out string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", fmt.Errorf("decode human-monitor-command reply: %w", err)
+	}
+	return out, nil
 }
 
 func qmpStatus(socketPath string) (string, error) {

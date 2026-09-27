@@ -7,14 +7,13 @@ pkgdesc="Create, run and manage Boxes and Machines on Omarchy"
 arch=('x86_64')
 url="https://github.com/KitsuneSemCalda/OmaVM"
 license=('MIT')
-depends=('qt6-base' 'qt6-declarative' 'glibc')
+depends=('qt6-base' 'qt6-declarative' 'glibc' 'zlib')
 makedepends=('go' 'qt6-tools')
 optdepends=('distrobox: integrated Development Box environments'
             'podman: preferred Distrobox container engine'
             'docker: alternative Distrobox container engine and legacy Boxes'
             'qemu-desktop: Machine environments with a graphical display (QEMU/KVM)'
-            'virtiofsd: share host folders with Machine guests'
-            'xdg-terminal-exec: attach a terminal when opening a Box from the GUI')
+            'virtiofsd: share host folders with Machine guests')
 install=omavm.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('edc28b1feca64c73109d840c5a95203be081c30f6263ba9a2855e6ca0b195169')

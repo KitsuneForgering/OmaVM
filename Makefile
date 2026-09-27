@@ -2,7 +2,7 @@ PREFIX ?= $(HOME)/.local
 
 QS_PLUGIN_DIR ?= $(HOME)/.config/omarchy/plugins/dev.omavm.bar
 
-.PHONY: build build-cli build-gui test vet fmt fmt-check check run run-gui clean install uninstall install-quickshell-plugin uninstall-quickshell-plugin
+.PHONY: build build-cli build-gui test vet fmt fmt-check check run run-gui clean install uninstall install-quickshell-plugin uninstall-quickshell-plugin test-viewer test-terminal
 
 build: build-cli build-gui
 
@@ -16,8 +16,18 @@ build-gui:
 	cp build/gui/omavm-gui bin/omavm-gui.new
 	mv bin/omavm-gui.new bin/omavm-gui
 
-test:
+test: test-viewer test-terminal
 	go test ./...
+
+test-viewer:
+	mkdir -p build/viewer-tests
+	cd build/viewer-tests && qmake6 ../../gui/tests/vncclient_test.pro && $(MAKE)
+	./build/viewer-tests/vncclient_test
+
+test-terminal:
+	mkdir -p build/terminal-tests
+	cd build/terminal-tests && qmake6 ../../gui/tests/terminal_test.pro && $(MAKE)
+	./build/terminal-tests/terminal_test
 
 vet:
 	go vet ./...
