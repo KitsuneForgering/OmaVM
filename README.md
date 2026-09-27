@@ -1,83 +1,105 @@
-# OmaVM
+<p align="center">
+  <img src="data/icons/dev.omavm.app.svg" alt="OmaVM icon" width="96" height="96">
+</p>
 
-**A Parallels-style Environment manager for [Omarchy](https://omarchy.org).**
+<h1 align="center">OmaVM</h1>
 
-Stop thinking in QEMU, Distrobox, Podman, or virtio. Think in
-**Environments**: pick a distro, pick "Development Box" or "Desktop", and
-go. OmaVM handles the container/VM plumbing behind a coherent product
-model and a UI that looks and feels native to Omarchy's Hyprland desktop.
+<p align="center">
+  <strong>Linux development environments and virtual machines, at home on Omarchy.</strong>
+</p>
 
-[![CI](https://github.com/KitsuneSemCalda/OmaVM/actions/workflows/ci.yml/badge.svg)](https://github.com/KitsuneSemCalda/OmaVM/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Go Report](https://img.shields.io/badge/go-1.27.1%2B-00ADD8?logo=go)](go.mod)
+<p align="center">
+  <a href="https://github.com/KitsuneSemCalda/OmaVM/actions/workflows/ci.yml"><img src="https://github.com/KitsuneSemCalda/OmaVM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/go-1.27.1%2B-00ADD8?logo=go" alt="Go 1.27.1+"></a>
+</p>
 
-![OmaVM Experience Center showing a running Desktop and a stopped Desktop environment](docs/experience-center.png)
+<p align="center">
+  <a href="#two-kinds-of-environment">Box or Machine?</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#requirements">Requirements</a> ·
+  <a href="#usage-reference">CLI reference</a> ·
+  <a href="#status">Project status</a>
+</p>
 
-## Why OmaVM
+OmaVM is a desktop app for creating and managing environments on
+[Omarchy](https://omarchy.org). Work with another Linux distribution's tools
+in a **Box**, or install and boot a complete operating system in a **Machine**.
+Start, open, and stop both from the same window, with a built-in terminal for
+Boxes and a graphical viewer for Machines.
 
-Every other tool in this space makes you pick your battles up front:
-`virt-manager` hands you raw libvirt/QEMU knobs, `distrobox` is a
-fantastic CLI with no product story around it, and generic VM managers
-don't know Omarchy exists. OmaVM's bet, borrowed straight from Parallels
-Desktop's philosophy, is that **virtualization should disappear behind
-the experience**:
+<p align="center">
+  <a href="docs/experience-center.png">
+    <img src="docs/experience-center.png" alt="OmaVM Experience Center with arch-desktop running and kernel-lab stopped, showing a display preview and Open and Start actions" width="944">
+  </a>
+  <br>
+  <em>The Experience Center: your environments, their status, and the next action.</em>
+</p>
 
-- **One model, two kinds.** An `Environment` is either a **Box**
-  (userspace Linux sharing the host kernel, via Distrobox) or a
-  **Machine** (its own kernel, via QEMU/KVM). You never pick a backend —
-  you pick what you're actually trying to run, and OmaVM resolves it to
-  the right one. Linux doesn't automatically mean "container": a custom
-  kernel or a from-scratch OS install becomes a Machine, on purpose.
-- **Isolation is never hidden.** A Box shares the host kernel; a Machine
-  doesn't. That difference is real and OmaVM always says so — no "secure
-  sandbox" marketing over a container.
-- **A real display, not a bolted-on one.** Machines run fully headless
-  QEMU with GPU-accelerated `virtio-vga-gl`, and `omavm-gui` speaks VNC
-  natively (a from-scratch client, no external viewer to install) to show
-  and control them — fullscreen, on their own workspace if you want.
-- **Built for Hyprland/Omarchy, not ported to it.** The GUI is Qt
-  Quick/QML, follows your live Omarchy theme (dark/light, accent,
-  background — no separate theme system), tiles like every other Omarchy
-  window, and ships a Quickshell bar widget.
-- **Agent- and script-friendly by construction.** Every capability that
-  exists in the GUI exists in the `omavm` CLI first, with `--json` output
-  wherever it matters. Nothing is GUI-only.
+The interface follows your live Omarchy theme and fits Hyprland's tiling
+layout. Management operations are also available through the `omavm` CLI
+for scripts and automation.
 
-See [CLAUDE.md](CLAUDE.md) for the full product model, architecture, and
-the ground rules this project holds itself to.
+## What can I use it for?
+
+- **Develop with another Linux distribution.** Keep a project's tools and
+  packages in a Fedora, Ubuntu, Debian, Arch, or Alpine Box while working
+  with files in your Omarchy home directory.
+- **Try a complete operating system.** Boot an installation ISO in a Machine
+  and use its desktop in an OmaVM window.
+- **Test boot and kernel changes.** Give Linux its own kernel and virtual disk
+  in a Machine, with snapshots to return to an earlier disk state.
+- **Bring Box applications into your desktop.** Export graphical applications
+  installed in a Box so they appear in your host app launcher.
+- **Automate environment management.** Create environments, run commands in
+  Boxes, and query status through the `omavm` CLI, with JSON output for scripts.
+
+## Two kinds of environment
+
+An **environment** is a named system you create and manage in OmaVM.
+Choose its kind according to what you need:
+
+| | Development Box | Desktop / Machine |
+|---|---|---|
+| Best for | Development tools and Linux applications | A complete OS, desktop, or kernel testing |
+| Runs | Linux userspace sharing the host kernel | An OS with its own kernel and boot process |
+| Created from | A Linux container image, such as `fedora:latest` | An x86_64 installation ISO |
+| Opens in | OmaVM's built-in terminal | OmaVM's built-in graphical viewer |
+| Host integration | Shared home directory and graphical applications through Distrobox | Configurable shared folder, audio, and text clipboard with guest support |
+| Powered by | Distrobox with Podman or Docker | QEMU/KVM |
+
+A Box is closely integrated with your host: it shares the kernel and home
+directory, so it should not be treated as an isolated sandbox. Choose a Machine
+when you need a separate kernel or full OS boot. Linux can run as either kind.
+In the creation dialog, **Desktop** creates a Machine and **Development Box**
+creates a Box.
+
+## From the Experience Center
+
+| Open your environment | Manage it | Connect it to Omarchy |
+|---|---|---|
+| Use a Box's built-in terminal or a Machine's graphical viewer. | Adjust settings, assign a color, and manage Machine snapshots. | Export Box apps to the launcher or configure a Machine's shared folder and clipboard. |
+
+OmaVM coordinates Distrobox and QEMU/KVM behind these actions. Its product
+direction takes inspiration from Parallels Desktop: make creating and using
+another system approachable, with advanced settings available when needed.
+An optional [Quickshell bar widget](contrib/dev.omavm.bar) gives you a shortcut
+to the app and an environment count in its tooltip.
 
 ## Status
 
-Phase 1 vertical slice, actively developed: Core domain + CLI + GUI, with
-a Distrobox-based Development Box backend and a QEMU/KVM Machine backend
-implementing Create/Start/Open/Stop/Status/Remove (plus Exec for Boxes,
-and Pause/Resume/Restart/ForceStop for Machines). Not yet 1.0 — expect
-sharp edges, and see the Non-Goals in CLAUDE.md for what's deliberately
-not built yet.
+OmaVM is actively developed and **not yet 1.0**. Both Boxes and Machines support
+creation, start, open, stop, status, settings, and removal. Boxes also support
+command execution and application export; Machines support pause/resume,
+restart, snapshots, shared folders, and text clipboard integration.
 
-## Quick start
+Guest integration depends on the guest OS, drivers, and services; see
+[Machines](#machines) for requirements and behavior. Remote/cloud hosts,
+GPU passthrough, disposable environments, and seamless Machine application
+windows are outside the current feature set.
 
-```bash
-git clone https://github.com/KitsuneSemCalda/OmaVM.git
-cd OmaVM
-make check      # build, vet, test everything
-make install    # omavm + omavm-gui on PATH, .desktop entry, no root needed
-```
-
-```bash
-# A Development Box: a fast, integrated Linux userspace.
-omavm create --name radic --kind box --image fedora:latest
-omavm start radic
-omavm exec radic -- go test ./...
-
-# A Machine: its own kernel, its own graphical display.
-omavm create --name kernels --kind machine --image /path/to/install.iso
-omavm start kernels
-omavm open kernels     # opens omavm-gui's built-in VNC viewer
-```
-
-Or skip the CLI entirely and use the GUI (`make run-gui`): pick a distro,
-pick Development Box or Desktop, done.
+See [CLAUDE.md](CLAUDE.md) for the product model, architecture, and development
+scope.
 
 ## Requirements
 
@@ -90,6 +112,40 @@ pick Development Box or Desktop, done.
 
 Opening a Machine's display needs nothing extra — the viewer is built
 into `omavm-gui`. See [Machines](#machines) below for what that gets you.
+
+## Quick start
+
+```bash
+git clone https://github.com/KitsuneSemCalda/OmaVM.git
+cd OmaVM
+make check      # build, vet, test everything
+make install    # omavm + omavm-gui on PATH, .desktop entry, no root needed
+```
+
+Launch **OmaVM** from your app launcher or run `omavm-gui`:
+
+1. Choose **Development Box** for Linux tools, or **Desktop** for a complete OS.
+2. Select a distribution for a Box, or a local x86_64 installation ISO for a Machine.
+3. Name and create the environment, then select **Start** and **Open**.
+
+You can also run the GUI from the source tree with `make run-gui`.
+
+<details>
+<summary>Prefer the CLI? Create your first environment from the terminal.</summary>
+
+```bash
+# A Development Box: Linux tools with access to your home directory.
+omavm create --name radic --kind box --image fedora:latest
+omavm start radic
+omavm open radic
+
+# A Machine: install an OS from a local ISO.
+omavm create --name kernels --kind machine --image /path/to/install.iso
+omavm start kernels
+omavm open kernels
+```
+
+</details>
 
 ## Build
 
@@ -189,9 +245,8 @@ sequences and UTF-8 characters split across separate reads, and a real-PTY
 round trip (spawn a process, write to it, confirm the echoed output lands
 in the grid) exercising the same code path keyboard input takes.
 
-By default the viewer opens as an ordinary window wherever Hyprland
-would place it. To always have it open fullscreen on its own dedicated
-workspace instead, add this line to your own `~/.config/hypr/windows.lua`
+To always have the viewer open fullscreen on its own dedicated workspace,
+add this line to your own `~/.config/hypr/windows.lua`
 (same file, same pattern as any other personal window rule there):
 
 ```lua
@@ -214,10 +269,9 @@ make run-gui
 
 Environments appear as cards (name, kind, image, status) with Start,
 Open, Stop and Delete actions — no backend/infrastructure detail is
-exposed. Creating one asks "what do you want to run?", not "which
-backend?": pick a distro (or a custom Linux image, or a boot ISO for a
-non-Linux system) and, for Linux, whether you want a Development
-Environment (Box) or a Virtual Machine (Machine).
+exposed. Creating one starts with a choice between **Desktop** (Machine) and
+**Development Box** (Box). Then select a local x86_64 installation ISO for a
+Machine, or a Linux distribution or custom container image for a Box.
 
 Install the `omavm` CLI binary alongside `omavm-gui` (same directory or
 on `PATH`) so a Box's "Open" can attach an interactive shell. Opening a
