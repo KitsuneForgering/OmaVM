@@ -13,8 +13,17 @@ func TestLinkCreatesAndUpdatesSymlink(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	b := &Backend{stateDir: t.TempDir()}
 	env := core.Environment{Name: "guest", Kind: core.Machine}
-	if err := b.Create(context.Background(), env); err != nil {
-		t.Fatalf("Create: %v", err)
+	// Link only needs a file at diskPath to point the symlink at, not a
+	// real qcow2 image — set that up directly instead of going through
+	// Create(), which shells out to qemu-img and would make this test
+	// depend on QEMU being installed for no reason (Testing Strategy:
+	// domain/adapter logic that doesn't need a real tool shouldn't
+	// require one).
+	if err := os.MkdirAll(b.dir(env.Name), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(b.diskPath(env.Name), nil, 0o644); err != nil {
+		t.Fatalf("write disk placeholder: %v", err)
 	}
 
 	link, err := b.Link(context.Background(), env, "blue")
@@ -52,8 +61,11 @@ func TestLinkPathIsUnderHomeOmaVM(t *testing.T) {
 	t.Setenv("HOME", home)
 	b := &Backend{stateDir: t.TempDir()}
 	env := core.Environment{Name: "guest", Kind: core.Machine}
-	if err := b.Create(context.Background(), env); err != nil {
-		t.Fatalf("Create: %v", err)
+	if err := os.MkdirAll(b.dir(env.Name), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(b.diskPath(env.Name), nil, 0o644); err != nil {
+		t.Fatalf("write disk placeholder: %v", err)
 	}
 	link, err := b.Link(context.Background(), env, "")
 	if err != nil {
