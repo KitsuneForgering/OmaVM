@@ -10,6 +10,7 @@ build-cli:
 	go build -o bin/omavm ./cmd/omavm
 
 build-gui:
+	rm -rf build/gui
 	mkdir -p build/gui bin
 	cd build/gui && qmake6 ../../omavm-gui.pro && $(MAKE)
 	cp build/gui/omavm-gui bin/omavm-gui.new
@@ -43,11 +44,13 @@ clean:
 	rm -rf bin build
 
 # User-level install (no root): binaries on PATH, a .desktop entry so
-# omavm-gui shows up in the app launcher/taskbar with its own icon, and
-# icon caches refreshed best-effort. See README's "Logs" section for the
-# separate, optional, explicitly-privileged step to provision
-# /var/log/omavm instead of the default user-level log location.
-install: build
+# omavm-gui shows up in the app launcher/taskbar with its own icon, icon
+# caches refreshed best-effort, and the Quickshell bar-widget plugin
+# staged (copied, never enabled — see install-quickshell-plugin below).
+# See README's "Logs" section for the separate, optional,
+# explicitly-privileged step to provision /var/log/omavm instead of the
+# default user-level log location.
+install: build install-quickshell-plugin
 	install -Dm755 bin/omavm $(PREFIX)/bin/omavm
 	install -Dm755 bin/omavm-gui $(PREFIX)/bin/omavm-gui
 	install -Dm644 data/dev.omavm.app.desktop $(PREFIX)/share/applications/dev.omavm.app.desktop
@@ -62,10 +65,13 @@ uninstall:
 	-update-desktop-database $(PREFIX)/share/applications 2>/dev/null
 
 # Copies the Omarchy Quickshell bar-widget plugin into place — nothing
-# more. It deliberately does NOT run `omarchy-shell shell rescanPlugins`
-# or `omarchy plugin enable`: Omarchy's own trust model lands third-party
-# plugins disabled so a human reviews the QML before it runs unsandboxed
-# inside the already-live desktop shell, and this target respects that.
+# more, and also run as part of `install` above. It deliberately does NOT
+# run `omarchy-shell shell rescanPlugins` or `omarchy plugin enable`,
+# even when chained from `install`: Omarchy's own trust model lands
+# third-party plugins disabled so a human reviews the QML before it runs
+# unsandboxed inside the already-live desktop shell, and this target
+# respects that — copying the file is harmless, enabling it is not, so
+# only the enable step stays manual.
 install-quickshell-plugin:
 	mkdir -p $(QS_PLUGIN_DIR)
 	cp -r contrib/dev.omavm.bar/. $(QS_PLUGIN_DIR)/

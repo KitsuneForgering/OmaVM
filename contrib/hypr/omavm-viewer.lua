@@ -11,8 +11,13 @@
 -- (with this file's directory added to Hyprland's Lua package.path, or
 -- copied straight into ~/.config/hypr/). See README.md for the full step.
 --
--- Places the viewer on its own special workspace — guaranteed empty by
--- construction, no "find an unused workspace" heuristic needed — and
--- fullscreens it there, so a Machine's display always opens the same
--- way instead of tiling into whatever workspace you happened to be on.
-o.window("dev.omavm.viewer", { workspace = "special:omavm", fullscreen = true })
+-- Places the viewer on its own dedicated named workspace and fullscreens
+-- it there, so a Machine's display always opens the same way instead of
+-- tiling into whatever workspace you happened to be on. Deliberately a
+-- plain named workspace, not a Hyprland "special" one: special
+-- workspaces are scratchpad-style overlays that stay hidden until
+-- explicitly toggled (hyprctl dispatch togglespecialworkspace) — a
+-- window rule alone never makes them visible. A plain named workspace
+-- switches the monitor to it automatically when the window opens, same
+-- as any other window-rule-targeted workspace.
+o.window("dev.omavm.viewer", { workspace = "name:omavm", fullscreen = true })

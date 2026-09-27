@@ -143,15 +143,17 @@ SPICE's vdagent channel before; VNC's own clipboard extension isn't wired up
 
 By default the viewer opens as an ordinary window wherever Hyprland
 would place it. To always have it open fullscreen on its own dedicated
-workspace instead, add this to your own Hyprland config (e.g.
-`~/.config/hypr/windows.lua`):
+workspace instead, add this line to your own `~/.config/hypr/windows.lua`
+(same file, same pattern as any other personal window rule there):
 
 ```lua
-require("omavm-viewer") -- with contrib/hypr/ on Hyprland's Lua package.path,
-                        -- or copy contrib/hypr/omavm-viewer.lua in directly
+o.window("dev.omavm.viewer", { workspace = "name:omavm", fullscreen = true })
 ```
 
-This is optional and never enabled automatically — see
+A plain named workspace, not a Hyprland "special" one — special
+workspaces are scratchpad overlays that stay hidden until explicitly
+toggled, so a window rule alone never makes them visible. This is
+optional and never enabled automatically — see
 [contrib/hypr/omavm-viewer.lua](contrib/hypr/omavm-viewer.lua).
 
 ## GUI (Experience Center)
@@ -219,15 +221,16 @@ machine. [`contrib/dev.omavm.bar`](contrib/dev.omavm.bar) is a bar-widget
 plugin: it shells out to `omavm list --json` to show how many
 environments exist, and clicking it launches `omavm-gui`.
 
+`make install` already copies it into `~/.config/omarchy/plugins/` for
+you (also available standalone as `make install-quickshell-plugin`). This
+only stages the files; it does **not** auto-enable the plugin. Per
+Omarchy's own plugin trust model (plugins run unsandboxed inside the
+already-live shell), review the QML yourself and then run:
+
 ```bash
-make install-quickshell-plugin
+omarchy-shell shell rescanPlugins && omarchy plugin enable dev.omavm.bar
 ```
 
-This only copies the plugin into `~/.config/omarchy/plugins/`; it does
-**not** auto-enable it. Per Omarchy's own plugin trust model (plugins run
-unsandboxed inside the already-live shell), review the QML yourself and
-then run the two commands the target prints
-(`omarchy-shell shell rescanPlugins && omarchy plugin enable dev.omavm.bar`).
 See [contrib/dev.omavm.bar/README.md](contrib/dev.omavm.bar/README.md)
 for interactions and settings.
 
