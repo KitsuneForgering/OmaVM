@@ -130,3 +130,40 @@ type HostLinker interface {
 	Link(ctx context.Context, env Environment, color string) (path string, err error)
 	Unlink(ctx context.Context, env Environment) error
 }
+
+// RemoteShell is an optional Backend capability: a shell or command in the
+// environment over SSH (Machines, through a host↔guest socket that needs
+// no guest network). login "" means the host user's name.
+type RemoteShell interface {
+	SSH(ctx context.Context, env Environment, login string, command []string) error
+}
+
+// Launcher publishes environments in the host's application launcher, so
+// one opens like any installed app without going through the Experience
+// Center first. It is host desktop integration rather than a Backend
+// capability: the same entry works for both Kinds. On by default,
+// withdrawn per environment with EnvironmentSettings.LauncherDisabled.
+// Failures never fail the operation that triggered them.
+type Launcher interface {
+	// Publish creates or updates the environment's entry; it must be
+	// idempotent and cheap, since Start and Open call it every time.
+	Publish(env Environment) error
+	Withdraw(env Environment) error
+}
+
+// HostInspector is an optional Backend capability reporting what the host
+// can offer that Backend's Environments (hardware virtualization, graphics
+// acceleration, ...). It only reads the host and never changes it.
+type HostInspector interface {
+	InspectHost(ctx context.Context) ([]HostCapability, error)
+}
+
+// HostCapability is one host feature, described by what it gives the user
+// rather than by the mechanism behind it.
+type HostCapability struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Available bool   `json:"available"`
+	Detail    string `json:"detail,omitempty"`
+	Hint      string `json:"hint,omitempty"`
+}

@@ -1,5 +1,5 @@
 -- Opt-in Hyprland window rule for OmaVM's Machine display viewer
--- (omavm-gui --viewer, launched by `omavm open`/`Open` on a Machine).
+-- (omavm-gui --display-fd, launched by `omavm open`/`Open` on a Machine).
 --
 -- Not loaded automatically: like OmaVM's Quickshell plugin
 -- (contrib/dev.omavm.bar), this only takes effect once you explicitly
@@ -20,4 +20,12 @@
 -- window rule alone never makes them visible. A plain named workspace
 -- switches the monitor to it automatically when the window opens, same
 -- as any other window-rule-targeted workspace.
+--
+-- Conflicts with OmaVM's own "Open in an empty workspace" Settings
+-- preference (also opt-in, per-environment): that preference switches to
+-- a fresh empty workspace right before launching, but this window rule
+-- still wins and sends the new window to the fixed "name:omavm"
+-- workspace anyway. The two solve different needs (one dedicated,
+-- fullscreen spot vs. a fresh workspace per environment) and aren't
+-- meant to compose — use one or the other, not both.
 o.window("dev.omavm.viewer", { workspace = "name:omavm", fullscreen = true })

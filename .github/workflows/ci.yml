@@ -19,7 +19,9 @@ jobs:
       - name: Install Qt Quick build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qt6-base-dev qt6-declarative-dev qmake6 zlib1g-dev
+          sudo apt-get install -y qt6-base-dev qt6-declarative-dev qmake6 libglib2.0-dev libegl-dev \
+            qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates qml6-module-qttest qml6-module-qtquick-window
 
       - name: gofmt
         run: |
@@ -42,8 +44,16 @@ jobs:
       - name: go test
         run: go test ./...
 
-      - name: Viewer protocol tests
-        run: make test-viewer
+      # Skipped without KVM (and the rendering test without Wayland):
+      # hosted runners exercise only the build of these tests.
+      - name: Display protocol tests
+        run: make test-display
 
       - name: Terminal emulator tests
         run: make test-terminal
+
+      - name: GUI backend tests
+        run: make test-backend
+
+      - name: QML UI tests
+        run: make test-qml

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
@@ -26,26 +27,44 @@ const containerPrefix = "omavm-box-"
 // container engine CLI (podman or docker — their CLIs are
 // compatible for the subset of commands used here).
 type Backend struct {
+	// detect guards the lazy runtime probe: `podman info` costs a few
+	// hundred milliseconds, and every omavm invocation constructs this
+	// backend even when it only touches Machines (the GUI polls
+	// list/status every few seconds).
+	detect  sync.Once
 	runtime string
 }
 
-// New prefers a working Podman, then falls back to a working Docker.
-// Finding a binary is insufficient: a stale rootless Podman setup or an
-// unreachable daemon must not prevent an otherwise healthy Docker fallback.
-func New() *Backend {
+// New returns a backend whose engine is chosen on first use, not here.
+func New() *Backend { return &Backend{} }
+
+// detectRuntime prefers a working Podman, then falls back to a working
+// Docker. Finding a binary is insufficient: a stale rootless Podman setup
+// or an unreachable daemon must not prevent an otherwise healthy Docker
+// fallback.
+func detectRuntime() string {
 	for _, runtime := range []string{"podman", "docker"} {
 		if runtimeReady(runtime) {
-			return &Backend{runtime: runtime}
+			return runtime
 		}
 	}
 	// Preserve a useful operation error when neither engine is healthy.
 	// Prefer an installed binary so its own diagnostic reaches the user.
 	for _, runtime := range []string{"podman", "docker"} {
 		if _, err := exec.LookPath(runtime); err == nil {
-			return &Backend{runtime: runtime}
+			return runtime
 		}
 	}
-	return &Backend{runtime: "podman"}
+	return "podman"
+}
+
+func (b *Backend) defaultRuntime() string {
+	b.detect.Do(func() {
+		if b.runtime == "" {
+			b.runtime = detectRuntime()
+		}
+	})
+	return b.runtime
 }
 
 func runtimeReady(runtime string) bool {
@@ -57,13 +76,13 @@ func runtimeReady(runtime string) bool {
 	return exec.CommandContext(ctx, runtime, "info").Run() == nil
 }
 
-func (b *Backend) Name() string { return b.runtime }
+func (b *Backend) Name() string { return b.defaultRuntime() }
 
 func (b *Backend) runtimeFor(env core.Environment) string {
 	if env.Backend == "podman" || env.Backend == "docker" {
 		return env.Backend
 	}
-	return b.runtime
+	return b.defaultRuntime()
 }
 
 func containerName(env core.Environment) string {

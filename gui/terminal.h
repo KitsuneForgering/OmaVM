@@ -72,6 +72,40 @@ public:
   int cursorRow() const { return m_cursorRow; }
   int cursorCol() const { return m_cursorCol; }
   bool cursorVisible() const { return m_cursorVisible; }
+  bool running() const { return m_masterFd >= 0; }
+  // Bytes to send to the child for a key press, following the modes the
+  // program set (application cursor keys) and xterm's modifier encoding,
+  // which is what TERM=xterm-256color promises. Empty for keys that send
+  // nothing (a lone modifier).
+  QByteArray keySequence(int key, Qt::KeyboardModifiers modifiers,
+                         const QString &text) const;
+  // Shift+Insert (what Omarchy's universal paste sends to terminals) or
+  // Ctrl+Shift+V.
+  static bool isPasteShortcut(int key, Qt::KeyboardModifiers modifiers);
+  // Bytes to send for pasted text: newlines as Enter, wrapped in bracketed
+  // paste markers when the program enabled them.
+  QByteArray pasteSequence(const QString &text) const;
+  // Ctrl+Shift+C, or Ctrl+Insert (what Omarchy's universal copy sends to
+  // terminals). Never forwarded to the program: Ctrl+Shift+C would
+  // otherwise reach it as Ctrl+C.
+  static bool isCopyShortcut(int key, Qt::KeyboardModifiers modifiers);
+
+  // The scrollback followed by the visible screen, as one list of lines.
+  int bufferLineCount() const;
+  QVector<TerminalCell> bufferLine(int index) const;
+  // Lines dropped from the front of the scrollback so far: an index plus
+  // this stays attached to the same line as more output arrives.
+  qint64 droppedLines() const { return m_droppedLines; }
+  // Text from (startLine, startCol) to (endLine, endCol), both inclusive,
+  // in buffer lines. Trailing blanks of each line are dropped, as every
+  // terminal does; a wide character is copied whole.
+  QString text(int startLine, int startCol, int endLine, int endCol) const;
+  // The columns [first, last] of the word under (line, col), for
+  // double-click selection. A blank cell selects just itself.
+  QPair<int, int> wordBounds(int line, int col) const;
+  // Largest OSC 52 payload accepted (base64 text), about 1 MiB of text.
+  static constexpr int kMaxOscLength = 1400 * 1024;
+
   bool alternateScreen() const { return m_altScreenActive; }
   const QVector<QVector<TerminalCell>> &grid() const {
     return m_altScreenActive ? m_altGrid : m_grid;
@@ -84,6 +118,9 @@ signals:
   void updated();
   void bell();
   void titleChanged(const QString &title);
+  // A program asked to put text on the clipboard (OSC 52). Reading the
+  // clipboard that way is never answered.
+  void clipboardWriteRequested(const QString &text);
   void finished(int exitCode);
   void errorOccurred(const QString &message);
 
@@ -99,6 +136,7 @@ private:
   void putChar(const QString &ch);
   void dispatchCsi(char final);
   void dispatchOsc();
+  void handleOsc52(const QByteArray &payload);
   void handleSgr(const QVector<int> &params);
   void setPrivateMode(const QVector<int> &params, bool enable);
   static QVector<int> splitParams(const QByteArray &raw);
@@ -143,6 +181,10 @@ private:
   bool m_cursorVisible = true;
   bool m_wrapPending = false;
   bool m_autoWrap = true;
+  // DECCKM (\e[?1h): cursor keys send SS3 (\eOA) instead of CSI (\e[A).
+  bool m_applicationCursorKeys = false;
+  // \e[?2004h: the program wants pastes wrapped in \e[200~ ... \e[201~.
+  bool m_bracketedPaste = false;
   int m_scrollTop = 0;
   int m_scrollBottom = 23;
 
@@ -176,6 +218,10 @@ private:
   QByteArray m_csiParams;
   bool m_csiPrivate = false;
   QByteArray m_oscBuffer;
+  // Set when an OSC outgrew kMaxOscLength: the rest is skipped and the
+  // sequence ignored, instead of growing without bound.
+  bool m_oscOverflow = false;
+  qint64 m_droppedLines = 0;
 
   // Pending UTF-8 continuation bytes (a PTY read can split a multi-byte
   // sequence across two feed() calls).

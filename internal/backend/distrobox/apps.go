@@ -29,6 +29,9 @@ const listAppsScript = `for f in /usr/local/share/applications/*.desktop /usr/sh
 done`
 
 func (b *Backend) ListApps(ctx context.Context, env core.Environment) ([]core.App, error) {
+	if err := b.requireContainer(ctx, env); err != nil {
+		return nil, err
+	}
 	out, err := b.output(ctx, "enter", "--no-tty", "--name", boxName(env), "--", "sh", "-c", listAppsScript)
 	if err != nil {
 		return nil, err
@@ -61,9 +64,15 @@ func (b *Backend) ListApps(ctx context.Context, env core.Environment) ([]core.Ap
 // straight to distrobox-export --app, its own native mechanism — OmaVM
 // only triggers it (Backend Rules: integrate, don't reimplement).
 func (b *Backend) ExportApp(ctx context.Context, env core.Environment, id string) error {
+	if err := b.requireContainer(ctx, env); err != nil {
+		return err
+	}
 	return b.run(ctx, "enter", "--no-tty", "--name", boxName(env), "--", "distrobox-export", "--app", id)
 }
 
 func (b *Backend) UnexportApp(ctx context.Context, env core.Environment, id string) error {
+	if err := b.requireContainer(ctx, env); err != nil {
+		return err
+	}
 	return b.run(ctx, "enter", "--no-tty", "--name", boxName(env), "--", "distrobox-export", "--app", id, "--delete")
 }

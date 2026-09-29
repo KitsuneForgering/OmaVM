@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +19,7 @@ func TestConcurrentCreatesPreserveRegistry(t *testing.T) {
 	for i := 0; i < cap(results); i++ {
 		go func(i int) {
 			svc := core.NewService(&core.FileStore{Path: path}, newFakeBackend("box"), nil)
-			_, err := svc.Create(context.Background(), core.Environment{Name: fmt.Sprintf("box-%d", i), Kind: core.Box})
+			_, err := svc.Create(context.Background(), core.Environment{Name: fmt.Sprintf("box-%d", i), Image: "fedora:latest", Kind: core.Box})
 			results <- err
 		}(i)
 	}
@@ -58,7 +60,11 @@ func TestDisconnectISOSettings(t *testing.T) {
 	ctx := context.Background()
 	for _, kind := range []core.EnvironmentKind{core.Box, core.Machine} {
 		name := kind.String()
-		if _, err := svc.Create(ctx, core.Environment{Name: name, Kind: kind}); err != nil {
+		env := core.Environment{Name: name, Image: "fedora:latest", Kind: kind}
+		if kind == core.Machine {
+			env.Image = testISO(t)
+		}
+		if _, err := svc.Create(ctx, env); err != nil {
 			t.Fatal(err)
 		}
 		for _, value := range []bool{true, false} {
@@ -71,5 +77,80 @@ func TestDisconnectISOSettings(t *testing.T) {
 				t.Fatalf("Machine media: %+v, %v", got, err)
 			}
 		}
+	}
+}
+
+// A save keeps the previous registry as <path>.bak, so a registry damaged
+// by a crash or power loss can be recovered instead of every command
+// failing with "parse state file" and no way back.
+func TestSaveKeepsPreviousRegistryAsBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.json")
+	store := &core.FileStore{Path: path}
+	first := []core.Environment{{Name: "one", Kind: core.Box}}
+	second := []core.Environment{{Name: "one", Kind: core.Box}, {Name: "two", Kind: core.Box}}
+	if err := store.Save(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(second); err != nil {
+		t.Fatal(err)
+	}
+	backup := &core.FileStore{Path: path + ".bak"}
+	got, err := backup.Load()
+	if err != nil || len(got) != 1 || got[0].Name != "one" {
+		t.Fatalf("backup = %+v, %v; want the registry before the last save", got, err)
+	}
+	if now, err := store.Load(); err != nil || len(now) != 2 {
+		t.Fatalf("registry = %+v, %v; want the last save", now, err)
+	}
+}
+
+func TestDamagedRegistryPointsToTheBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.json")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (&core.FileStore{Path: path}).Load()
+	if err == nil || !strings.Contains(err.Error(), path+".bak") {
+		t.Fatalf("Load of an empty registry = %v, want a pointer to %s.bak", err, path)
+	}
+}
+
+// Another command holding the registry (a Box pulling its image) used to
+// leave this one waiting in silence; OnWait lets the CLI say why.
+func TestLockReportsWaitingOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.json")
+	holder := &core.FileStore{Path: path}
+	release, err := holder.Lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := 0
+	waiter := &core.FileStore{Path: path, OnWait: func() { waits++ }}
+	acquired := make(chan func())
+	go func() {
+		unlock, err := waiter.Lock(context.Background())
+		if err != nil {
+			t.Error(err)
+		}
+		acquired <- unlock
+	}()
+	time.Sleep(200 * time.Millisecond)
+	release()
+	unlock := <-acquired
+	unlock()
+	if waits != 1 {
+		t.Fatalf("OnWait called %d times, want once", waits)
+	}
+
+	// Uncontended: no notice.
+	quiet := 0
+	free := &core.FileStore{Path: path, OnWait: func() { quiet++ }}
+	unlock, err = free.Lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if quiet != 0 {
+		t.Fatalf("OnWait called %d times without contention", quiet)
 	}
 }

@@ -4,7 +4,6 @@ package box
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
 )
@@ -53,7 +52,7 @@ func (b *Backend) Remove(ctx context.Context, env core.Environment) error {
 func (b *Backend) appExporter(env core.Environment) (core.AppExporter, error) {
 	exporter, ok := b.forEnv(env).(core.AppExporter)
 	if !ok {
-		return nil, fmt.Errorf("%w: legacy container Boxes don't support application export", core.ErrUnsupported)
+		return nil, core.Unsupportedf("legacy container Boxes don't support application export")
 	}
 	return exporter, nil
 }

@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSocketNotifier>
+#include <QStringList>
 #include <QStandardPaths>
 
 #include <cerrno>
@@ -146,9 +147,14 @@ void TerminalSession::reap() {
   if (m_childPid > 0) {
     int status = 0;
     if (::waitpid(static_cast<pid_t>(m_childPid), &status, 0) ==
-            static_cast<pid_t>(m_childPid) &&
-        WIFEXITED(status))
-      code = WEXITSTATUS(status);
+        static_cast<pid_t>(m_childPid)) {
+      // Death by a signal reads as 128 + signal, as in a shell: it must
+      // not look like the clean exit (0) the viewer closes itself on.
+      if (WIFEXITED(status))
+        code = WEXITSTATUS(status);
+      else if (WIFSIGNALED(status))
+        code = 128 + WTERMSIG(status);
+    }
     m_childPid = -1;
   }
   emit finished(code);
@@ -322,7 +328,10 @@ void TerminalSession::handleByte(unsigned char byte) {
       m_state = ParseState::OscEscape;
       return;
     }
-    m_oscBuffer.append(char(byte));
+    if (m_oscBuffer.size() < kMaxOscLength)
+      m_oscBuffer.append(char(byte));
+    else
+      m_oscOverflow = true;
     return;
 
   case ParseState::OscEscape:
@@ -368,20 +377,84 @@ void TerminalSession::handleUtf8Byte(unsigned char byte) {
   }
 }
 
+namespace {
+// Columns a character occupies, like wcwidth() but from Qt's Unicode
+// tables instead of the C library's, whose answer depends on the process
+// locale (-1 for everything non-ASCII under LANG=C).
+int cellWidth(const QString &ch) {
+  if (ch.isEmpty())
+    return 1;
+  const char32_t cp = ch.toUcs4().value(0);
+  const QChar::Category category = QChar::category(cp);
+  if (category == QChar::Mark_NonSpacing ||
+      category == QChar::Mark_Enclosing || (cp >= 0x200b && cp <= 0x200d) ||
+      (cp >= 0xfe00 && cp <= 0xfe0f))
+    return 0;
+  // East Asian Wide/Fullwidth ranges and emoji.
+  if ((cp >= 0x1100 && cp <= 0x115f) ||
+      (cp >= 0x2e80 && cp <= 0xa4cf && cp != 0x303f) ||
+      (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) ||
+      (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1f64f) ||
+      (cp >= 0x1f680 && cp <= 0x1f6ff) || (cp >= 0x1f900 && cp <= 0x1f9ff) ||
+      (cp >= 0x1fa70 && cp <= 0x1faff) || (cp >= 0x20000 && cp <= 0x3fffd))
+    return 2;
+  return 1;
+}
+
+// A wide character is a head cell followed by a continuation cell with an
+// empty ch. Writing over either half leaves the other half blank.
+void breakWideCharacterAt(QVector<TerminalCell> &row, int col) {
+  if (col < 0 || col >= row.size())
+    return;
+  if (row[col].ch.isEmpty()) {
+    if (col > 0)
+      row[col - 1].ch = QStringLiteral(" ");
+  } else if (col + 1 < row.size() && row[col + 1].ch.isEmpty()) {
+    row[col + 1].ch = QStringLiteral(" ");
+  }
+}
+} // namespace
+
 void TerminalSession::putChar(const QString &ch) {
   auto &grid = activeGrid();
   if (grid.isEmpty())
     return;
+  const int width = cellWidth(ch);
+  if (width == 0) {
+    // Combining mark: part of the character just written.
+    if (m_cursorRow < 0 || m_cursorRow >= grid.size())
+      return;
+    auto &row = grid[m_cursorRow];
+    int col = m_wrapPending ? m_cursorCol : m_cursorCol - 1;
+    if (col > 0 && col < row.size() && row[col].ch.isEmpty())
+      --col;
+    if (col >= 0 && col < row.size())
+      row[col].ch += ch;
+    return;
+  }
   if (m_wrapPending) {
     m_wrapPending = false;
     newline();
     carriageReturn();
   }
+  if (width == 2 && m_cursorCol + 1 >= m_cols) {
+    // No room for both halves on this line.
+    if (m_autoWrap) {
+      newline();
+      carriageReturn();
+    } else {
+      m_cursorCol = qMax(0, m_cols - 2);
+    }
+  }
   if (m_cursorRow < 0 || m_cursorRow >= grid.size())
     return;
   auto &row = grid[m_cursorRow];
-  if (m_cursorCol < 0 || m_cursorCol >= row.size())
+  if (m_cursorCol < 0 || m_cursorCol + width - 1 >= row.size())
     return;
+  breakWideCharacterAt(row, m_cursorCol);
+  if (width == 2)
+    breakWideCharacterAt(row, m_cursorCol + 1);
   TerminalCell &cell = row[m_cursorCol];
   cell.ch = ch;
   cell.fg = m_curFg;
@@ -390,11 +463,17 @@ void TerminalSession::putChar(const QString &ch) {
   cell.underline = m_curUnderline;
   cell.reverse = m_curReverse;
   cell.faint = m_curFaint;
-  if (m_cursorCol + 1 >= m_cols) {
+  if (width == 2) {
+    row[m_cursorCol + 1] = cell;
+    row[m_cursorCol + 1].ch = QString();
+  }
+  const int last = m_cursorCol + width - 1;
+  if (last + 1 >= m_cols) {
+    m_cursorCol = last;
     if (m_autoWrap)
       m_wrapPending = true;
   } else {
-    ++m_cursorCol;
+    m_cursorCol = last + 1;
   }
 }
 
@@ -549,8 +628,10 @@ void TerminalSession::scrollRegionUp(int n) {
   if (!m_altScreenActive && m_scrollTop == 0) {
     for (int i = 0; i < n; ++i) {
       m_scrollback.append(grid[i]);
-      if (m_scrollback.size() > kMaxScrollback)
+      if (m_scrollback.size() > kMaxScrollback) {
         m_scrollback.removeFirst();
+        ++m_droppedLines;
+      }
     }
   }
   for (int r = m_scrollTop; r + n <= m_scrollBottom; ++r)
@@ -643,7 +724,9 @@ QVector<int> TerminalSession::splitParams(const QByteArray &raw) {
         value = 0;
         any = true;
       }
-      value = value * 10 + (c - '0');
+      // Capped like xterm: ESC[2147483647C made cursor + n overflow to a
+      // negative column, and the next erase wrote outside the row.
+      value = qMin(value * 10 + (c - '0'), 65535);
     }
   }
   result.append(any ? value : -1);
@@ -741,8 +824,14 @@ void TerminalSession::setPrivateMode(const QVector<int> &params, bool enable) {
     return;
   for (int mode : params) {
     switch (mode) {
+    case 1:
+      m_applicationCursorKeys = enable;
+      break;
     case 7:
       m_autoWrap = enable;
+      break;
+    case 2004:
+      m_bracketedPaste = enable;
       break;
     case 25:
       m_cursorVisible = enable;
@@ -754,8 +843,8 @@ void TerminalSession::setPrivateMode(const QVector<int> &params, bool enable) {
       switchAlternateScreen(enable, true);
       break;
     default:
-      // Mouse reporting (1000/1002/1003/1006) and bracketed paste (2004)
-      // are not implemented — safe to ignore rather than misbehave.
+      // Mouse reporting (1000/1002/1003/1006) is not implemented — safe
+      // to ignore rather than misbehave.
       break;
     }
   }
@@ -829,14 +918,226 @@ void TerminalSession::handleSgr(const QVector<int> &paramsIn) {
 }
 
 void TerminalSession::dispatchOsc() {
-  const int semi = m_oscBuffer.indexOf(';');
-  if (semi < 0) {
-    m_oscBuffer.clear();
+  const QByteArray buffer = m_oscBuffer;
+  const bool overflow = m_oscOverflow;
+  m_oscBuffer.clear();
+  m_oscOverflow = false;
+  const int semi = buffer.indexOf(';');
+  if (semi < 0 || overflow)
     return;
-  }
-  const QByteArray code = m_oscBuffer.left(semi);
-  const QByteArray payload = m_oscBuffer.mid(semi + 1);
+  const QByteArray code = buffer.left(semi);
+  const QByteArray payload = buffer.mid(semi + 1);
   if (code == "0" || code == "2")
     emit titleChanged(QString::fromUtf8(payload));
-  m_oscBuffer.clear();
+  else if (code == "52")
+    handleOsc52(payload);
+}
+
+// OSC 52 ; <targets> ; <base64>. Only writes: "?" asks for the clipboard's
+// contents, which would let anything running in the Box read what the user
+// copied on the host, so it is ignored (xterm's own default).
+void TerminalSession::handleOsc52(const QByteArray &payload) {
+  const int semi = payload.indexOf(';');
+  if (semi < 0)
+    return;
+  const QByteArray targets = payload.left(semi);
+  const QByteArray data = payload.mid(semi + 1);
+  // Empty targets mean the default "s 0"; c is the clipboard, p/s the
+  // primary selection. Anything else (cut buffers) isn't a clipboard here.
+  if (!targets.isEmpty() && !targets.contains('c') && !targets.contains('p') &&
+      !targets.contains('s'))
+    return;
+  if (data == "?")
+    return;
+  const auto decoded = QByteArray::fromBase64Encoding(
+      data, QByteArray::AbortOnBase64DecodingErrors);
+  if (!decoded)
+    return;
+  emit clipboardWriteRequested(QString::fromUtf8(*decoded));
+}
+
+int TerminalSession::bufferLineCount() const {
+  return m_scrollback.size() + grid().size();
+}
+
+QVector<TerminalCell> TerminalSession::bufferLine(int index) const {
+  if (index < 0 || index >= bufferLineCount())
+    return {};
+  if (index < m_scrollback.size())
+    return m_scrollback.at(index);
+  return grid().at(index - m_scrollback.size());
+}
+
+QString TerminalSession::text(int startLine, int startCol, int endLine,
+                              int endCol) const {
+  if (startLine > endLine || (startLine == endLine && startCol > endCol)) {
+    qSwap(startLine, endLine);
+    qSwap(startCol, endCol);
+  }
+  QStringList lines;
+  for (int l = qMax(0, startLine); l <= endLine && l < bufferLineCount();
+       ++l) {
+    const QVector<TerminalCell> line = bufferLine(l);
+    int first = l == startLine ? qMax(0, startCol) : 0;
+    const int last = l == endLine ? qMin(endCol, int(line.size()) - 1)
+                                  : int(line.size()) - 1;
+    // Starting on the right half of a wide character copies all of it.
+    while (first > 0 && first < line.size() && line.at(first).ch.isEmpty())
+      --first;
+    QString out;
+    for (int c = first; c <= last; ++c)
+      out += line.at(c).ch;
+    while (out.endsWith(QLatin1Char(' ')))
+      out.chop(1);
+    lines << out;
+  }
+  return lines.join(QLatin1Char('\n'));
+}
+
+QPair<int, int> TerminalSession::wordBounds(int line, int col) const {
+  const QVector<TerminalCell> cells = bufferLine(line);
+  if (col < 0 || col >= cells.size())
+    return {col, col};
+  // Paths, URLs and e-mail addresses select as one word, like in most
+  // terminals.
+  const auto isWord = [&cells](int c) {
+    const QString &ch = cells.at(c).ch;
+    if (ch.isEmpty()) // right half of a wide character
+      return true;
+    const QChar first = ch.at(0);
+    return first.isLetterOrNumber() || first.isMark() ||
+           QStringLiteral("-_./~:@%+#?=&").contains(first) ||
+           first.unicode() > 0x2e7f; // CJK and other wide scripts
+  };
+  while (col > 0 && cells.at(col).ch.isEmpty())
+    --col;
+  if (!isWord(col))
+    return {col, col};
+  int first = col;
+  int last = col;
+  while (first > 0 && isWord(first - 1))
+    --first;
+  while (first < cells.size() && cells.at(first).ch.isEmpty())
+    ++first;
+  while (last + 1 < cells.size() && isWord(last + 1))
+    ++last;
+  return {first, last};
+}
+
+bool TerminalSession::isCopyShortcut(int key,
+                                     Qt::KeyboardModifiers modifiers) {
+  const Qt::KeyboardModifiers relevant =
+      modifiers & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier);
+  return (key == Qt::Key_Insert && relevant == Qt::ControlModifier) ||
+         (key == Qt::Key_C &&
+          relevant == (Qt::ControlModifier | Qt::ShiftModifier));
+}
+
+QByteArray TerminalSession::keySequence(int key,
+                                        Qt::KeyboardModifiers modifiers,
+                                        const QString &text) const {
+  const bool shift = modifiers & Qt::ShiftModifier;
+  const bool alt = modifiers & Qt::AltModifier;
+  const bool ctrl = modifiers & Qt::ControlModifier;
+  // xterm's modifier parameter: 1 + Shift(1) + Alt(2) + Ctrl(4).
+  const int modifier = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0);
+
+  // Cursor keys, Home/End and F1-F4: a final letter after CSI or SS3.
+  char final = 0;
+  bool cursorKey = false;
+  switch (key) {
+  case Qt::Key_Up: final = 'A'; cursorKey = true; break;
+  case Qt::Key_Down: final = 'B'; cursorKey = true; break;
+  case Qt::Key_Right: final = 'C'; cursorKey = true; break;
+  case Qt::Key_Left: final = 'D'; cursorKey = true; break;
+  case Qt::Key_Home: final = 'H'; cursorKey = true; break;
+  case Qt::Key_End: final = 'F'; cursorKey = true; break;
+  case Qt::Key_F1: final = 'P'; break;
+  case Qt::Key_F2: final = 'Q'; break;
+  case Qt::Key_F3: final = 'R'; break;
+  case Qt::Key_F4: final = 'S'; break;
+  default: break;
+  }
+  if (final) {
+    if (modifier > 1)
+      return QByteArray("\x1b[1;") + QByteArray::number(modifier) + final;
+    const bool ss3 = !cursorKey || m_applicationCursorKeys;
+    return QByteArray(ss3 ? "\x1bO" : "\x1b[") + final;
+  }
+
+  // Editing keys and F5-F12: CSI number ~.
+  int number = 0;
+  switch (key) {
+  case Qt::Key_Insert: number = 2; break;
+  case Qt::Key_Delete: number = 3; break;
+  case Qt::Key_PageUp: number = 5; break;
+  case Qt::Key_PageDown: number = 6; break;
+  default:
+    if (key >= Qt::Key_F5 && key <= Qt::Key_F12) {
+      static const int numbers[] = {15, 17, 18, 19, 20, 21, 23, 24};
+      number = numbers[key - Qt::Key_F5];
+    }
+    break;
+  }
+  if (number) {
+    QByteArray out = "\x1b[" + QByteArray::number(number);
+    if (modifier > 1)
+      out += ';' + QByteArray::number(modifier);
+    return out + '~';
+  }
+
+  QByteArray out;
+  switch (key) {
+  case Qt::Key_Return:
+  case Qt::Key_Enter:
+    out = "\r";
+    break;
+  case Qt::Key_Backspace:
+    out = ctrl ? "\x08" : "\x7f";
+    break;
+  case Qt::Key_Tab:
+    out = "\t";
+    break;
+  case Qt::Key_Backtab:
+    return QByteArrayLiteral("\x1b[Z");
+  case Qt::Key_Escape:
+    out = "\x1b";
+    break;
+  default:
+    if (ctrl && key >= Qt::Key_A && key <= Qt::Key_Z) {
+      out = QByteArray(1, char(key - Qt::Key_A + 1));
+    } else if (ctrl && (key == Qt::Key_Space || key == Qt::Key_At)) {
+      out = QByteArray(1, '\0');
+    } else if (ctrl && key >= Qt::Key_BracketLeft && key <= Qt::Key_Underscore) {
+      // Ctrl+[, Ctrl+\, Ctrl+], Ctrl+^ and Ctrl+_ are ESC, FS, GS, RS and US.
+      out = QByteArray(1, char(key - Qt::Key_BracketLeft + 0x1b));
+    } else if (!text.isEmpty()) {
+      out = text.toUtf8();
+    }
+    break;
+  }
+  if (!out.isEmpty() && alt && !out.startsWith('\x1b'))
+    out.prepend('\x1b');
+  return out;
+}
+
+bool TerminalSession::isPasteShortcut(int key,
+                                      Qt::KeyboardModifiers modifiers) {
+  const Qt::KeyboardModifiers relevant =
+      modifiers & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier);
+  return (key == Qt::Key_Insert && relevant == Qt::ShiftModifier) ||
+         (key == Qt::Key_V &&
+          relevant == (Qt::ControlModifier | Qt::ShiftModifier));
+}
+
+QByteArray TerminalSession::pasteSequence(const QString &text) const {
+  QString body = text;
+  body.replace(QStringLiteral("\r\n"), QStringLiteral("\r"));
+  body.replace(QLatin1Char('\n'), QLatin1Char('\r'));
+  if (!m_bracketedPaste)
+    return body.toUtf8();
+  // An end marker inside the text would close the bracket early and turn
+  // the rest of the paste into typed input.
+  body.remove(QStringLiteral("\x1b[201~"));
+  return "\x1b[200~" + body.toUtf8() + "\x1b[201~";
 }

@@ -22,9 +22,11 @@
   <a href="#status">Project status</a>
 </p>
 
-OmaVM is a desktop app for creating and managing environments on
-[Omarchy](https://omarchy.org). Work with another Linux distribution's tools
-in a **Box**, or install and boot a complete operating system in a **Machine**.
+OmaVM brings other Linux distributions and complete operating systems into
+your [Omarchy](https://omarchy.org) workflow. It is a desktop app for creating,
+using, and managing these environments: work with another Linux distribution's
+tools and applications in a **Box**, or install and boot a complete operating
+system in a **Machine**.
 Start, open, and stop both from the same window, with a built-in terminal for
 Boxes and a graphical viewer for Machines.
 
@@ -85,6 +87,31 @@ direction takes inspiration from Parallels Desktop: make creating and using
 another system approachable, with advanced settings available when needed.
 An optional [Quickshell bar widget](contrib/dev.omavm.bar) gives you a shortcut
 to the app and an environment count in its tooltip.
+
+## Host ↔ guest integration
+
+The product direction is to let you copy text, move files, and open links and
+applications in either direction between Omarchy and an environment. These
+integrations are intended to be **on by default, with controls to turn each
+one off per environment** wherever supported.
+
+Today, Boxes share your home directory through Distrobox and can export
+applications to your Omarchy launcher. Machines offer configurable shared
+folders and bidirectional text clipboard sharing; clipboard sharing is on by
+default and can be disabled per Machine, but requires guest support.
+
+Every environment also appears in your app launcher, with an icon in its
+color tag, so it opens like any installed app (Settings → "Show in the app
+launcher" turns that off). In a Box's terminal, select text with the mouse
+and copy with Ctrl+Shift+C or Super+C; programs like Neovim and tmux can copy
+to your clipboard too, but can never read it (Settings turns that off). A
+Machine's color also shows on its `~/OmaVM/<name>` link in Files.
+
+The full set of per-environment controls, file transfer, and bidirectional
+link/application opening is **planned**. A shared folder is not a file-transfer
+channel, and Box integration does not yet have independent off switches for
+every capability. See the [development roadmap](docs/TODO.md) for the remaining
+work and validation criteria.
 
 ## Status
 
@@ -176,7 +203,17 @@ bin/omavm restart kernels
 bin/omavm integration kernels
 bin/omavm settings kernels --description "Kernel lab" --cpus 4 --memory-mib 4096
 bin/omavm settings kernels --shared-path "$HOME/Projects" --shared-read-only
+bin/omavm ssh kernels                       # a shell in the guest
+bin/omavm exec kernels -- uname -r          # one command, no prompts
 ```
+
+`ssh` and `exec` reach a Machine over a local host↔guest channel (vsock),
+with no guest networking. The guest needs systemd 256 or newer with sshd
+installed; you log in with your own user name (`--user` to change it) and
+the guest's key is remembered on first use. The channel is on by default,
+and **any program on this computer can reach it, Boxes included**: only the
+guest's login protects it. Turn it off per Machine with
+`omavm settings NAME --ssh=false` (or in Settings), then restart the Machine.
 
 Machines expose the folder to the guest as the virtiofs tag `omavm-share`;
 inside a Linux guest, mount it with `mount -t virtiofs omavm-share /mnt/omavm-share`.
@@ -204,39 +241,50 @@ work. Deleting a running Machine also requires shutdown to succeed.
 Registry changes are serialized across CLI and GUI processes so concurrent
 creation, deletion and settings updates do not overwrite each other's records.
 
-Opening a Machine's graphical display launches `omavm-gui` in its built-in
-VNC viewer mode (`omavm-gui --viewer <socket> --title <name>`) — no
-external VNC/SPICE client to install. Machines run fully headless
-(`-display egl-headless`, GPU-accelerated `virtio-vga-gl`) and expose the
-display over a local-only VNC Unix socket, plus PipeWire audio and virtiofs
-shared folders. Text clipboard sharing is a Machine setting (**Settings →
-Automation → Share text clipboard**, or `omavm settings NAME --share-clipboard`),
-on by default and applied automatically whenever you open the viewer — it is
-not a per-window checkbox you need to re-enable each time. Turn it off per
+Opening a Machine's graphical display shows it inside `omavm-gui` — no
+external VNC/SPICE client to install. Machines run headless with QEMU's
+D-Bus display; `omavm open` connects the viewer to it directly. With a
+usable host GPU (`omavm host` tells you), frames reach the viewer as GPU
+buffers without being copied through the CPU; otherwise they are shared
+through memory. Keyboard input follows the guest's own layout, the pointer
+is absolute, and the guest's cursor shape is used on the host. PipeWire
+audio and virtiofs shared folders work the same either way.
+
+Text clipboard sharing is a Machine setting (**Settings → Automation →
+Share text clipboard**, or `omavm settings NAME --share-clipboard`), on by
+default and applied automatically whenever you open the viewer — it is not
+a per-window checkbox you need to re-enable each time. Turn it off per
 Machine if you don't want it. Only UTF-8 text is exchanged, limited to
 approximately 1 MiB; images and files are not transferred. The guest desktop
 must have a running `spice-vdagent` compatible with its graphical session. The
 QEMU guest agent shown in the environment card is a different component and
-does not prove clipboard readiness. Restart an existing Machine to attach the
-clipboard channel. This uses QEMU's `qemu-vdagent` bridge with VNC; it does not
-require a SPICE display or a new OmaVM guest daemon. Travel Mode (also in
-Settings → Automation, on by default) halves the Machine's default CPU
-allocation for that session while the host is running on battery, unless
-you've pinned a custom CPU count.
+does not prove clipboard readiness. Travel Mode (also in Settings →
+Automation, on by default) halves the Machine's default CPU allocation for
+that session while the host is running on battery, unless you've pinned a
+custom CPU count. Boxes get it too: each time a Box starts or opens on
+battery, its container is limited to half of this computer's CPUs, and gets
+all of them back once you're plugged in.
+
+Vulkan acceleration (**Settings → Graphics**, or `omavm settings NAME
+--vulkan`) is on by default and used only when the host supports it; the
+guest needs a recent Mesa with the Venus driver.
+
+Machines started by an OmaVM version from before the D-Bus display need a
+restart before they can be opened; `omavm open` says so.
 
 By default the viewer opens as an ordinary window wherever Hyprland
 would place it. Resizing that window requests a matching guest resolution
-through VNC after a short delay. This requires a guest display driver and
-desktop that honor virtio GPU resize requests. During boot, or when the guest
-does not resize, the viewer preserves the image proportions with black margins
-and maps pointer input to the displayed image.
+after a short delay. This requires a guest display driver and desktop that
+honor virtio GPU resize requests. During boot, or when the guest does not
+resize, the viewer preserves the image proportions with black margins and
+maps pointer input to the displayed image.
 
-The protocol tests (`make test-viewer`, also part of `make test` and CI) cover
-fragmented resize/clipboard messages, bounded clipboard decompression,
-framebuffer bounds and rejected/forwarded resize requests.
-When QEMU is installed they also check negotiation against a temporary QEMU
-process without guest disks, including bidirectional Unicode clipboard between
-two clients; this is not a guest desktop compatibility test.
+The display tests (`make test-display`, also part of `make test` and CI)
+start a temporary QEMU without guest disks and check both frame paths (GPU
+buffers and shared memory), frame pacing and that frames render upright. The
+rendering test draws offscreen — no window appears — and needs a Wayland
+session; both skip without KVM. This is not a guest desktop compatibility
+test.
 
 The Box terminal's parser has its own suite (`make test-terminal`, also part
 of `make test` and CI): cursor addressing, SGR colors (16/256/truecolor),
@@ -261,6 +309,19 @@ optional and never enabled automatically — see
 rule applies to a Box's terminal viewer too, since it shares the same
 `dev.omavm.viewer` app id — no separate rule needed for Boxes.
 
+Separately, **Settings → Automation → Open in an empty workspace** (on by
+default for both Machines and Boxes; `omavm settings NAME
+--open-in-empty-workspace=false` turns it off) switches to a fresh, empty workspace
+on the active monitor right before opening that environment, and — if a
+viewer/terminal for it is already open somewhere — switches to its
+workspace instead of opening a second one. This needs Omarchy's
+Lua-configured Hyprland specifically (it queries `hl.get_workspaces()`/
+`hl.get_windows()` over `hyprctl`); anywhere else, or if nothing eligible
+is found, it falls back to opening on the current workspace. If your
+Hyprland config has a rule for `dev.omavm.viewer` (such as the fullscreen
+rule above), that rule places the window and this setting stays out of its
+way.
+
 ## GUI (Experience Center)
 
 ```bash
@@ -281,7 +342,7 @@ terminal emulator implemented from scratch (PTY + a Ground/Escape/CSI/OSC
 parser covering cursor addressing, SGR colors including 256-color and
 truecolor, the alternate screen buffer used by vim/htop/less/tmux, and
 scrollback), not an external terminal emulator. It shares the same
-`dev.omavm.viewer` app id as the Machine VNC viewer below, so the same
+`dev.omavm.viewer` app id as the Machine display viewer below, so the same
 optional Hyprland window rule covers both.
 
 A running Machine's card shows a live screenshot of its display
@@ -307,6 +368,13 @@ This puts `omavm`/`omavm-gui` on `PATH` and registers a `.desktop` entry
 Omarchy app. Set `PREFIX=/usr/local` (with `sudo`) for a system-wide
 install instead.
 
+`make uninstall` only removes the app itself. Environments it created
+(Distrobox containers, Machine virtual disks) are never touched — if
+any still exist, it prints a note instead of silently leaving them
+behind unmentioned. To remove those too, run `make uninstall-environments`
+separately; it lists everything that will be deleted and asks for
+confirmation (`CONFIRM=1` skips the prompt for scripted use).
+
 ## Logs
 
 Both binaries log structured (JSON) events. `/var/log` is root-owned by
@@ -315,8 +383,15 @@ default, and OmaVM never escalates privileges silently to write there
 `/var/log/omavm/<component>.log` only if that directory already exists
 and is writable; otherwise it falls back to
 `$XDG_STATE_HOME/omavm/logs/<component>.log` (usually
-`~/.local/state/omavm/logs/`). The very first log line always records
+`~/.local/state/omavm/logs/`). The first line of each log file records
 which path is in effect.
+
+The log keeps commands that change something (create, start, settings,
+snapshots, …) and every failure; routine reads such as `list` and
+`status`, which the Experience Center and the Omarchy bar run every few
+seconds, are not recorded. Past 5 MiB a log moves to `<component>.log.1`
+(replacing the previous one) and starts over, so each component keeps at
+most about 10 MiB.
 
 To opt into the system location instead, provision it once yourself:
 

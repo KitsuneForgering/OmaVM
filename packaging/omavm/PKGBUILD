@@ -35,6 +35,7 @@ package() {
   install -Dm755 bin/omavm-gui "$pkgdir/usr/bin/omavm-gui"
   install -Dm644 data/dev.omavm.app.desktop "$pkgdir/usr/share/applications/dev.omavm.app.desktop"
   install -Dm644 data/icons/dev.omavm.app.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.omavm.app.svg"
+  install -Dm644 -t "$pkgdir/usr/share/omavm/icons" data/icons/colors/*.svg
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 

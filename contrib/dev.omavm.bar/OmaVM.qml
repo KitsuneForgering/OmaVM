@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -76,16 +77,40 @@ BarWidget {
     onTriggered: root.refresh()
   }
 
-  // A plain glyph, not "VM N" text: with the widget now living in the
-  // tray cluster, the count belongs in the tooltip like every other tray
-  // icon (network/bluetooth/volume), not spelled out inline.
+  // The OmaVM window glyph (data/icons/dev.omavm.app.svg, flattened to a
+  // single-color line icon as icon.svg here) instead of the bare ▣ font
+  // glyph, so this reads as the app's own identity rather than a random
+  // Unicode box — matches docs/TODO.md P2 "Unificar a identidade do
+  // widget com o aplicativo". Recolored via BarIconButton's own
+  // iconComponent slot (see /usr/share/omarchy/shell/Ui/BarIconButton.qml)
+  // rather than a fixed color, so it follows the bar's foreground/active
+  // colors like every built-in icon does.
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "▣"
     slotSize: Style.bar.statusSlot
     tooltipText: "OmaVM — " + root.envCount + " environment" + (root.envCount === 1 ? "" : "s") + ", click to open"
+    iconComponent: Component {
+      Item {
+        Image {
+          id: glyphImage
+          anchors.fill: parent
+          source: Qt.resolvedUrl("icon.svg")
+          sourceSize.width: width * 2
+          sourceSize.height: height * 2
+          fillMode: Image.PreserveAspectFit
+          visible: false
+          asynchronous: true
+        }
+        MultiEffect {
+          anchors.fill: parent
+          source: glyphImage
+          colorization: 1
+          colorizationColor: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        }
+      }
+    }
     onPressed: function(b) {
       if (b === Qt.RightButton) root.refresh()
       else root.openExperienceCenter()

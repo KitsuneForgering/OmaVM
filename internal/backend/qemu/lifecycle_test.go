@@ -3,6 +3,7 @@ package qemu
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -14,22 +15,13 @@ import (
 	"time"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
+	"github.com/KitsuneSemCalda/OmaVM/internal/power"
 )
 
 func TestSlowShutdownNeverSendsQuit(t *testing.T) {
-	child := exec.Command("sleep", "60")
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { child.Process.Kill(); child.Wait() }()
 	b := &Backend{stateDir: t.TempDir()}
 	env := core.Environment{Name: "guest", Kind: core.Machine}
-	if err := os.MkdirAll(b.dir(env.Name), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(b.pidPath(env.Name), []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	startFakeQEMU(t, b, env.Name)
 	listener, err := net.Listen("unix", b.qmpPath(env.Name))
 	if err != nil {
 		t.Fatal(err)
@@ -77,19 +69,9 @@ func TestSlowShutdownNeverSendsQuit(t *testing.T) {
 func TestShutdownFailurePreservesGuest(t *testing.T) {
 	for _, action := range []string{"stop", "restart", "remove"} {
 		t.Run(action, func(t *testing.T) {
-			child := exec.Command("sleep", "60")
-			if err := child.Start(); err != nil {
-				t.Fatal(err)
-			}
-			defer func() { child.Process.Kill(); child.Wait() }()
 			b := &Backend{stateDir: t.TempDir()}
 			env := core.Environment{Name: "guest", Kind: core.Machine}
-			if err := os.MkdirAll(b.dir(env.Name), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(b.pidPath(env.Name), []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
-				t.Fatal(err)
-			}
+			child := startFakeQEMU(t, b, env.Name)
 			var err error
 			switch action {
 			case "stop":
@@ -112,26 +94,20 @@ func TestShutdownFailurePreservesGuest(t *testing.T) {
 	}
 }
 
-func TestGoToSnapshotPausesAroundRunningRestore(t *testing.T) {
-	child := exec.Command("sleep", "60")
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { child.Process.Kill(); child.Wait() }()
-	b := &Backend{stateDir: t.TempDir()}
-	env := core.Environment{Name: "guest", Kind: core.Machine}
-	if err := os.MkdirAll(b.dir(env.Name), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(b.pidPath(env.Name), []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	listener, err := net.Listen("unix", b.qmpPath(env.Name))
+// recordQMP answers each connection's one command after qmp_capabilities
+// and records it with its arguments.
+type qmpCall struct {
+	Execute   string         `json:"execute"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+func recordQMP(t *testing.T, socket string) (calls func() []qmpCall) {
+	t.Helper()
+	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
-	var commands []string
+	var recorded []qmpCall
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -143,37 +119,64 @@ func TestGoToSnapshotPausesAroundRunningRestore(t *testing.T) {
 			conn.SetDeadline(time.Now().Add(2 * time.Second))
 			enc, dec := json.NewEncoder(conn), json.NewDecoder(conn)
 			enc.Encode(map[string]any{"QMP": map[string]any{}})
-			var req struct {
-				Execute string `json:"execute"`
-			}
+			var req qmpCall
 			if dec.Decode(&req) == nil { // qmp_capabilities
 				enc.Encode(map[string]any{"return": map[string]any{}})
+				req = qmpCall{}
 				if dec.Decode(&req) == nil {
-					commands = append(commands, req.Execute)
-					if req.Execute == "human-monitor-command" {
-						enc.Encode(map[string]any{"return": ""})
-					} else {
-						enc.Encode(map[string]any{"return": map[string]any{}})
-					}
+					recorded = append(recorded, req)
+					enc.Encode(map[string]any{"return": map[string]any{}})
 				}
 			}
 			conn.Close()
 		}
 	}()
-	restoreErr := b.GoToSnapshot(context.Background(), env, "before-upgrade")
-	listener.Close()
-	<-done
-	if restoreErr != nil {
-		t.Fatalf("GoToSnapshot: %v", restoreErr)
+	return func() []qmpCall {
+		listener.Close()
+		<-done
+		return recorded
 	}
-	want := []string{"stop", "human-monitor-command", "cont"}
-	if len(commands) != len(want) {
-		t.Fatalf("expected commands %v, got %v", want, commands)
+}
+
+// Regression: a running Machine's snapshot used savevm, which every
+// Machine's devices refuse (virtio-sound, and virgl with 3D), so it
+// always failed. It is now a disk-only snapshot through QMP.
+func TestSnapshotOfRunningMachineIsDiskOnly(t *testing.T) {
+	b := &Backend{stateDir: t.TempDir()}
+	env := core.Environment{Name: "guest", Kind: core.Machine}
+	startFakeQEMU(t, b, env.Name)
+	calls := recordQMP(t, b.qmpPath(env.Name))
+	if err := b.CreateSnapshot(context.Background(), env, "before-upgrade"); err != nil {
+		t.Fatal(err)
 	}
-	for i := range want {
-		if commands[i] != want[i] {
-			t.Fatalf("expected commands %v, got %v", want, commands)
+	if err := b.RemoveSnapshot(context.Background(), env, "before-upgrade"); err != nil {
+		t.Fatal(err)
+	}
+	got := calls()
+	want := []string{"blockdev-snapshot-internal-sync", "blockdev-snapshot-delete-internal-sync"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %+v", want, got)
+	}
+	for i, call := range got {
+		if call.Execute != want[i] || call.Arguments["device"] != bootDisk || call.Arguments["name"] != "before-upgrade" {
+			t.Fatalf("call %d: %+v", i, call)
 		}
+	}
+}
+
+// Going to a snapshot replaces the disk, which QEMU refuses under a
+// running system; say so instead of pausing and failing halfway.
+func TestGoToSnapshotNeedsAStoppedMachine(t *testing.T) {
+	b := &Backend{stateDir: t.TempDir()}
+	env := core.Environment{Name: "guest", Kind: core.Machine}
+	startFakeQEMU(t, b, env.Name)
+	calls := recordQMP(t, b.qmpPath(env.Name))
+	err := b.GoToSnapshot(context.Background(), env, "before-upgrade")
+	if !errors.Is(err, core.ErrInvalidInput) || !strings.Contains(err.Error(), "shut down guest first") {
+		t.Fatalf("expected a shut-down-first error, got %v", err)
+	}
+	if got := calls(); len(got) != 0 {
+		t.Fatalf("a running Machine was touched: %+v", got)
 	}
 }
 
@@ -222,10 +225,10 @@ func TestTravelModeReducesCPUsOnBattery(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "qemu-system-x86_64"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OMAVM_TEST_ARGS\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	orig := powerSupplyDir
-	defer func() { powerSupplyDir = orig }()
-	powerSupplyDir = filepath.Join(dir, "power_supply")
-	writePowerSupply(t, powerSupplyDir, "AC", "Mains", "0")
+	orig := power.SupplyDir
+	defer func() { power.SupplyDir = orig }()
+	power.SupplyDir = filepath.Join(dir, "power_supply")
+	writePowerSupply(t, power.SupplyDir, "AC", "Mains", "0")
 
 	b := &Backend{stateDir: dir}
 	env := core.Environment{Name: "guest", Kind: core.Machine}
@@ -301,5 +304,95 @@ func TestBootMediaArguments(t *testing.T) {
 		if !disconnect && !strings.Contains(args, "order=cd,menu=on") {
 			t.Fatalf("disk must precede installer: %s", args)
 		}
+	}
+}
+
+// TestMissingBinaryDiagnostic verifies that a missing qemu-img/
+// qemu-system-x86_64 surfaces an actionable install hint (docs/TODO.md
+// P1 "Tornar pré-requisitos e recursos compreensíveis") instead of Go's
+// raw "executable file not found in $PATH".
+func TestMissingBinaryDiagnostic(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // empty: neither binary resolves
+
+	b := &Backend{stateDir: t.TempDir()}
+	env := core.Environment{Name: "guest", Kind: core.Machine}
+
+	err := b.Create(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "qemu-img not found") || !strings.Contains(err.Error(), "qemu-desktop") {
+		t.Fatalf("expected actionable qemu-img missing-binary error, got: %v", err)
+	}
+
+	// Create's disk provisioning is required for Start to reach the
+	// qemu-system-x86_64 lookup instead of failing on the missing disk.
+	if err := os.MkdirAll(b.dir(env.Name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b.diskPath(env.Name), []byte("not a real qcow2"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err = b.Start(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "qemu-system-x86_64 not found") || !strings.Contains(err.Error(), "qemu-desktop") {
+		t.Fatalf("expected actionable qemu-system-x86_64 missing-binary error, got: %v", err)
+	}
+}
+
+// startFakeQEMU runs a stand-in for this Machine's QEMU: a long-lived
+// process with -pidfile <its pidfile> on its command line, recorded in
+// that pidfile, like the real one.
+func startFakeQEMU(t *testing.T, b *Backend, name string) *exec.Cmd {
+	t.Helper()
+	if err := os.MkdirAll(b.dir(name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// "; :" keeps sh from exec'ing sleep, which would drop the arguments.
+	child := exec.Command("sh", "-c", "sleep 60; :", "qemu-system-x86_64", "-pidfile", b.pidPath(name))
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { child.Process.Kill(); child.Wait() })
+	// /proc/<pid>/cmdline reads empty for a moment after the exec; the
+	// real QEMU writes its pidfile only once it is up.
+	for deadline := time.Now().Add(2 * time.Second); !processHasArg(child.Process.Pid, b.pidPath(name)); {
+		if time.Now().After(deadline) {
+			t.Fatal("fake QEMU never showed its command line")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := os.WriteFile(b.pidPath(name), []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return child
+}
+
+// Regression: a pidfile left by a crash or a reboot, whose pid now belongs
+// to another process, made the Machine look running: Start did nothing and
+// Force Stop sent SIGTERM to that process.
+func TestStalePidfileOfAnotherProcessIsNotRunning(t *testing.T) {
+	stranger := exec.Command("sleep", "60")
+	if err := stranger.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { stranger.Process.Kill(); stranger.Wait() }()
+	b := &Backend{stateDir: t.TempDir()}
+	env := core.Environment{Name: "guest", Kind: core.Machine}
+	if err := os.MkdirAll(b.dir(env.Name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	pid := strconv.Itoa(stranger.Process.Pid)
+	if err := os.WriteFile(b.pidPath(env.Name), []byte(pid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b.virtiofsPIDPath(env.Name), []byte(pid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if running, err := b.isRunning(env.Name); err != nil || running {
+		t.Fatalf("isRunning = %t, %v; want false", running, err)
+	}
+	if err := b.ForceStop(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := stranger.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("Force Stop killed an unrelated process: %v", err)
 	}
 }
