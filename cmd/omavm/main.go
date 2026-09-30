@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/applog"
@@ -19,6 +20,7 @@ import (
 	"github.com/KitsuneSemCalda/OmaVM/internal/backend/distrobox"
 	"github.com/KitsuneSemCalda/OmaVM/internal/backend/qemu"
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
+	"github.com/KitsuneSemCalda/OmaVM/internal/desktop"
 )
 
 func main() {
@@ -34,8 +36,22 @@ func main() {
 	if err := run(os.Args[1:]); err != nil {
 		slog.Error("command failed", "error", err)
 		fmt.Fprintln(os.Stderr, "omavm:", err)
+		if os.Getenv("OMAVM_NOTIFY_ERRORS") == "1" {
+			notifyError(err)
+		}
 		os.Exit(1)
 	}
+}
+
+// notifyError shows a failure as a desktop notification, for runs nobody
+// sees the terminal of: a launcher entry opening a Machine would otherwise
+// fail without a word. Best-effort; without notify-send, only the log has it.
+func notifyError(err error) {
+	path, lookErr := exec.LookPath("notify-send")
+	if lookErr != nil {
+		return
+	}
+	_ = exec.Command(path, "--app-name=OmaVM", "--icon=dev.omavm.app", "OmaVM", err.Error()).Run()
 }
 
 func run(args []string) error {
@@ -52,12 +68,31 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Only for a person at a terminal: the GUI and agents read stderr as
+	// the error text of a failed command, and this line would pollute it.
+	if info, err := os.Stderr.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+		store.OnWait = func() {
+			fmt.Fprintln(os.Stderr, "omavm: waiting for another OmaVM operation to finish…")
+		}
+	}
 	boxBackend := box.New(distrobox.New(), container.New())
 	svc := core.NewService(store, boxBackend, qemuBackend)
+	if launcher, err := desktop.NewLauncher(); err == nil {
+		svc.SetLauncher(launcher)
+	} else {
+		slog.Warn("launcher entries disabled", "error", err)
+	}
 
 	ctx := context.Background()
 	cmd, rest := args[0], args[1:]
-	slog.Info("command", "cmd", cmd, "args", rest)
+	// Reads (the GUI and the Omarchy bar poll list/status every few
+	// seconds) are debug-level so the log keeps the actions that changed
+	// something.
+	level := slog.LevelInfo
+	if readOnly(cmd, rest) {
+		level = slog.LevelDebug
+	}
+	slog.Log(ctx, level, "command", "cmd", cmd, "args", rest)
 
 	switch cmd {
 	case "create":
@@ -78,6 +113,8 @@ func run(args []string) error {
 		return cmdSimple(ctx, rest, "force-stop", svc.ForceStop)
 	case "status":
 		return cmdStatus(ctx, svc, rest)
+	case "host":
+		return cmdHost(ctx, svc, rest)
 	case "integration":
 		return cmdIntegration(ctx, svc, rest)
 	case "settings", "configure":
@@ -90,6 +127,8 @@ func run(args []string) error {
 		return cmdApps(ctx, svc, rest)
 	case "exec":
 		return cmdExec(ctx, svc, rest)
+	case "ssh":
+		return cmdSSH(ctx, svc, rest)
 	case "rm", "remove":
 		return cmdSimple(ctx, rest, "remove", svc.Remove)
 	case "list", "ls":
@@ -108,6 +147,8 @@ func cmdCreate(ctx context.Context, svc *core.Service, args []string) error {
 	name := fs.String("name", "", "environment name (required)")
 	kindStr := fs.String("kind", "box", `environment kind: "box" or "machine"`)
 	image := fs.String("image", "", "distro image (Box) or boot ISO path (Machine)")
+	cpus := fs.Int("cpus", 0, "virtual CPUs (Machines only, defaults to 2)")
+	memory := fs.Int("memory-mib", 0, "memory in MiB (Machines only, defaults to 2048)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -119,7 +160,15 @@ func cmdCreate(ctx context.Context, svc *core.Service, args []string) error {
 		return err
 	}
 
-	env, err := svc.Create(ctx, core.Environment{Name: *name, Image: *image, Kind: kind})
+	env, err := svc.Create(ctx, core.Environment{
+		Name:  *name,
+		Image: *image,
+		Kind:  kind,
+		Settings: core.EnvironmentSettings{
+			CPUs:      *cpus,
+			MemoryMiB: *memory,
+		},
+	})
 	if err != nil {
 		return err
 	}
@@ -301,6 +350,31 @@ func cmdIntegration(ctx context.Context, svc *core.Service, args []string) error
 	return nil
 }
 
+func cmdHost(ctx context.Context, svc *core.Service, args []string) error {
+	args, jsonOut := extractBoolFlag(args, "json")
+	if len(args) != 0 {
+		return errors.New("host: takes no arguments")
+	}
+	caps, err := svc.InspectHost(ctx)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(caps)
+	}
+	for _, c := range caps {
+		mark := "no "
+		if c.Available {
+			mark = "yes"
+		}
+		fmt.Printf("%s  %s: %s\n", mark, c.Label, c.Detail)
+		if c.Hint != "" {
+			fmt.Printf("     %s\n", c.Hint)
+		}
+	}
+	return nil
+}
+
 func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	if len(args) == 0 {
 		return errors.New("settings: expected an environment name")
@@ -316,8 +390,13 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	disconnectISO := fs.Bool("disconnect-iso", false, "disconnect installation media on next start (Machines only)")
 	snapshotLimit := fs.Int("snapshot-limit", 0, "max snapshots to keep, oldest discarded first (1-100)")
 	color := fs.String("color", "", "tag color: "+strings.Join(core.EnvironmentColors, ", "))
-	shareClipboard := fs.Bool("share-clipboard", false, "share the text clipboard with the guest while the viewer is open (Machines only, on by default)")
-	travelMode := fs.Bool("travel-mode", false, "reduce CPU allocation automatically while the host is on battery (Machines only, on by default)")
+	shareClipboard := fs.Bool("share-clipboard", false, "share the text clipboard with a Machine's guest, or let programs in a Box's terminal copy to it (on by default)")
+	travelMode := fs.Bool("travel-mode", false, "use half the CPUs automatically while the host is on battery (on by default)")
+	vulkan := fs.Bool("vulkan", false, "Vulkan acceleration when the host supports it (Machines only, on by default)")
+	ssh := fs.Bool("ssh", false, "reach the Machine with omavm ssh/exec over a local channel any program on this computer can use, Boxes included (Machines only, on by default)")
+	launcher := fs.Bool("launcher", false, "list this environment in the application launcher (on by default)")
+	openInEmptyWorkspace := fs.Bool("open-in-empty-workspace", false, "open this environment in an empty Hyprland workspace instead of the current one (on by default; requires Omarchy's Lua-based Hyprland)")
+	fullscreen := fs.Bool("fullscreen", false, "open the Machine's display fullscreen (Machines only, on by default)")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -327,6 +406,7 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	}
 	patch := core.SettingsPatch{}
 	changed := false
+	modeFlags := 0
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "disconnect-iso":
@@ -350,24 +430,39 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 		case "share-clipboard":
 			patch.ShareClipboard = shareClipboard
 			changed = true
+		case "vulkan":
+			patch.Vulkan = vulkan
+			changed = true
 		case "travel-mode":
 			patch.TravelMode = travelMode
+			changed = true
+		case "ssh":
+			patch.SSH = ssh
+			changed = true
+		case "launcher":
+			patch.Launcher = launcher
+			changed = true
+		case "open-in-empty-workspace":
+			patch.OpenInEmptyWorkspace = openInEmptyWorkspace
+			changed = true
+		case "fullscreen":
+			patch.Fullscreen = fullscreen
 			changed = true
 		case "shared-path":
 			patch.SharedPath = sharedPath
 			changed = true
 		case "shared-read-only":
-			if *sharedWritable {
-				return
-			}
 			patch.SharedReadOnly = sharedReadOnly
+			modeFlags++
 			changed = true
 		case "shared-writable":
-			patch.SharedReadOnly = new(bool)
+			readOnly := !*sharedWritable
+			patch.SharedReadOnly = &readOnly
+			modeFlags++
 			changed = true
 		}
 	})
-	if *sharedReadOnly && *sharedWritable {
+	if modeFlags > 1 {
 		return errors.New("settings: choose only one of --shared-read-only or --shared-writable")
 	}
 	var settings core.EnvironmentSettings
@@ -389,9 +484,13 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	if settings.CPUs != 0 {
 		fmt.Printf("hardware: %d CPUs, %d MiB memory\n", settings.CPUs, settings.MemoryMiB)
 		fmt.Printf("installation media disconnected on next start: %t\n", settings.DisconnectISO)
-		fmt.Printf("share clipboard: %t\n", !settings.ClipboardDisabled)
-		fmt.Printf("travel mode (reduce CPUs on battery): %t\n", !settings.TravelModeDisabled)
+		fmt.Printf("vulkan acceleration (when the host supports it): %t\n", !settings.VulkanDisabled)
+		fmt.Printf("open the display fullscreen: %t\n", !settings.FullscreenDisabled)
+		fmt.Printf("ssh (reachable by any program on this computer, Boxes included): %t\n", !settings.SSHDisabled)
 	}
+	fmt.Printf("share clipboard: %t\n", !settings.ClipboardDisabled)
+	fmt.Printf("travel mode (reduce CPUs on battery): %t\n", !settings.TravelModeDisabled)
+	fmt.Printf("show in the app launcher: %t\n", !settings.LauncherDisabled)
 	if settings.SharedPath != "" {
 		mode := "writable"
 		if settings.SharedReadOnly {
@@ -402,6 +501,7 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	if settings.Color != "" {
 		fmt.Println("color:", settings.Color)
 	}
+	fmt.Printf("open in an empty workspace: %t\n", !settings.EmptyWorkspaceDisabled)
 	return nil
 }
 
@@ -420,8 +520,60 @@ func cmdExec(ctx context.Context, svc *core.Service, args []string) error {
 	return svc.Exec(ctx, name, rest)
 }
 
+// cmdSSH: omavm ssh NAME [--user LOGIN] [-- COMMAND...]
+func cmdSSH(ctx context.Context, svc *core.Service, args []string) error {
+	var command []string
+	for i, a := range args {
+		if a == "--" {
+			command = args[i+1:]
+			args = args[:i]
+			break
+		}
+	}
+	fs := flag.NewFlagSet("ssh", flag.ContinueOnError)
+	login := fs.String("user", "", "user to log in as in the guest (default: your user name)")
+	var name string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if name == "" && fs.NArg() == 1 {
+		name = fs.Arg(0)
+	} else if fs.NArg() != 0 {
+		return errors.New("ssh: usage: omavm ssh <name> [--user LOGIN] [-- command...]")
+	}
+	if name == "" {
+		return errors.New("ssh: expected a Machine name")
+	}
+	return svc.SSH(ctx, name, *login, command)
+}
+
 func cmdList(ctx context.Context, svc *core.Service, args []string) error {
-	_, jsonOut := extractBoolFlag(args, "json")
+	args, jsonOut := extractBoolFlag(args, "json")
+	_, withStatus := extractBoolFlag(args, "status")
+
+	if withStatus {
+		states, err := svc.ListWithStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			if states == nil {
+				states = []core.EnvironmentState{}
+			}
+			return json.NewEncoder(os.Stdout).Encode(states)
+		}
+		if len(states) == 0 {
+			fmt.Println("no environments yet — try: omavm create --name <name> --kind box --image <distro>")
+			return nil
+		}
+		for _, s := range states {
+			fmt.Printf("%s\t%s\t%s\t%s\n", s.Name, s.Kind, s.Status.State, s.Image)
+		}
+		return nil
+	}
 
 	envs, err := svc.List(ctx)
 	if err != nil {
@@ -489,11 +641,33 @@ func extractValueFlag(args []string, name string) ([]string, string, error) {
 	return out, value, nil
 }
 
+// readOnly reports whether a command only reads state.
+func readOnly(cmd string, args []string) bool {
+	switch cmd {
+	case "list", "ls", "status", "integration", "preview", "host", "help", "-h", "--help":
+		return true
+	case "snapshot":
+		return len(args) > 0 && args[0] == "list"
+	case "apps":
+		for _, a := range args {
+			if strings.HasPrefix(a, "--export") || strings.HasPrefix(a, "--unexport") {
+				return false
+			}
+		}
+		return true
+	case "settings", "configure":
+		// Just a name shows the settings; any flag changes them.
+		return len(args) == 1
+	}
+	return false
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `usage: omavm <command> [arguments]
 
 commands:
-  create --name NAME --kind box|machine [--image IMAGE]   create an environment
+  create --name NAME --kind box|machine --image IMAGE     create an environment (a Box needs a
+                                                           container image, a Machine an ISO)
   start NAME                                              start an environment
   open NAME                                                start (if needed) and attach
   stop NAME                                                stop an environment
@@ -503,8 +677,12 @@ commands:
   force-stop NAME                                          immediately stop a Machine
   status NAME [--json]                                     show environment status
   integration NAME [--json]                                check Machine guest tools
+  host [--json]                                            show what this computer offers Machines
   settings NAME [--description TEXT] [--cpus N] [--color C] view or change settings
-    [--share-clipboard=BOOL] [--travel-mode=BOOL]           (Machines only, both on by default)
+    [--share-clipboard=BOOL] [--travel-mode=BOOL]           (on by default)
+    [--vulkan=BOOL] [--ssh=BOOL] [--fullscreen=BOOL]       (Machines only, on by default)
+    [--launcher=BOOL]                                      list in the app launcher (on by default)
+    [--open-in-empty-workspace=BOOL]                       open in an empty workspace (on by default)
   preview NAME                                             capture a Machine screenshot
   snapshot create NAME --label TEXT                        capture the environment's current state
   snapshot list NAME [--json]                              list snapshots
@@ -513,7 +691,9 @@ commands:
   apps NAME [--json]                                       list exportable applications (Boxes only)
   apps NAME --export APP_ID                                export an app as a host launcher
   apps NAME --unexport APP_ID                              remove a previously exported launcher
-  exec NAME -- CMD [ARGS...]                               run a command inside a Box
+  exec NAME -- CMD [ARGS...]                               run a command inside a Box, or a Machine over SSH
+  ssh NAME [--user LOGIN] [-- CMD...]                      open a shell in a Machine (guest needs systemd 256+
+                                                           and sshd; any program here can reach it, Boxes too)
   rm NAME                                                  remove an environment
-  list [--json]                                            list known environments`)
+  list [--status] [--json]                                 list known environments, with their state`)
 }

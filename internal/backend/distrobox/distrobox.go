@@ -17,11 +17,31 @@ type Backend struct{}
 func New() *Backend           { return &Backend{} }
 func (*Backend) Name() string { return "distrobox" }
 
+var accentFold = func() map[rune]rune {
+	fold := map[rune]rune{}
+	for base, accented := range map[rune]string{
+		'a': "áàâãäå", 'c': "ç", 'e': "éèêë", 'i': "íìîï",
+		'o': "óòôõö", 'u': "úùûü", 'n': "ñ", 'y': "ýÿ",
+	} {
+		for _, r := range accented {
+			fold[r] = base
+		}
+	}
+	return fold
+}()
+
 func boxName(env core.Environment) string {
 	var name strings.Builder
 	name.WriteString("omavm-")
 	for _, r := range strings.ToLower(env.Name) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-' {
+		// Podman only accepts [a-zA-Z0-9][a-zA-Z0-9_.-]*: accented Latin
+		// letters keep their base letter so the name stays readable, and
+		// anything else non-ASCII becomes a separator. The ID suffix below
+		// is what keeps names unique.
+		if base, ok := accentFold[r]; ok {
+			r = base
+		}
+		if r < 0x80 && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-') {
 			name.WriteRune(r)
 		} else if name.Len() == 0 || !strings.HasSuffix(name.String(), "-") {
 			name.WriteByte('-')
@@ -43,38 +63,199 @@ func (b *Backend) Create(ctx context.Context, env core.Environment) error {
 }
 
 func (b *Backend) Start(ctx context.Context, env core.Environment) error {
+	if err := b.requireContainer(ctx, env); err != nil {
+		return err
+	}
+	b.applyTravelMode(ctx, env)
 	return b.run(ctx, "enter", "--no-tty", "--name", boxName(env), "--", "true")
 }
 
 func (b *Backend) Open(ctx context.Context, env core.Environment) error {
+	if err := b.requireContainer(ctx, env); err != nil {
+		return err
+	}
+	b.applyTravelMode(ctx, env)
 	return b.runInteractive(ctx, "enter", "--name", boxName(env))
 }
 
 func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
+	if _, found, err := b.find(ctx, env); err == nil && !found {
+		return nil // nothing left to stop
+	}
 	return b.run(ctx, "stop", "--yes", boxName(env))
 }
 
+// find looks the Box's container up, returning its status.
+func (b *Backend) find(ctx context.Context, env core.Environment) (status core.Status, found bool, err error) {
+	name := boxName(env)
+	all, err := listContainers(ctx, []string{name})
+	if err != nil {
+		return core.Status{}, false, err
+	}
+	status, found = all[name]
+	return status, found, nil
+}
+
+// containerEngines are the engines Distrobox can put a Box's container in,
+// in its own order of preference. DBX_CONTAINER_MANAGER, Distrobox's own
+// override, narrows it to one.
+func containerEngines() []string {
+	if engine := os.Getenv("DBX_CONTAINER_MANAGER"); engine != "" {
+		return []string{engine}
+	}
+	return []string{"podman", "docker"}
+}
+
+// listContainers asks the container engines directly for the Distrobox
+// containers (they carry the label manager=distrobox) and their states,
+// one query per engine. `distrobox list` would do the same underneath, but
+// prints a table meant for people: the engine's own state field
+// ("running", "exited", ...) is stable and machine-readable.
+//
+// Engines are asked in Distrobox's order, and the next one only for the
+// names the previous ones didn't have: the GUI asks every few seconds,
+// and on a host where only docker.socket is enabled a `docker ps` starts
+// the Docker daemon. An engine that is missing or fails (a stopped Docker
+// daemon) is skipped as long as another one answered.
+func listContainers(ctx context.Context, names []string) (map[string]core.Status, error) {
+	all := map[string]core.Status{}
+	answered := false
+	var lastErr error
+	for _, engine := range containerEngines() {
+		missing := false
+		for _, name := range names {
+			if _, ok := all[name]; !ok {
+				missing = true
+				break
+			}
+		}
+		if answered && !missing {
+			break
+		}
+		path, err := exec.LookPath(engine)
+		if err != nil {
+			continue
+		}
+		out, err := exec.CommandContext(ctx, path, "ps", "--all",
+			"--filter", "label=manager=distrobox",
+			"--format", `{{.Names}}{{"\t"}}{{.State}}{{"\t"}}{{.Status}}`).Output()
+		if err != nil {
+			lastErr = fmt.Errorf("%s ps: %w", engine, err)
+			continue
+		}
+		answered = true
+		for name, status := range parseContainers(string(out)) {
+			if _, ok := all[name]; !ok {
+				all[name] = status
+			}
+		}
+	}
+	if !answered {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("Development Boxes need Podman or Docker (install one with: sudo pacman -S podman)")
+	}
+	return all, nil
+}
+
+// parseContainers reads `<engine> ps` lines of name, state and the
+// engine's human status ("Up 2 minutes"), which is kept as detail.
+func parseContainers(out string) map[string]core.Status {
+	all := map[string]core.Status{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) < 2 {
+			continue
+		}
+		status := core.Status{State: containerState(fields[1])}
+		if len(fields) == 3 {
+			status.Detail = strings.TrimSpace(fields[2])
+		}
+		// Docker joins several names of one container with commas.
+		for _, name := range strings.Split(fields[0], ",") {
+			all[strings.TrimSpace(name)] = status
+		}
+	}
+	return all
+}
+
+// containerState maps Podman's and Docker's container states.
+func containerState(state string) core.State {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "running":
+		return core.StateRunning
+	case "paused":
+		return core.StatePaused
+	case "restarting":
+		return core.StateStarting
+	case "stopping", "removing":
+		return core.StateStopping
+	case "created", "configured", "exited", "stopped":
+		return core.StateStopped
+	case "dead":
+		return core.StateError
+	default:
+		return core.StateUnknown
+	}
+}
+
+func missingContainer(env core.Environment) string {
+	return fmt.Sprintf("the container of Box %s no longer exists (it was removed outside OmaVM); delete this Box and create it again", env.Name)
+}
+
+// requireContainer guards every `distrobox enter`: for a missing container,
+// enter offers to create one out of Distrobox's own default image and,
+// without a terminal, accepts by itself — silently replacing the Box's
+// image (an Ubuntu Box would come back as a Fedora toolbox).
+func (b *Backend) requireContainer(ctx context.Context, env core.Environment) error {
+	_, found, err := b.find(ctx, env)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%w: %s", core.ErrNotFound, missingContainer(env))
+	}
+	return nil
+}
+
 func (b *Backend) Status(ctx context.Context, env core.Environment) (core.Status, error) {
-	out, err := b.output(ctx, "list", "--no-color")
+	status, found, err := b.find(ctx, env)
 	if err != nil {
 		return core.Status{}, err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		columns := strings.Split(line, "|")
-		if len(columns) < 4 || strings.TrimSpace(columns[1]) != boxName(env) {
-			continue
-		}
-		raw := strings.TrimSpace(columns[2])
-		state := core.StateStopped
-		if strings.HasPrefix(strings.ToLower(raw), "up") || strings.Contains(strings.ToLower(raw), "running") {
-			state = core.StateRunning
-		}
-		return core.Status{State: state, Detail: raw}, nil
+	if !found {
+		return core.Status{State: core.StateError, Detail: missingContainer(env)}, nil
 	}
-	return core.Status{}, fmt.Errorf("%w: distrobox %s", core.ErrNotFound, env.Name)
+	return status, nil
+}
+
+// Statuses answers for many Boxes with one query per container engine
+// instead of one per Box (core.StatusLister).
+func (b *Backend) Statuses(ctx context.Context, envs []core.Environment) (map[string]core.Status, error) {
+	names := make([]string, len(envs))
+	for i, env := range envs {
+		names[i] = boxName(env)
+	}
+	all, err := listContainers(ctx, names)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make(map[string]core.Status, len(envs))
+	for _, env := range envs {
+		status, found := all[boxName(env)]
+		if !found {
+			status = core.Status{State: core.StateError, Detail: missingContainer(env)}
+		}
+		statuses[env.ID] = status
+	}
+	return statuses, nil
 }
 
 func (b *Backend) Exec(ctx context.Context, env core.Environment, args []string) error {
+	if err := b.requireContainer(ctx, env); err != nil {
+		return err
+	}
 	full := append([]string{"enter", "--no-tty", "--name", boxName(env), "--"}, args...)
 	return b.runInteractive(ctx, full...)
 }

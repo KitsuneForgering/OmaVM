@@ -15,6 +15,10 @@ const (
 	StateStopped  State = "stopped"
 	StateError    State = "error"
 	StateUnknown  State = "unknown"
+	// StateCreating and StateRemoving are the Core's own: the environment
+	// is in the registry while its Backend creates or removes it.
+	StateCreating State = "creating"
+	StateRemoving State = "removing"
 )
 
 // Status is the observed state of an Environment as reported by its Backend.
@@ -45,6 +49,16 @@ type Backend interface {
 	Status(ctx context.Context, env Environment) (Status, error)
 	Exec(ctx context.Context, env Environment, args []string) error
 	Remove(ctx context.Context, env Environment) error
+}
+
+// StatusLister is an optional Backend capability: the status of many
+// environments from one query to the engine, instead of one per
+// environment. The GUI asks for every status every few seconds, and a
+// container engine answers for all its containers as cheaply as for one.
+// The result is keyed by Environment.ID; an environment missing from it is
+// reported as unknown.
+type StatusLister interface {
+	Statuses(ctx context.Context, envs []Environment) (map[string]Status, error)
 }
 
 // Previewer is an optional Backend capability: a screenshot of the
@@ -88,7 +102,10 @@ type IntegrationReport struct {
 // (e.g. Box today) makes Service.CreateSnapshot/GoToSnapshot/RemoveSnapshot
 // fail with ErrUnsupported rather than pretending to support it.
 type SnapshotManager interface {
-	CreateSnapshot(ctx context.Context, env Environment, tag string) error
+	// CreateSnapshot reports crashConsistent when the snapshot was taken
+	// of a running environment that couldn't be told to flush its disks
+	// first: going to it is like booting after a power cut.
+	CreateSnapshot(ctx context.Context, env Environment, tag string) (crashConsistent bool, err error)
 	GoToSnapshot(ctx context.Context, env Environment, tag string) error
 	RemoveSnapshot(ctx context.Context, env Environment, tag string) error
 }
@@ -129,4 +146,41 @@ type HostLinker interface {
 	// the path for display/automation.
 	Link(ctx context.Context, env Environment, color string) (path string, err error)
 	Unlink(ctx context.Context, env Environment) error
+}
+
+// RemoteShell is an optional Backend capability: a shell or command in the
+// environment over SSH (Machines, through a host↔guest socket that needs
+// no guest network). login "" means the host user's name.
+type RemoteShell interface {
+	SSH(ctx context.Context, env Environment, login string, command []string) error
+}
+
+// Launcher publishes environments in the host's application launcher, so
+// one opens like any installed app without going through the Experience
+// Center first. It is host desktop integration rather than a Backend
+// capability: the same entry works for both Kinds. On by default,
+// withdrawn per environment with EnvironmentSettings.LauncherDisabled.
+// Failures never fail the operation that triggered them.
+type Launcher interface {
+	// Publish creates or updates the environment's entry; it must be
+	// idempotent and cheap, since Start and Open call it every time.
+	Publish(env Environment) error
+	Withdraw(env Environment) error
+}
+
+// HostInspector is an optional Backend capability reporting what the host
+// can offer that Backend's Environments (hardware virtualization, graphics
+// acceleration, ...). It only reads the host and never changes it.
+type HostInspector interface {
+	InspectHost(ctx context.Context) ([]HostCapability, error)
+}
+
+// HostCapability is one host feature, described by what it gives the user
+// rather than by the mechanism behind it.
+type HostCapability struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Available bool   `json:"available"`
+	Detail    string `json:"detail,omitempty"`
+	Hint      string `json:"hint,omitempty"`
 }

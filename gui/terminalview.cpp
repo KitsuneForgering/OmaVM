@@ -1,9 +1,12 @@
 #include "terminalview.h"
 #include "colorstoml.h"
 
+#include <QClipboard>
 #include <QDir>
 #include <QFontMetricsF>
+#include <QGuiApplication>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QStandardPaths>
 #include <QWheelEvent>
@@ -55,6 +58,12 @@ TerminalView::TerminalView(QQuickItem *parent) : QQuickPaintedItem(parent) {
           [this] { /* visual bell TODO */ });
   connect(&m_session, &TerminalSession::titleChanged, this,
           &TerminalView::titleChanged);
+  connect(&m_session, &TerminalSession::clipboardWriteRequested, this,
+          [this](const QString &text) {
+            if (m_shareClipboard)
+              QGuiApplication::clipboard()->setText(text);
+          });
+  setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton);
   connect(&m_session, &TerminalSession::finished, this,
           &TerminalView::finished);
   connect(&m_session, &TerminalSession::errorOccurred, this,
@@ -74,6 +83,8 @@ void TerminalView::loadPalette() {
 
   m_defaultBg = get(QStringLiteral("background"), qRgb(0x10, 0x10, 0x10));
   m_defaultFg = get(QStringLiteral("foreground"), qRgb(0xee, 0xee, 0xee));
+  m_selection = get(QStringLiteral("selection_background"),
+                    get(QStringLiteral("selection"), qRgb(0x44, 0x44, 0x44)));
 
   m_palette[0] = m_defaultBg;
   m_palette[1] = get(QStringLiteral("red"), qRgb(0xcd, 0x00, 0x00));
@@ -94,6 +105,11 @@ void TerminalView::loadPalette() {
       get(QStringLiteral("bright_foreground"), qRgb(0xff, 0xff, 0xff));
 }
 
+void TerminalView::reloadPalette() {
+  loadPalette();
+  update();
+}
+
 void TerminalView::setEnvName(const QString &name) {
   if (m_envName == name)
     return;
@@ -102,6 +118,14 @@ void TerminalView::setEnvName(const QString &name) {
   const int cols = qMax(1, int(width() / m_cellWidth));
   const int rows = qMax(1, int(height() / m_cellHeight));
   m_session.start(m_envName, cols > 1 ? cols : 80, rows > 1 ? rows : 24);
+}
+
+void TerminalView::restart() {
+  if (m_session.running() || m_envName.isEmpty())
+    return;
+  m_session.feed(QByteArrayLiteral("\r\n"));
+  m_session.start(m_envName, m_session.cols(), m_session.rows());
+  forceActiveFocus();
 }
 
 void TerminalView::geometryChange(const QRectF &newGeometry,
@@ -130,17 +154,115 @@ QRgb TerminalView::resolveColor(const TerminalColor &color,
   return foreground ? m_defaultFg : m_defaultBg;
 }
 
+int TerminalView::visibleToBuffer(int visibleRow) const {
+  const int bottomIndex = m_session.bufferLineCount() - 1 - m_scrollOffset;
+  return bottomIndex - (m_session.rows() - 1 - visibleRow);
+}
+
 QVector<TerminalCell> TerminalView::lineAt(int visibleRow) const {
-  const auto &scrollback = m_session.scrollback();
-  const auto &grid = m_session.grid();
-  const int total = scrollback.size() + grid.size();
-  const int bottomIndex = total - 1 - m_scrollOffset;
-  const int sourceIndex = bottomIndex - (m_session.rows() - 1 - visibleRow);
-  if (sourceIndex < 0 || sourceIndex >= total)
+  const int sourceIndex = visibleToBuffer(visibleRow);
+  if (sourceIndex < 0 || sourceIndex >= m_session.bufferLineCount())
     return QVector<TerminalCell>(m_session.cols());
-  if (sourceIndex < scrollback.size())
-    return scrollback.at(sourceIndex);
-  return grid.at(sourceIndex - scrollback.size());
+  return m_session.bufferLine(sourceIndex);
+}
+
+TerminalView::CellPos TerminalView::cellAt(const QPointF &pos) const {
+  const int row = qBound(0, int(pos.y() / m_cellHeight), m_session.rows() - 1);
+  const int col = qBound(0, int(pos.x() / m_cellWidth), m_session.cols() - 1);
+  return {visibleToBuffer(row) + m_session.droppedLines(), col};
+}
+
+bool TerminalView::isSelected(int bufferLine, int col) const {
+  CellPos start = m_selAnchor;
+  CellPos end = m_selEnd;
+  if (start.line > end.line || (start.line == end.line && start.col > end.col))
+    qSwap(start, end);
+  const qint64 line = bufferLine + m_session.droppedLines();
+  if (line < start.line || line > end.line)
+    return false;
+  if (line == start.line && col < start.col)
+    return false;
+  if (line == end.line && col > end.col)
+    return false;
+  return true;
+}
+
+QString TerminalView::selectedText() const {
+  const qint64 dropped = m_session.droppedLines();
+  return m_session.text(int(m_selAnchor.line - dropped), m_selAnchor.col,
+                        int(m_selEnd.line - dropped), m_selEnd.col);
+}
+
+void TerminalView::clearSelection() {
+  if (!hasSelection())
+    return;
+  m_selecting = false;
+  m_selected = false;
+  update();
+}
+
+void TerminalView::copySelection(QClipboard::Mode mode) {
+  if (!m_selected)
+    return;
+  const QString text = selectedText();
+  if (!text.isEmpty())
+    QGuiApplication::clipboard()->setText(text, mode);
+}
+
+void TerminalView::mousePressEvent(QMouseEvent *event) {
+  forceActiveFocus();
+  if (event->button() == Qt::MiddleButton) {
+    // X11/Wayland convention: middle click pastes the primary selection.
+    const QString text =
+        QGuiApplication::clipboard()->text(QClipboard::Selection);
+    if (!text.isEmpty())
+      m_session.write(m_session.pasteSequence(text));
+    event->accept();
+    return;
+  }
+  m_selAnchor = cellAt(event->position());
+  m_selEnd = m_selAnchor;
+  m_selecting = true;
+  m_selected = false;
+  update();
+  event->accept();
+}
+
+void TerminalView::mouseMoveEvent(QMouseEvent *event) {
+  if (!m_selecting)
+    return;
+  m_selEnd = cellAt(event->position());
+  update();
+  event->accept();
+}
+
+void TerminalView::mouseReleaseEvent(QMouseEvent *event) {
+  if (!m_selecting)
+    return;
+  m_selecting = false;
+  // A click without a drag clears the selection instead of selecting a
+  // single cell.
+  m_selected = m_selAnchor.line != m_selEnd.line ||
+               m_selAnchor.col != m_selEnd.col;
+  if (m_selected)
+    copySelection(QClipboard::Selection);
+  update();
+  event->accept();
+}
+
+void TerminalView::mouseDoubleClickEvent(QMouseEvent *event) {
+  if (event->button() != Qt::LeftButton)
+    return;
+  const CellPos pos = cellAt(event->position());
+  const auto [first, last] = m_session.wordBounds(
+      int(pos.line - m_session.droppedLines()), pos.col);
+  m_selAnchor = {pos.line, first};
+  m_selEnd = {pos.line, last};
+  m_selecting = false;
+  m_selected = true;
+  copySelection(QClipboard::Selection);
+  update();
+  event->accept();
 }
 
 void TerminalView::paint(QPainter *painter) {
@@ -155,10 +277,19 @@ void TerminalView::paint(QPainter *painter) {
     const QVector<TerminalCell> line = lineAt(r);
     const qreal y = r * m_cellHeight;
     int c = 0;
+    // A wide character (head cell + empty continuation cell) is drawn on
+    // its own across both cells: inside a run, its glyph's advance rarely
+    // matches two cells exactly and would shift the rest of the line.
+    const auto isWide = [&line](int col) {
+      return col + 1 < line.size() && !line.at(col).ch.isEmpty() &&
+             line.at(col + 1).ch.isEmpty();
+    };
     while (c < cols && c < line.size()) {
       const TerminalCell &first = line.at(c);
-      int runEnd = c + 1;
-      while (runEnd < cols && runEnd < line.size()) {
+      const bool wide = isWide(c);
+      int runEnd = c + (wide ? 2 : 1);
+      while (!wide && runEnd < cols && runEnd < line.size() &&
+             !isWide(runEnd) && !line.at(runEnd).ch.isEmpty()) {
         const TerminalCell &next = line.at(runEnd);
         if (next.fg == first.fg && next.bg == first.bg &&
             next.bold == first.bold && next.underline == first.underline &&
@@ -196,6 +327,18 @@ void TerminalView::paint(QPainter *painter) {
 
       c = runEnd;
     }
+
+    if (hasSelection()) {
+      const int bufferLine = visibleToBuffer(r);
+      QColor overlay(m_selection);
+      overlay.setAlpha(150);
+      for (int col = 0; col < cols; ++col) {
+        if (isSelected(bufferLine, col))
+          painter->fillRect(QRectF(col * m_cellWidth, y, m_cellWidth,
+                                   m_cellHeight),
+                            overlay);
+      }
+    }
   }
 
   // With m_scrollOffset == 0 (the only time the cursor is drawn), a
@@ -210,81 +353,26 @@ void TerminalView::paint(QPainter *painter) {
 }
 
 void TerminalView::keyPressEvent(QKeyEvent *event) {
-  QByteArray out;
-  const int key = event->key();
-  const Qt::KeyboardModifiers mods = event->modifiers();
-  const bool ctrl = mods & Qt::ControlModifier;
-  const bool alt = mods & Qt::AltModifier;
-
-  switch (key) {
-  case Qt::Key_Return:
-  case Qt::Key_Enter:
-    out = "\r";
-    break;
-  case Qt::Key_Backspace:
-    out = "\x7f";
-    break;
-  case Qt::Key_Tab:
-    out = "\t";
-    break;
-  case Qt::Key_Escape:
-    out = "\x1b";
-    break;
-  case Qt::Key_Up:
-    out = "\x1b[A";
-    break;
-  case Qt::Key_Down:
-    out = "\x1b[B";
-    break;
-  case Qt::Key_Right:
-    out = "\x1b[C";
-    break;
-  case Qt::Key_Left:
-    out = "\x1b[D";
-    break;
-  case Qt::Key_Home:
-    out = "\x1b[H";
-    break;
-  case Qt::Key_End:
-    out = "\x1b[F";
-    break;
-  case Qt::Key_Insert:
-    out = "\x1b[2~";
-    break;
-  case Qt::Key_Delete:
-    out = "\x1b[3~";
-    break;
-  case Qt::Key_PageUp:
-    out = "\x1b[5~";
-    break;
-  case Qt::Key_PageDown:
-    out = "\x1b[6~";
-    break;
-  default:
-    if (key >= Qt::Key_F1 && key <= Qt::Key_F4) {
-      static const char *codes[] = {"\x1bOP", "\x1bOQ", "\x1bOR", "\x1bOS"};
-      out = codes[key - Qt::Key_F1];
-    } else if (key >= Qt::Key_F5 && key <= Qt::Key_F12) {
-      static const int nums[] = {15, 17, 18, 19, 20, 21, 23, 24};
-      out = QByteArray("\x1b[") + QByteArray::number(nums[key - Qt::Key_F5]) +
-            "~";
-    } else if (ctrl && key >= Qt::Key_A && key <= Qt::Key_Z) {
-      out = QByteArray(1, char(key - Qt::Key_A + 1));
-    } else {
-      const QString text = event->text();
-      if (!text.isEmpty())
-        out = text.toUtf8();
-    }
-    break;
+  if (TerminalSession::isCopyShortcut(event->key(), event->modifiers())) {
+    copySelection(QClipboard::Clipboard);
+    event->accept();
+    return;
   }
-
+  if (TerminalSession::isPasteShortcut(event->key(), event->modifiers())) {
+    const QString text = QGuiApplication::clipboard()->text();
+    if (!text.isEmpty())
+      m_session.write(m_session.pasteSequence(text));
+    event->accept();
+    return;
+  }
+  const QByteArray out =
+      m_session.keySequence(event->key(), event->modifiers(), event->text());
   if (out.isEmpty()) {
     event->ignore();
     return;
   }
-  if (alt && !out.startsWith('\x1b'))
-    out.prepend('\x1b');
   m_session.write(out);
+  clearSelection();
   if (m_scrollOffset != 0) {
     m_scrollOffset = 0;
     update();

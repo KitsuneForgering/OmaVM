@@ -3,6 +3,9 @@ package core_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
@@ -68,10 +71,21 @@ func (f *fakeBackend) Remove(ctx context.Context, env core.Environment) error {
 
 // memStore is an in-memory Store for tests.
 type memStore struct {
-	envs []core.Environment
+	envs    []core.Environment
+	saveErr error
+	// savesBeforeErr lets that many saves succeed before saveErr applies.
+	savesBeforeErr int
 }
 
 func (m *memStore) Lock(context.Context) (func(), error) { return func() {}, nil }
+
+func (m *memStore) LockEnvironment(context.Context, string) (func(), error) {
+	return func() {}, nil
+}
+
+func (m *memStore) TryLockEnvironment(string) (func(), bool, error) {
+	return func() {}, true, nil
+}
 
 func (m *memStore) Load() ([]core.Environment, error) {
 	out := make([]core.Environment, len(m.envs))
@@ -80,6 +94,11 @@ func (m *memStore) Load() ([]core.Environment, error) {
 }
 
 func (m *memStore) Save(envs []core.Environment) error {
+	if m.saveErr != nil && m.savesBeforeErr > 0 {
+		m.savesBeforeErr--
+	} else if m.saveErr != nil {
+		return m.saveErr
+	}
 	m.envs = envs
 	return nil
 }
@@ -89,21 +108,22 @@ func (m *memStore) Save(envs []core.Environment) error {
 // separately from one that doesn't (e.g. Box today).
 type fakeSnapshotBackend struct {
 	*fakeBackend
-	snapshots map[string]bool
-	createErr error
-	removeErr error
+	snapshots       map[string]bool
+	createErr       error
+	removeErr       error
+	crashConsistent bool
 }
 
 func newFakeSnapshotBackend(name string) *fakeSnapshotBackend {
 	return &fakeSnapshotBackend{fakeBackend: newFakeBackend(name), snapshots: map[string]bool{}}
 }
 
-func (f *fakeSnapshotBackend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) error {
+func (f *fakeSnapshotBackend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (bool, error) {
 	if f.createErr != nil {
-		return f.createErr
+		return false, f.createErr
 	}
 	f.snapshots[tag] = true
-	return nil
+	return f.crashConsistent, nil
 }
 
 func (f *fakeSnapshotBackend) GoToSnapshot(ctx context.Context, env core.Environment, tag string) error {
@@ -129,6 +149,30 @@ func newTestService() (*core.Service, *fakeBackend, *fakeBackend) {
 	machine := newFakeBackend("fake-machine")
 	svc := core.NewService(&memStore{}, box, machine)
 	return svc, box, machine
+}
+
+// testISO returns a stand-in installation medium: Machines can't be created
+// without one.
+func testISO(t *testing.T) string {
+	t.Helper()
+	iso := filepath.Join(t.TempDir(), "system.iso")
+	if err := os.WriteFile(iso, []byte("fake iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return iso
+}
+
+// A Machine without installation media has an empty disk and nothing to
+// boot, and there's no command to attach an ISO afterwards.
+func TestCreateMachineRequiresInstallationMedia(t *testing.T) {
+	svc, _, machine := newTestService()
+	_, err := svc.Create(context.Background(), core.Environment{Name: "desktop", Kind: core.Machine})
+	if !errors.Is(err, core.ErrInvalidInput) || !strings.Contains(err.Error(), "ISO") {
+		t.Fatalf("Create without an ISO = %v, want ErrInvalidInput asking for one", err)
+	}
+	if machine.created["desktop"] {
+		t.Fatal("backend must not create a Machine that cannot boot")
+	}
 }
 
 func TestCreateStartStopStatus(t *testing.T) {
@@ -183,7 +227,11 @@ func TestCreateStartStopStatus(t *testing.T) {
 func TestConfigureMachineSettings(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newTestService()
-	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: "system.iso", Kind: core.Machine}); err != nil {
+	iso := filepath.Join(t.TempDir(), "system.iso")
+	if err := os.WriteFile(iso, []byte("fake iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: iso, Kind: core.Machine}); err != nil {
 		t.Fatal(err)
 	}
 	initial, err := svc.Settings(ctx, "desktop")
@@ -214,7 +262,7 @@ func TestConfigureMachineSettings(t *testing.T) {
 func TestClipboardAndTravelModeDefaultOnAndMachineOnly(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newTestService()
-	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Kind: core.Machine}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
 		t.Fatal(err)
 	}
 	initial, err := svc.Settings(ctx, "desktop")
@@ -234,15 +282,135 @@ func TestClipboardAndTravelModeDefaultOnAndMachineOnly(t *testing.T) {
 		t.Fatalf("expected opt-out to persist, got %+v", updated)
 	}
 
-	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Kind: core.Box}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
 		t.Fatal(err)
 	}
-	yes := true
-	if _, err := svc.Configure(ctx, "radic", core.SettingsPatch{ShareClipboard: &yes}); !errors.Is(err, core.ErrUnsupported) {
-		t.Fatalf("expected ErrUnsupported for clipboard sharing on a Box, got %v", err)
+	// On a Box the same opt-out covers programs copying from its
+	// terminal (OSC 52).
+	boxSettings, err := svc.Configure(ctx, "radic", core.SettingsPatch{ShareClipboard: &no})
+	if err != nil {
+		t.Fatalf("clipboard setting on a Box: %v", err)
 	}
-	if _, err := svc.Configure(ctx, "radic", core.SettingsPatch{TravelMode: &yes}); !errors.Is(err, core.ErrUnsupported) {
-		t.Fatalf("expected ErrUnsupported for travel mode on a Box, got %v", err)
+	if !boxSettings.ClipboardDisabled {
+		t.Fatalf("expected the Box's clipboard opt-out to persist, got %+v", boxSettings)
+	}
+	yes := true
+	if boxSettings, err = svc.Configure(ctx, "radic", core.SettingsPatch{TravelMode: &no}); err != nil || !boxSettings.TravelModeDisabled {
+		t.Fatalf("travel mode opt-out on a Box: %+v, %v", boxSettings, err)
+	}
+	_ = yes
+}
+
+func TestVulkanDefaultOnAndMachineOnly(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
+		t.Fatal(err)
+	}
+	no, yes := false, true
+	updated, err := svc.Configure(ctx, "desktop", core.SettingsPatch{Vulkan: &no})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.VulkanDisabled {
+		t.Fatalf("expected Vulkan opt-out to persist, got %+v", updated)
+	}
+	if updated, err = svc.Configure(ctx, "desktop", core.SettingsPatch{Vulkan: &yes}); err != nil || updated.VulkanDisabled {
+		t.Fatalf("expected Vulkan back on, got %+v, %v", updated, err)
+	}
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Configure(ctx, "radic", core.SettingsPatch{Vulkan: &yes}); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported for Vulkan on a Box, got %v", err)
+	}
+}
+
+func TestOpenInEmptyWorkspaceAppliesToBothKinds(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := svc.Settings(ctx, "radic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.EmptyWorkspaceDisabled {
+		t.Fatalf("expected on by default, got %+v", initial)
+	}
+
+	no := false
+	for _, name := range []string{"desktop", "radic"} {
+		updated, err := svc.Configure(ctx, name, core.SettingsPatch{OpenInEmptyWorkspace: &no})
+		if err != nil {
+			t.Fatalf("Configure(%s): %v", name, err)
+		}
+		if !updated.EmptyWorkspaceDisabled {
+			t.Fatalf("expected the opt-out to persist for %s, got %+v", name, updated)
+		}
+	}
+}
+
+func TestSSHIsOnByDefaultAndMachineOnly(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := svc.Settings(ctx, "desktop")
+	if err != nil || settings.SSHDisabled {
+		t.Fatalf("expected SSH on by default: %+v, %v", settings, err)
+	}
+	off := false
+	if settings, err = svc.Configure(ctx, "desktop", core.SettingsPatch{SSH: &off}); err != nil || !settings.SSHDisabled {
+		t.Fatalf("SSH opt-out: %+v, %v", settings, err)
+	}
+	if _, err := svc.Configure(ctx, "radic", core.SettingsPatch{SSH: &off}); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported for SSH on a Box, got %v", err)
+	}
+	// The fake backends don't implement RemoteShell.
+	if err := svc.SSH(ctx, "radic", "", nil); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported, got %v", err)
+	}
+}
+
+// Regression: a Box without an image reached `distrobox create --image ""`,
+// which never returns, so `omavm create --name x` hung forever.
+func TestCreateBoxRequiresImage(t *testing.T) {
+	svc, box, _ := newTestService()
+	for _, image := range []string{"", "   "} {
+		_, err := svc.Create(context.Background(), core.Environment{Name: "radic", Image: image, Kind: core.Box})
+		if !errors.Is(err, core.ErrInvalidInput) {
+			t.Fatalf("image %q: expected ErrInvalidInput, got %v", image, err)
+		}
+	}
+	if len(box.created) != 0 {
+		t.Fatalf("the backend was asked to create a Box without an image: %+v", box.created)
+	}
+}
+
+// Regression: a Machine named "--json" was created, but `omavm status
+// --json` read its name as the option and could not reach it.
+func TestCreateRejectsNamesThatLookLikeOptions(t *testing.T) {
+	svc, box, _ := newTestService()
+	for _, name := range []string{"-x", "--json", " --json"} {
+		_, err := svc.Create(context.Background(), core.Environment{Name: name, Image: "fedora:latest", Kind: core.Box})
+		if !errors.Is(err, core.ErrInvalidInput) {
+			t.Fatalf("name %q: expected ErrInvalidInput, got %v", name, err)
+		}
+	}
+	if len(box.created) != 0 {
+		t.Fatalf("backend asked to create %+v", box.created)
+	}
+	if _, err := svc.Create(context.Background(), core.Environment{Name: "a-b", Image: "fedora:latest", Kind: core.Box}); err != nil {
+		t.Fatalf("a dash inside the name is fine: %v", err)
 	}
 }
 
@@ -250,13 +418,156 @@ func TestCreateDuplicateNameFails(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newTestService()
 
-	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Kind: core.Box}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
 		t.Fatalf("first Create: %v", err)
 	}
-	_, err := svc.Create(ctx, core.Environment{Name: "radic", Kind: core.Box})
+	_, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box})
 	if !errors.Is(err, core.ErrAlreadyExists) {
 		t.Fatalf("expected ErrAlreadyExists, got %v", err)
 	}
+}
+
+// TestCreateRollsBackBackendWhenRegistrySaveFails guards against leaking
+// an orphaned backend resource (a container, a VM disk) that exists but
+// is invisible to the CLI/GUI because the registry never learned about
+// it — the same "never leave a half-succeeded operation invisible" rule
+// as the snapshot retention fix, applied to Create's own registry write.
+func TestCreateRollsBackBackendWhenRegistrySaveFails(t *testing.T) {
+	ctx := context.Background()
+	box := newFakeBackend("fake-box")
+	store := &memStore{}
+	svc := core.NewService(store, box, newFakeBackend("fake-machine"))
+
+	// The reservation is saved; recording the finished creation fails.
+	store.saveErr = errors.New("disk full")
+	store.savesBeforeErr = 1
+	_, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box})
+	if err == nil {
+		t.Fatal("expected the registry save failure to surface as an error")
+	}
+	// fakeBackend.Remove clears its own "created" bookkeeping, so
+	// removed=true means Create created the resource and then undid it.
+	if !box.removed["radic"] {
+		t.Fatal("expected Create to roll back the backend resource when the registry save fails")
+	}
+
+	// With the disk still full, the reservation can't be dropped either:
+	// it stays, marked as an unfinished creation, never as a usable one.
+	store.saveErr = nil
+	envs, err := svc.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, env := range envs {
+		if env.Operation != core.OperationCreating {
+			t.Fatalf("a rolled-back create left a usable environment: %+v", env)
+		}
+	}
+}
+
+func TestCreateTouchesNoBackendWhenTheNameCantBeReserved(t *testing.T) {
+	box := newFakeBackend("fake-box")
+	store := &memStore{saveErr: errors.New("disk full")}
+	svc := core.NewService(store, box, nil)
+	if _, err := svc.Create(context.Background(), core.Environment{Name: "radic", Image: "fedora", Kind: core.Box}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if box.created["radic"] {
+		t.Fatal("the backend created a resource the registry never reserved")
+	}
+}
+
+func TestCreateHardwareSettingsRequireMachine(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+
+	_, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box, Settings: core.EnvironmentSettings{CPUs: 4}})
+	if !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported for a Box with CPUs set, got %v", err)
+	}
+
+	_, err = svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine, Settings: core.EnvironmentSettings{CPUs: 128}})
+	if err == nil || err.Error() == "" {
+		t.Fatalf("expected an out-of-range CPUs error, got %v", err)
+	}
+
+	env, err := svc.Create(ctx, core.Environment{Name: "desktop2", Image: testISO(t), Kind: core.Machine, Settings: core.EnvironmentSettings{CPUs: 4, MemoryMiB: 4096}})
+	if err != nil {
+		t.Fatalf("Create with valid hardware settings: %v", err)
+	}
+	if env.Settings.CPUs != 4 || env.Settings.MemoryMiB != 4096 {
+		t.Fatalf("hardware settings were not persisted: %+v", env.Settings)
+	}
+}
+
+// TestConfigureUnrelatedFieldDoesNotPinHardwareDefaults guards against a
+// real bug found in this codebase: Configure used to seed its working
+// copy from EffectiveSettings() (which substitutes CPUs/MemoryMiB/
+// SnapshotLimit defaults for display) and then unconditionally persisted
+// that whole copy back — so saving only the description silently pinned
+// CPUs/MemoryMiB to their resolved defaults, permanently disabling
+// Travel Mode's automatic reduction on battery (docs/TODO.md P2). List
+// (unlike Settings/Configure's return value) reflects the raw, persisted
+// settings, so it's the only way to observe whether a field was really
+// left unpinned.
+func TestConfigureUnrelatedFieldDoesNotPinHardwareDefaults(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	description := "just a note"
+	settings, err := svc.Configure(ctx, "desktop", core.SettingsPatch{Description: &description})
+	if err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	// The returned settings are still resolved for display.
+	if settings.CPUs != 2 || settings.MemoryMiB != 2048 || settings.SnapshotLimit != 10 {
+		t.Fatalf("expected Configure's return value to show resolved defaults, got %+v", settings)
+	}
+
+	envs, err := svc.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	env, idx := findEnvironmentForTest(envs, "desktop")
+	if idx == -1 {
+		t.Fatal("desktop not found in List")
+	}
+	if env.Settings.CPUs != 0 || env.Settings.MemoryMiB != 0 || env.Settings.SnapshotLimit != 0 {
+		t.Fatalf("expected raw settings to stay unpinned (zero) after an unrelated Configure, got %+v", env.Settings)
+	}
+
+	// An explicit pin must still persist and survive later unrelated saves.
+	cpus := 4
+	if _, err := svc.Configure(ctx, "desktop", core.SettingsPatch{CPUs: &cpus}); err != nil {
+		t.Fatalf("Configure with explicit CPUs: %v", err)
+	}
+	secondDescription := "second edit"
+	if _, err := svc.Configure(ctx, "desktop", core.SettingsPatch{Description: &secondDescription}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	envs, err = svc.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	env, idx = findEnvironmentForTest(envs, "desktop")
+	if idx == -1 {
+		t.Fatal("desktop not found in List")
+	}
+	if env.Settings.CPUs != 4 {
+		t.Fatalf("expected an explicit pin to survive a later unrelated Configure, got %+v", env.Settings)
+	}
+}
+
+func findEnvironmentForTest(envs []core.Environment, name string) (core.Environment, int) {
+	for i, e := range envs {
+		if e.Name == name {
+			return e, i
+		}
+	}
+	return core.Environment{}, -1
 }
 
 func TestOperationsOnUnknownNameFail(t *testing.T) {
@@ -278,7 +589,7 @@ func TestKindWithoutBackendIsUnsupported(t *testing.T) {
 	ctx := context.Background()
 	svc := core.NewService(&memStore{}, newFakeBackend("fake-box"), nil)
 
-	_, err := svc.Create(ctx, core.Environment{Name: "vm1", Kind: core.Machine})
+	_, err := svc.Create(ctx, core.Environment{Name: "vm1", Image: testISO(t), Kind: core.Machine})
 	if !errors.Is(err, core.ErrUnsupported) {
 		t.Fatalf("expected ErrUnsupported, got %v", err)
 	}
@@ -288,7 +599,7 @@ func TestRemoveDropsFromStoreOnlyAfterBackendConfirms(t *testing.T) {
 	ctx := context.Background()
 	svc, box, _ := newTestService()
 
-	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Kind: core.Box}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := svc.Remove(ctx, "radic"); err != nil {
@@ -311,7 +622,7 @@ func TestExecPropagatesBackendError(t *testing.T) {
 	svc, box, _ := newTestService()
 	box.execErr = errors.New("boom")
 
-	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Kind: core.Box}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := svc.Exec(ctx, "radic", []string{"go", "test", "./..."}); err == nil {
@@ -345,7 +656,7 @@ func TestConfigureColorValidatesPaletteAndLinksHost(t *testing.T) {
 	ctx := context.Background()
 	machine := newFakeLinkBackend("fake-machine")
 	svc := core.NewService(&memStore{}, newFakeBackend("fake-box"), machine)
-	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Kind: core.Machine}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -377,7 +688,7 @@ func TestConfigureColorValidatesPaletteAndLinksHost(t *testing.T) {
 func TestConfigureColorOnBackendWithoutHostLinkerStillPersists(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newTestService() // plain fakeBackend: no HostLinker
-	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Kind: core.Box}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	green := "green"
@@ -387,6 +698,106 @@ func TestConfigureColorOnBackendWithoutHostLinkerStillPersists(t *testing.T) {
 	}
 	if settings.Color != "green" {
 		t.Fatalf("expected color to be persisted even without HostLinker, got %+v", settings)
+	}
+}
+
+// fakeLauncher records which environments have a launcher entry.
+type fakeLauncher struct {
+	entries map[string]core.Environment
+	err     error
+}
+
+func (f *fakeLauncher) Publish(env core.Environment) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.entries[env.ID] = env
+	return nil
+}
+
+func (f *fakeLauncher) Withdraw(env core.Environment) error {
+	delete(f.entries, env.ID)
+	return nil
+}
+
+func TestLauncherEntryIsOptOut(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+	launcher := &fakeLauncher{entries: map[string]core.Environment{}}
+	svc.SetLauncher(launcher)
+
+	env, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, ok := launcher.entries[env.ID]; !ok {
+		t.Fatal("a new environment should be in the launcher by default")
+	}
+
+	desc := "Go toolchain"
+	if _, err := svc.Configure(ctx, "radic", core.SettingsPatch{Description: &desc}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if got := launcher.entries[env.ID].Settings.Description; got != desc {
+		t.Fatalf("entry should follow settings, got description %q", got)
+	}
+
+	off := false
+	settings, err := svc.Configure(ctx, "radic", core.SettingsPatch{Launcher: &off})
+	if err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if !settings.LauncherDisabled {
+		t.Fatal("expected launcher to be disabled")
+	}
+	if _, ok := launcher.entries[env.ID]; ok {
+		t.Fatal("disabling should withdraw the entry")
+	}
+	// Starting must not bring back an entry the user turned off.
+	if err := svc.Start(ctx, "radic"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, ok := launcher.entries[env.ID]; ok {
+		t.Fatal("Start republished a disabled entry")
+	}
+
+	on := true
+	if _, err := svc.Configure(ctx, "radic", core.SettingsPatch{Launcher: &on}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if err := svc.Remove(ctx, "radic"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if len(launcher.entries) != 0 {
+		t.Fatal("Remove should withdraw the entry")
+	}
+}
+
+// An environment created before launcher entries existed gets one the
+// first time it is started.
+func TestStartPublishesExistingEnvironment(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+	env, err := svc.Create(ctx, core.Environment{Name: "old", Image: "fedora:latest", Kind: core.Box})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	launcher := &fakeLauncher{entries: map[string]core.Environment{}}
+	svc.SetLauncher(launcher)
+	if err := svc.Start(ctx, "old"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, ok := launcher.entries[env.ID]; !ok {
+		t.Fatal("Start should publish the entry")
+	}
+}
+
+func TestLauncherFailureDoesNotFailCreate(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService()
+	svc.SetLauncher(&fakeLauncher{entries: map[string]core.Environment{}, err: errors.New("read-only home")})
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
+		t.Fatalf("Create should succeed even when the launcher entry can't be written: %v", err)
 	}
 }
 
@@ -420,7 +831,7 @@ func TestAppExportLifecycle(t *testing.T) {
 	box := newFakeAppExporterBackend("fake-distrobox")
 	box.apps = []core.App{{ID: "/usr/share/applications/mpv.desktop", Name: "mpv"}}
 	svc := core.NewService(&memStore{}, box, newFakeBackend("fake-machine"))
-	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Kind: core.Box}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Image: "fedora:latest", Kind: core.Box}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -450,7 +861,7 @@ func TestAppExportLifecycle(t *testing.T) {
 func TestAppExportOnUnsupportedBackendFails(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newTestService() // plain fakeBackend: no AppExporter
-	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Kind: core.Box}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Image: "fedora:latest", Kind: core.Box}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if _, err := svc.ListApps(ctx, "dev"); !errors.Is(err, core.ErrUnsupported) {
@@ -468,7 +879,7 @@ func TestSnapshotOnUnsupportedBackendFails(t *testing.T) {
 	ctx := context.Background()
 	svc, box, _ := newTestService() // fakeBackend does not implement SnapshotManager
 	_ = box
-	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Kind: core.Box}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if _, err := svc.CreateSnapshot(ctx, "radic", "Before upgrade"); !errors.Is(err, core.ErrUnsupported) {
@@ -481,7 +892,7 @@ func TestSnapshotLifecycle(t *testing.T) {
 	machine := newFakeSnapshotBackend("fake-machine")
 	svc := core.NewService(&memStore{}, newFakeBackend("fake-box"), machine)
 
-	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Kind: core.Machine}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -531,7 +942,7 @@ func TestSnapshotLimitDiscardsOldest(t *testing.T) {
 	machine := newFakeSnapshotBackend("fake-machine")
 	svc := core.NewService(&memStore{}, newFakeBackend("fake-box"), machine)
 
-	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Kind: core.Machine}); err != nil {
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	limit := 2
@@ -560,5 +971,97 @@ func TestSnapshotLimitDiscardsOldest(t *testing.T) {
 	}
 	if machine.snapshots[ids[0]] {
 		t.Fatal("expected backend to have discarded the oldest snapshot too")
+	}
+}
+
+// TestSnapshotCreatedButRetentionDiscardFailsStillPersistsNewSnapshot
+// guards against a real class of bug in this codebase (see the CPU/memory
+// pinning bugs above): CreateSnapshot used to batch the new snapshot and
+// every retention discard into a single store.Save at the very end, so if
+// the backend already created the new snapshot but a later discard of an
+// old one failed, the function returned an error *before ever saving* —
+// silently losing track of a snapshot that genuinely exists in the
+// backend (a "ghost" invisible to `snapshot list`, with no way back to it
+// short of hand-editing the state file).
+func TestSnapshotCreatedButRetentionDiscardFailsStillPersistsNewSnapshot(t *testing.T) {
+	ctx := context.Background()
+	machine := newFakeSnapshotBackend("fake-machine")
+	svc := core.NewService(&memStore{}, newFakeBackend("fake-box"), machine)
+
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	limit := 2
+	if _, err := svc.Configure(ctx, "desktop", core.SettingsPatch{SnapshotLimit: &limit}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if _, err := svc.CreateSnapshot(ctx, "desktop", "one"); err != nil {
+		t.Fatalf("CreateSnapshot(one): %v", err)
+	}
+	if _, err := svc.CreateSnapshot(ctx, "desktop", "two"); err != nil {
+		t.Fatalf("CreateSnapshot(two): %v", err)
+	}
+
+	machine.removeErr = errors.New("disk full")
+	snap, err := svc.CreateSnapshot(ctx, "desktop", "three")
+	if err == nil {
+		t.Fatal("expected the retention discard failure to surface as an error")
+	}
+	if snap.Label != "three" {
+		t.Fatalf("expected the returned snapshot to reflect the one that really was created, got %+v", snap)
+	}
+
+	machine.removeErr = nil
+	list, err := svc.ListSnapshots(ctx, "desktop")
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	labels := make([]string, len(list))
+	for i, s := range list {
+		labels[i] = s.Label
+	}
+	if len(list) != 3 || labels[2] != "three" {
+		t.Fatalf("expected the new snapshot to still be tracked despite the discard failure, got %+v", labels)
+	}
+}
+
+// Regression: the 500-character description limit counted bytes, so a
+// Portuguese description the Settings dialog accepted (it counts
+// characters) was refused on save.
+func TestDescriptionLimitCountsCharacters(t *testing.T) {
+	svc, _, _ := newTestService()
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Image: "fedora", Kind: core.Box}); err != nil {
+		t.Fatal(err)
+	}
+	accented := strings.Repeat("ã", 500) // 1000 bytes
+	if _, err := svc.Configure(ctx, "dev", core.SettingsPatch{Description: &accented}); err != nil {
+		t.Fatalf("500 characters refused: %v", err)
+	}
+	tooLong := accented + "a"
+	if _, err := svc.Configure(ctx, "dev", core.SettingsPatch{Description: &tooLong}); !errors.Is(err, core.ErrInvalidInput) {
+		t.Fatalf("501 characters accepted: %v", err)
+	}
+}
+
+func TestFullscreenIsOnByDefaultAndMachineOnly(t *testing.T) {
+	svc, _, _ := newTestService()
+	ctx := context.Background()
+	iso := testISO(t)
+	if _, err := svc.Create(ctx, core.Environment{Name: "vm", Image: iso, Kind: core.Machine}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Image: "fedora", Kind: core.Box}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := svc.Settings(ctx, "vm"); s.FullscreenDisabled {
+		t.Fatal("fullscreen must be on by default")
+	}
+	off := false
+	if s, err := svc.Configure(ctx, "vm", core.SettingsPatch{Fullscreen: &off}); err != nil || !s.FullscreenDisabled {
+		t.Fatalf("turning fullscreen off: %v, %v", s, err)
+	}
+	if _, err := svc.Configure(ctx, "dev", core.SettingsPatch{Fullscreen: &off}); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("fullscreen on a Box = %v, want ErrUnsupported", err)
 	}
 }

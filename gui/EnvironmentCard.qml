@@ -11,15 +11,32 @@ Pane {
     signal settingsRequested(var environment)
     signal snapshotsRequested(var environment)
     signal appsRequested(var environment)
+    // An action of this OmaVM window is running on this environment;
+    // others stay usable meanwhile.
+    readonly property bool busy: !!(backend.busyEnvironments && backend.busyEnvironments[environment.name])
     readonly property bool running: environment.status === "running"
     readonly property bool paused: environment.status === "paused"
     readonly property bool stopped: environment.status === "stopped"
     readonly property bool transitioning: environment.status === "starting" || environment.status === "stopping"
+                                          || environment.status === "creating" || environment.status === "removing"
     readonly property bool failed: environment.status === "error"
-    readonly property bool active: running || paused || transitioning || failed
+    // The process is there but its monitor doesn't answer (a hung QEMU):
+    // it still has to be stoppable from here.
+    readonly property bool unresponsive: environment.status === "unknown"
+    readonly property bool active: running || paused || transitioning || failed || unresponsive
+    readonly property color statusColor: failed || unresponsive ? backend.themeRed
+                                        : running ? backend.themeGreen
+                                        : paused || transitioning ? backend.themeAccentText
+                                        : backend.themeMuted
     padding: 14
-    Material.elevation: 1
+    Material.elevation: hoverHandler.hovered ? 3 : 1
     Material.background: backend.themeSurface
+
+    Behavior on Material.elevation {
+        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+    }
+
+    HoverHandler { id: hoverHandler }
 
     RowLayout {
         anchors.fill: parent
@@ -38,15 +55,20 @@ Pane {
                 anchors.fill: parent
                 source: card.environment.preview || ""
                 fillMode: Image.PreserveAspectCrop
-                visible: status === Image.Ready
+                visible: opacity > 0
+                opacity: status === Image.Ready ? 1 : 0
                 cache: false
+
+                Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
             }
-            Label {
+            Icon {
                 anchors.centerIn: parent
-                visible: !preview.visible
-                text: card.environment.kind === "machine" ? "▣" : ">_"
-                font.pixelSize: card.width < 520 ? 24 : 32
-                color: backend.themeAccent
+                opacity: preview.opacity > 0 ? 0 : 1
+                source: card.environment.kind === "machine" ? "qrc:/icons/machine.svg" : "qrc:/icons/box.svg"
+                iconSize: card.width < 520 ? 24 : 32
+                color: backend.themeAccentText
+
+                Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
             }
         }
 
@@ -90,24 +112,43 @@ Pane {
                     implicitWidth: 8
                     implicitHeight: 8
                     radius: 4
-                    color: card.failed ? backend.themeRed
-                          : card.running ? backend.themeGreen
-                          : card.paused || card.transitioning ? backend.themeAccent
-                          : backend.themeMuted
+                    color: card.statusColor
+
+                    Behavior on color { ColorAnimation { duration: 200 } }
+
+                    SequentialAnimation on scale {
+                        running: card.transitioning || card.busy
+                        loops: Animation.Infinite
+                        NumberAnimation { from: 1; to: 1.5; duration: 500; easing.type: Easing.InOutSine }
+                        NumberAnimation { from: 1.5; to: 1; duration: 500; easing.type: Easing.InOutSine }
+                    }
                 }
                 Label {
+                    objectName: "statusLabel"
                     text: card.environment.status === "running" ? qsTr("Running")
                           : card.environment.status === "paused" ? qsTr("Paused")
                           : card.environment.status === "starting" ? qsTr("Starting…")
                           : card.environment.status === "stopping" ? qsTr("Shutting down…")
+                          : card.environment.status === "creating" ? qsTr("Creating…")
+                          : card.environment.status === "removing" ? qsTr("Deleting…")
                           : card.environment.status === "error" ? qsTr("Needs attention")
+                          : card.environment.status === "unknown" ? qsTr("Not responding")
                           : card.environment.status === "stopped" ? qsTr("Stopped")
                           : qsTr("Checking…")
-                    color: card.failed ? backend.themeRed
-                          : card.running ? backend.themeGreen
-                          : card.paused || card.transitioning ? backend.themeAccent
-                          : backend.themeMuted
+                    color: card.statusColor
+
+                    Behavior on color { ColorAnimation { duration: 200 } }
                 }
+            }
+            // Why a Machine is paused or needs attention (a full host
+            // disk, a missing container): the state alone doesn't say.
+            Label {
+                objectName: "statusDetailLabel"
+                Layout.fillWidth: true
+                visible: (card.paused || card.failed) && !!card.environment.statusDetail
+                text: card.environment.statusDetail || ""
+                color: card.statusColor
+                wrapMode: Text.WordWrap
             }
             Label {
                 Layout.fillWidth: true
@@ -123,40 +164,56 @@ Pane {
         }
 
         Button {
-            visible: card.width >= 500
-            text: card.running || card.failed ? qsTr("Open") : card.paused ? qsTr("Resume") : qsTr("Start")
+            objectName: "primaryAction"
+            // Always reachable, even at 320px: this is the one direct action
+            // every card must offer (docs/TODO.md P1). Below 500px it shrinks
+            // to an icon-only button instead of disappearing into the menu.
+            readonly property bool compact: card.width < 500
+            readonly property string label: card.running || card.failed || card.unresponsive ? qsTr("Open") : card.paused ? qsTr("Resume") : qsTr("Start")
+            text: label
+            icon.source: "qrc:/icons/play.svg"
+            display: compact ? AbstractButton.IconOnly : AbstractButton.TextOnly
+            Accessible.name: label
+            ToolTip.text: label
+            ToolTip.visible: compact && hovered
             highlighted: true
-            enabled: !card.transitioning
+            enabled: !card.transitioning && !card.busy
             onClicked: card.paused ? backend.resume(card.environment.name)
                                    : backend.open(card.environment.name, card.environment.kind)
         }
         ToolButton {
-            text: "⋮"
+            objectName: "actionsButton"
+            icon.source: "qrc:/icons/more.svg"
+            icon.color: backend.themeForeground
             Accessible.name: qsTr("Actions for %1").arg(card.environment.name)
             onClicked: actions.open()
             Menu {
                 id: actions
+                objectName: "actionsMenu"
                 y: parent.height
                 MenuItem {
-                    text: card.running || card.failed ? qsTr("Open") : card.paused ? qsTr("Resume") : qsTr("Start")
-                    enabled: !card.transitioning
+                    text: card.running || card.failed || card.unresponsive ? qsTr("Open") : card.paused ? qsTr("Resume") : qsTr("Start")
+                    enabled: !card.transitioning && !card.busy
                     onTriggered: card.paused ? backend.resume(card.environment.name)
                                              : backend.open(card.environment.name, card.environment.kind)
                 }
+                // A hidden MenuItem keeps its height in a Qt Quick Menu, so each
+                // kind-specific item collapses itself (see tst_environmentcard.qml).
                 MenuItem {
                     visible: card.environment.kind === "machine"
+                    height: visible ? implicitHeight : 0
                     text: card.paused ? qsTr("Resume") : qsTr("Pause")
-                    enabled: card.running || card.paused
+                    enabled: (card.running || card.paused) && !card.busy
                     onTriggered: card.paused ? backend.resume(card.environment.name) : backend.pause(card.environment.name)
                 }
-                MenuItem { text: qsTr("Restart"); visible: card.environment.kind === "machine"; enabled: card.running || card.paused; onTriggered: backend.restart(card.environment.name) }
-                MenuItem { text: qsTr("Shut Down"); enabled: card.active && !card.transitioning; onTriggered: backend.stop(card.environment.name) }
-                MenuItem { text: qsTr("Force Stop…"); visible: card.environment.kind === "machine"; enabled: card.active; onTriggered: card.forceStopRequested(card.environment.name) }
+                MenuItem { text: qsTr("Restart"); visible: card.environment.kind === "machine"; height: visible ? implicitHeight : 0; enabled: (card.running || card.paused) && !card.busy; onTriggered: backend.restart(card.environment.name) }
+                MenuItem { text: qsTr("Shut Down"); enabled: card.active && !card.transitioning && !card.busy; onTriggered: backend.stop(card.environment.name) }
+                MenuItem { text: qsTr("Force Stop…"); visible: card.environment.kind === "machine"; height: visible ? implicitHeight : 0; enabled: card.active && !card.busy; onTriggered: card.forceStopRequested(card.environment.name) }
                 MenuSeparator {}
-                MenuItem { text: qsTr("Snapshots…"); visible: card.environment.kind === "machine"; onTriggered: card.snapshotsRequested(card.environment) }
-                MenuItem { text: qsTr("Applications…"); visible: card.environment.kind !== "machine"; onTriggered: card.appsRequested(card.environment) }
+                MenuItem { text: qsTr("Snapshots…"); visible: card.environment.kind === "machine"; height: visible ? implicitHeight : 0; onTriggered: card.snapshotsRequested(card.environment) }
+                MenuItem { text: qsTr("Applications…"); visible: card.environment.kind !== "machine"; height: visible ? implicitHeight : 0; onTriggered: card.appsRequested(card.environment) }
                 MenuItem { text: qsTr("Settings…"); onTriggered: card.settingsRequested(card.environment) }
-                MenuItem { text: qsTr("Delete…"); onTriggered: card.removeRequested(card.environment.name) }
+                MenuItem { text: qsTr("Delete…"); enabled: !card.busy; onTriggered: card.removeRequested(card.environment.name) }
             }
         }
     }

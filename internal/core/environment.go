@@ -86,7 +86,18 @@ type Environment struct {
 	Kind      EnvironmentKind     `json:"kind"`
 	Settings  EnvironmentSettings `json:"settings,omitempty"`
 	Snapshots []Snapshot          `json:"snapshots,omitempty"`
+	// Operation is set while the environment is being created or removed:
+	// the registry keeps it for the whole backend call (so the name is
+	// taken and other clients can show it) without holding the registry
+	// locked meanwhile.
+	Operation string `json:"operation,omitempty"`
 }
+
+// Operations that take an environment out of normal use while they run.
+const (
+	OperationCreating = "creating"
+	OperationRemoving = "removing"
+)
 
 // Snapshot is a point-in-time state of an Environment the user can return
 // to. Label is the significant, user-facing text (UX Principle #9:
@@ -97,6 +108,10 @@ type Snapshot struct {
 	ID        string    `json:"id"`
 	Label     string    `json:"label"`
 	CreatedAt time.Time `json:"created_at"`
+	// CrashConsistent marks a snapshot of a running environment whose
+	// guest couldn't flush its disks first (no guest agent): going to it
+	// is like booting after a power cut.
+	CrashConsistent bool `json:"crash_consistent,omitempty"`
 }
 
 // defaultSnapshotLimit caps automatic snapshot history per Environment
@@ -114,12 +129,34 @@ type EnvironmentSettings struct {
 	SnapshotLimit  int    `json:"snapshot_limit,omitempty"`
 	Color          string `json:"color,omitempty"`
 	// ClipboardDisabled and TravelModeDisabled are stored inverted so the
-	// Go zero value (false) means "enabled" — both are opt-out Machine
-	// behaviors: on by default, persisted per Machine like every other
-	// setting here, never a per-session UI checkbox the user has to
-	// remember to re-enable.
+	// Go zero value (false) means "enabled" — both are opt-out behaviors:
+	// on by default, persisted per environment like every other setting
+	// here, never a per-session UI checkbox the user has to remember to
+	// re-enable. For a Machine, the clipboard is shared with the guest;
+	// for a Box, programs in its terminal may copy to it (OSC 52).
 	ClipboardDisabled  bool `json:"clipboard_disabled,omitempty"`
 	TravelModeDisabled bool `json:"travel_mode_disabled,omitempty"`
+	// VulkanDisabled turns off Vulkan acceleration for a Machine, which is
+	// otherwise on whenever the host supports it. Same inverted storage as
+	// the two above.
+	VulkanDisabled bool `json:"vulkan_disabled,omitempty"`
+	// SSHDisabled leaves out the channel `omavm ssh` and `omavm exec` use to
+	// reach a Machine (AF_VSOCK), which is otherwise added whenever the host
+	// supports it. Any process on the host can reach that channel, Boxes
+	// included; only the guest's login protects it.
+	SSHDisabled bool `json:"ssh_disabled,omitempty"`
+	// LauncherDisabled hides the environment from the host's application
+	// launcher, where it is listed by default. Applies to both Kinds.
+	LauncherDisabled bool `json:"launcher_disabled,omitempty"`
+	// EmptyWorkspaceDisabled opens the environment on the current
+	// workspace instead of an empty one, which is the default for both
+	// Kinds. It replaces the earlier opt-in "open_in_empty_workspace"
+	// key: whoever set that wanted it on, which is now the default, so
+	// the old key needs no migration.
+	EmptyWorkspaceDisabled bool `json:"empty_workspace_disabled,omitempty"`
+	// FullscreenDisabled opens a Machine's display in a window instead of
+	// fullscreen, which is the default.
+	FullscreenDisabled bool `json:"fullscreen_disabled,omitempty"`
 }
 
 func (e Environment) EffectiveSettings() EnvironmentSettings {
@@ -153,14 +190,19 @@ func validColor(c string) bool {
 }
 
 type SettingsPatch struct {
-	DisconnectISO  *bool
-	Description    *string
-	CPUs           *int
-	MemoryMiB      *int
-	SharedPath     *string
-	SharedReadOnly *bool
-	SnapshotLimit  *int
-	Color          *string
-	ShareClipboard *bool
-	TravelMode     *bool
+	DisconnectISO        *bool
+	Description          *string
+	CPUs                 *int
+	MemoryMiB            *int
+	SharedPath           *string
+	SharedReadOnly       *bool
+	SnapshotLimit        *int
+	Color                *string
+	ShareClipboard       *bool
+	TravelMode           *bool
+	Vulkan               *bool
+	Launcher             *bool
+	SSH                  *bool
+	OpenInEmptyWorkspace *bool
+	Fullscreen           *bool
 }

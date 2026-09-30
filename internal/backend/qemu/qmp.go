@@ -4,45 +4,59 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"syscall"
 	"time"
 )
 
-// qmpExecute sends a single QMP command (with optional arguments) over
-// the machine's monitor socket and returns after the reply, performing
-// the capabilities handshake QMP requires on every new connection. It's
-// intentionally minimal: OmaVM only needs "quit" and "screendump" today,
-// not the full QMP protocol.
-func qmpExecute(socketPath, command string, arguments map[string]any) (json.RawMessage, error) {
+// qmpConn is one QMP session: QMP requires the capabilities handshake on
+// every new connection, and fd passing (getfd) only lasts for the session
+// that received the fd.
+type qmpConn struct {
+	conn *net.UnixConn
+	dec  *json.Decoder
+}
+
+func qmpDial(socketPath string) (*qmpConn, error) {
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("dial qmp socket: %w", err)
 	}
-	defer conn.Close()
+	q := &qmpConn{conn: conn.(*net.UnixConn), dec: json.NewDecoder(conn)}
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		conn.Close()
 		return nil, err
 	}
-
-	dec := json.NewDecoder(conn)
-	enc := json.NewEncoder(conn)
-
 	var greeting map[string]any
-	if err := dec.Decode(&greeting); err != nil {
+	if err := q.dec.Decode(&greeting); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("read qmp greeting: %w", err)
 	}
-
-	if err := enc.Encode(map[string]any{"execute": "qmp_capabilities"}); err != nil {
+	if _, err := q.execute("qmp_capabilities", nil, nil); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("negotiate qmp capabilities: %w", err)
 	}
-	var capsReply map[string]any
-	if err := dec.Decode(&capsReply); err != nil {
-		return nil, fmt.Errorf("read qmp capabilities reply: %w", err)
-	}
+	return q, nil
+}
 
+func (q *qmpConn) Close() error { return q.conn.Close() }
+
+// execute sends one command, passing file alongside it (SCM_RIGHTS) when
+// non-nil, and returns after its reply.
+func (q *qmpConn) execute(command string, arguments map[string]any, file *os.File) (json.RawMessage, error) {
 	req := map[string]any{"execute": command}
 	if arguments != nil {
 		req["arguments"] = arguments
 	}
-	if err := enc.Encode(req); err != nil {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	var oob []byte
+	if file != nil {
+		oob = syscall.UnixRights(int(file.Fd()))
+	}
+	if _, _, err := q.conn.WriteMsgUnix(append(data, '\n'), oob, nil); err != nil {
 		return nil, fmt.Errorf("send qmp command %s: %w", command, err)
 	}
 	for {
@@ -51,7 +65,7 @@ func qmpExecute(socketPath, command string, arguments map[string]any) (json.RawM
 			Error  any             `json:"error"`
 			Event  string          `json:"event"`
 		}
-		if err := dec.Decode(&reply); err != nil {
+		if err := q.dec.Decode(&reply); err != nil {
 			return nil, fmt.Errorf("read qmp reply for %s: %w", command, err)
 		}
 		if reply.Error != nil {
@@ -64,34 +78,45 @@ func qmpExecute(socketPath, command string, arguments map[string]any) (json.RawM
 	}
 }
 
+// qmpExecute runs a single QMP command (with optional arguments) over the
+// machine's monitor socket. It's intentionally minimal: OmaVM only needs a
+// handful of commands, not the full QMP protocol.
+func qmpExecute(socketPath, command string, arguments map[string]any) (json.RawMessage, error) {
+	q, err := qmpDial(socketPath)
+	if err != nil {
+		return nil, err
+	}
+	defer q.Close()
+	return q.execute(command, arguments, nil)
+}
+
+// qmpAddDisplayClient hands QEMU one end of a peer-to-peer connection to
+// its D-Bus display (-display dbus,p2p=yes).
+func qmpAddDisplayClient(socketPath string, file *os.File) error {
+	q, err := qmpDial(socketPath)
+	if err != nil {
+		return err
+	}
+	defer q.Close()
+	const fdname = "omavm-display"
+	if _, err := q.execute("getfd", map[string]any{"fdname": fdname}, file); err != nil {
+		return err
+	}
+	_, err = q.execute("add_client", map[string]any{"protocol": "@dbus-display", "fdname": fdname}, nil)
+	return err
+}
+
 func qmpCommand(socketPath string, command string) error {
 	_, err := qmpExecute(socketPath, command, nil)
 	return err
 }
 
 // qmpScreendump asks QEMU to write the current framebuffer to dst as a
-// PPM image — no VNC/RFB client implementation needed, since QEMU does
-// the capture itself and writes straight to the local filesystem.
+// PPM image — no display client needed, since QEMU does the capture
+// itself and writes straight to the local filesystem.
 func qmpScreendump(socketPath, dst string) error {
 	_, err := qmpExecute(socketPath, "screendump", map[string]any{"filename": dst})
 	return err
-}
-
-// qmpHumanMonitorCommand runs a legacy HMP command (savevm/loadvm/delvm)
-// through QMP's human-monitor-command passthrough. QMP's newer job-based
-// snapshot-save/-load commands need named block nodes this project
-// doesn't set up; HMP's savevm/loadvm/delvm work uniformly for simple
-// internal qcow2 snapshots across the QEMU versions this project targets.
-func qmpHumanMonitorCommand(socketPath, command string) (string, error) {
-	raw, err := qmpExecute(socketPath, "human-monitor-command", map[string]any{"command-line": command})
-	if err != nil {
-		return "", err
-	}
-	var out string
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("decode human-monitor-command reply: %w", err)
-	}
-	return out, nil
 }
 
 func qmpStatus(socketPath string) (string, error) {

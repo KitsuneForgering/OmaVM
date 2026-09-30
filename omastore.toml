@@ -1,0 +1,17 @@
+# OmaStore manifest: lists OmaVM in the store and says what its
+# heuristics would get wrong. Validate with `omastore lint-manifest .`.
+kind = "app"
+name = "OmaVM"
+summary = "Create, run and manage Boxes and Machines on Omarchy"
+categories = ["System", "Emulator"]
+# Not a name the store recognizes on its own.
+icon = "data/icons/dev.omavm.app.svg"
+screenshots = ["docs/experience-center.png"]
+terminal = false
+
+# The release tarball from `make dist` (.github/workflows/release.yml). The
+# executable is the Experience Center, not the `omavm` CLI the store would
+# pick by the repository's name; the GUI finds the CLI next to it.
+[linux.x86_64]
+asset = "omavm-{version}-x86_64-linux.tar.gz"
+exec = "bin/omavm-gui"

@@ -12,6 +12,7 @@ import (
 func TestListAppsParsesOutputAndDetectsExported(t *testing.T) {
 	bin := t.TempDir()
 	writeDistrobox(t, bin, `printf '/usr/share/applications/foo.desktop\tFoo App\n/usr/share/applications/bar.desktop\tBar App\n'`)
+	writeEngine(t, bin, "omavm-dev-12345678\trunning\tUp\n")
 	t.Setenv("PATH", bin)
 
 	home := t.TempDir()
@@ -47,6 +48,7 @@ func TestExportAppPassesAbsolutePathToDistroboxExport(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "args")
 	writeDistrobox(t, bin, `printf '%s\n' "$@" > "$OMAVM_TEST_LOG"`)
+	writeEngine(t, bin, "omavm-dev-12345678\trunning\tUp\n")
 	t.Setenv("PATH", bin)
 	t.Setenv("OMAVM_TEST_LOG", log)
 
@@ -68,6 +70,7 @@ func TestUnexportAppAddsDeleteFlag(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "args")
 	writeDistrobox(t, bin, `printf '%s\n' "$@" > "$OMAVM_TEST_LOG"`)
+	writeEngine(t, bin, "omavm-dev-12345678\trunning\tUp\n")
 	t.Setenv("PATH", bin)
 	t.Setenv("OMAVM_TEST_LOG", log)
 

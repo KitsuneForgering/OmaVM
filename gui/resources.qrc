@@ -2,12 +2,25 @@
   <qresource prefix="/">
     <file alias="Main.qml">Main.qml</file>
     <file alias="EnvironmentCard.qml">EnvironmentCard.qml</file>
+    <file alias="EnvironmentListModel.qml">EnvironmentListModel.qml</file>
     <file alias="CreateDialog.qml">CreateDialog.qml</file>
     <file alias="SettingsDialog.qml">SettingsDialog.qml</file>
     <file alias="SnapshotsDialog.qml">SnapshotsDialog.qml</file>
     <file alias="AppsDialog.qml">AppsDialog.qml</file>
     <file alias="ThemeScrim.qml">ThemeScrim.qml</file>
+    <file alias="Icon.qml">Icon.qml</file>
     <file alias="Viewer.qml">Viewer.qml</file>
     <file alias="TerminalViewer.qml">TerminalViewer.qml</file>
+    <file alias="icons/add.svg">icons/add.svg</file>
+    <file alias="icons/refresh.svg">icons/refresh.svg</file>
+    <file alias="icons/warning.svg">icons/warning.svg</file>
+    <file alias="icons/close.svg">icons/close.svg</file>
+    <file alias="icons/more.svg">icons/more.svg</file>
+    <file alias="icons/play.svg">icons/play.svg</file>
+    <file alias="icons/machine.svg">icons/machine.svg</file>
+    <file alias="icons/box.svg">icons/box.svg</file>
+    <file alias="icons/app-mono.svg">icons/app-mono.svg</file>
+    <file alias="icons/history.svg">icons/history.svg</file>
+    <file alias="icons/app.svg">icons/app.svg</file>
   </qresource>
 </RCC>
