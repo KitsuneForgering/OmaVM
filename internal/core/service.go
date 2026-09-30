@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Service is the OmaVM Core: the single entry point the CLI and, later,
@@ -69,14 +71,12 @@ func (s *Service) backendFor(kind EnvironmentKind) (Backend, error) {
 }
 
 // validateEnvironmentName rejects names that would be unsafe once a
-// Backend turns them into part of a filesystem path. Machines use Name
-// directly as a raw path component (internal/backend/qemu's dir()); a
-// name like ".." or containing "/" would let a state directory escape
-// its parent instead of just failing to boot. Boxes derive their own
-// sanitized container name from Name and never touch a path with the
-// raw value, but the same rule keeps one name meaning across both
-// kinds instead of a Machine-only special case. Otherwise intentionally
-// permissive: spaces, accents and most punctuation are fine.
+// Backend turns them into part of a filesystem path. Machines created
+// before their directory was named by ID still live under their name
+// (internal/backend/qemu's key()), where ".." or "/" would let it escape
+// its parent; the launcher and ~/OmaVM links use the name too. Otherwise
+// intentionally permissive: spaces, accents and most punctuation are
+// fine.
 func validateEnvironmentName(name string) error {
 	if name == "" {
 		return Invalidf("environment name is required")
@@ -97,6 +97,22 @@ func validateEnvironmentName(name string) error {
 	return nil
 }
 
+// validateCPUs and validateMemory hold a Machine's hardware bounds, the
+// same at creation and in Settings.
+func validateCPUs(n int) error {
+	if n < 1 || n > 64 {
+		return Invalidf("cpus must be between 1 and 64")
+	}
+	return nil
+}
+
+func validateMemory(mib int) error {
+	if mib < 256 || mib > 262144 {
+		return Invalidf("memory-mib must be between 256 and 262144")
+	}
+	return nil
+}
+
 func findEnvironment(envs []Environment, name string) (Environment, int) {
 	for i, e := range envs {
 		if e.Name == name {
@@ -106,9 +122,232 @@ func findEnvironment(envs []Environment, name string) (Environment, int) {
 	return Environment{}, -1
 }
 
+func indexByID(envs []Environment, id string) int {
+	for i, e := range envs {
+		if e.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// lookup finds a registered environment by name without locking anything.
+func (s *Service) lookup(name string) (Environment, error) {
+	envs, err := s.store.Load()
+	if err != nil {
+		return Environment{}, err
+	}
+	env, idx := findEnvironment(envs, name)
+	if idx == -1 {
+		return Environment{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+	}
+	return env, nil
+}
+
+// interrupted reports whether the creation or removal marked on env has
+// no process behind it anymore: whoever runs it holds the environment's
+// lock until it finishes, and a lock dies with its process.
+func (s *Service) interrupted(env Environment) bool {
+	unlock, ok, err := s.store.TryLockEnvironment(env.ID)
+	if err != nil || !ok {
+		return false
+	}
+	unlock()
+	return true
+}
+
+// operationError explains why an environment in the middle of its
+// creation or removal can't be used.
+func operationError(env Environment, interrupted bool) error {
+	switch {
+	case interrupted && env.Operation == OperationCreating:
+		return Invalidf("creating %s was interrupted; delete it and create it again", env.Name)
+	case interrupted:
+		return Invalidf("deleting %s was interrupted; delete it again", env.Name)
+	case env.Operation == OperationCreating:
+		return Busyf("%s is still being created", env.Name)
+	default:
+		return Busyf("%s is being deleted", env.Name)
+	}
+}
+
+// operationStatus is the status of an environment marked as being
+// created or removed, which its Backend can't report yet (or anymore).
+func (s *Service) operationStatus(env Environment) Status {
+	if s.interrupted(env) {
+		return Status{State: StateError, Detail: operationError(env, true).Error()}
+	}
+	if env.Operation == OperationCreating {
+		return Status{State: StateCreating}
+	}
+	return Status{State: StateRemoving}
+}
+
+// acquire takes the named environment's lock for an operation that
+// changes it, and returns the environment as registered once the lock is
+// held (another process may have changed or removed it meanwhile) with
+// its Backend. The registry itself is not held: operations on other
+// environments go on.
+func (s *Service) acquire(ctx context.Context, name string) (Environment, Backend, func(), error) {
+	env, err := s.lookup(name)
+	if err != nil {
+		return Environment{}, nil, nil, err
+	}
+	unlock, err := s.store.LockEnvironment(ctx, env.ID)
+	if err != nil {
+		return Environment{}, nil, nil, err
+	}
+	envs, err := s.store.Load()
+	if err != nil {
+		unlock()
+		return Environment{}, nil, nil, err
+	}
+	idx := indexByID(envs, env.ID)
+	if idx == -1 {
+		unlock()
+		return Environment{}, nil, nil, fmt.Errorf("%w: %s", ErrNotFound, name)
+	}
+	env = envs[idx]
+	if env.Operation != "" {
+		// Its lock is ours, so nobody is running that operation.
+		unlock()
+		return Environment{}, nil, nil, operationError(env, true)
+	}
+	backend, err := s.backendFor(env.Kind)
+	if err != nil {
+		unlock()
+		return Environment{}, nil, nil, err
+	}
+	return env, backend, unlock, nil
+}
+
+// update changes one environment under the registry lock, on a freshly
+// loaded registry, so a concurrent change to another field (a Configure
+// while a snapshot is taken) is never overwritten by a stale copy.
+func (s *Service) update(ctx context.Context, id string, change func(*Environment)) (Environment, error) {
+	unlock, err := s.store.Lock(ctx)
+	if err != nil {
+		return Environment{}, err
+	}
+	defer unlock()
+	envs, err := s.store.Load()
+	if err != nil {
+		return Environment{}, err
+	}
+	idx := indexByID(envs, id)
+	if idx == -1 {
+		return Environment{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	change(&envs[idx])
+	if err := s.store.Save(envs); err != nil {
+		return Environment{}, err
+	}
+	return envs[idx], nil
+}
+
+// drop removes one environment from the registry.
+func (s *Service) drop(ctx context.Context, id string) error {
+	unlock, err := s.store.Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	envs, err := s.store.Load()
+	if err != nil {
+		return err
+	}
+	idx := indexByID(envs, id)
+	if idx == -1 {
+		return nil
+	}
+	return s.store.Save(append(envs[:idx], envs[idx+1:]...))
+}
+
 // List returns every known environment, regardless of Kind or Backend.
 func (s *Service) List(ctx context.Context) ([]Environment, error) {
 	return s.store.Load()
+}
+
+// EnvironmentState is an Environment together with what its Backend
+// reports about it right now.
+type EnvironmentState struct {
+	Environment
+	Status Status `json:"status"`
+	// Integration is only reported for environments whose Backend checks
+	// guest tools (Machines).
+	Integration *IntegrationReport `json:"integration,omitempty"`
+}
+
+// ListWithStatus is List plus every environment's current status, in one
+// call: Backends that implement StatusLister answer for all their
+// environments at once, the others are asked concurrently. A failure to
+// get one environment's status is reported as its status, never as a
+// failure of the whole list.
+func (s *Service) ListWithStatus(ctx context.Context) ([]EnvironmentState, error) {
+	envs, err := s.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	states := make([]EnvironmentState, len(envs))
+	byKind := map[EnvironmentKind][]int{}
+	for i, env := range envs {
+		states[i].Environment = env
+		if env.Operation != "" {
+			states[i].Status = s.operationStatus(env)
+			continue
+		}
+		byKind[env.Kind] = append(byKind[env.Kind], i)
+	}
+
+	var wg sync.WaitGroup
+	for kind, indexes := range byKind {
+		backend, err := s.backendFor(kind)
+		if err != nil {
+			for _, i := range indexes {
+				states[i].Status = Status{State: StateUnknown, Detail: err.Error()}
+			}
+			continue
+		}
+		if lister, ok := backend.(StatusLister); ok {
+			group := make([]Environment, len(indexes))
+			for j, i := range indexes {
+				group[j] = envs[i]
+			}
+			statuses, err := lister.Statuses(ctx, group)
+			for _, i := range indexes {
+				status, found := statuses[envs[i].ID]
+				switch {
+				case err != nil:
+					status = Status{State: StateUnknown, Detail: err.Error()}
+				case !found:
+					status = Status{State: StateUnknown}
+				}
+				states[i].Status = status
+			}
+		}
+		reporter, _ := backend.(IntegrationReporter)
+		for _, i := range indexes {
+			wg.Add(1)
+			go func(i int, backend Backend) {
+				defer wg.Done()
+				state := &states[i]
+				if _, batched := backend.(StatusLister); !batched {
+					status, err := backend.Status(ctx, state.Environment)
+					if err != nil {
+						status = Status{State: StateUnknown, Detail: err.Error()}
+					}
+					state.Status = status
+				}
+				if reporter != nil {
+					if report, err := reporter.Integration(ctx, state.Environment); err == nil {
+						state.Integration = &report
+					}
+				}
+			}(i, backend)
+		}
+	}
+	wg.Wait()
+	return states, nil
 }
 
 // Create registers a new environment and delegates its creation to the
@@ -118,16 +357,10 @@ func (s *Service) Create(ctx context.Context, env Environment) (Environment, err
 	if err := validateEnvironmentName(env.Name); err != nil {
 		return Environment{}, err
 	}
-	// Boxes turn Name into a sanitized container name (internal/backend/
-	// distrobox's boxName) and never touch the filesystem with it
-	// directly. Machines use it as a raw path component
-	// (internal/backend/qemu's dir()), so validateEnvironmentName above
-	// is what actually keeps a Machine's state directory from escaping
-	// its parent — this Image check is a separate, later failure a user
-	// would otherwise only see after the (slower) backend.Create call.
-	// A Machine starts with an empty disk: without installation media it
-	// has nothing to boot, and nothing can attach an ISO later.
-	// Without one, `distrobox create --image ""` never returns.
+	// Checked here rather than left to the (slower) backend.Create: a
+	// Machine starts with an empty disk, so without installation media it
+	// has nothing to boot, and nothing can attach an ISO later. Without an
+	// image, `distrobox create --image ""` never returns.
 	if env.Kind == Box && strings.TrimSpace(env.Image) == "" {
 		return Environment{}, Invalidf("a Box needs a container image to start from (--image fedora:latest, ubuntu:24.04, archlinux, ...)")
 	}
@@ -143,78 +376,98 @@ func (s *Service) Create(ctx context.Context, env Environment) (Environment, err
 			return Environment{}, Invalidf("installation media %q is a directory, not an ISO file", env.Image)
 		}
 	}
-	// Same bounds Configure enforces on an existing Machine (below), kept
-	// in sync so create-time hardware and later Settings edits mean the
-	// same thing instead of drifting into two silently different rules.
 	if env.Settings.CPUs != 0 || env.Settings.MemoryMiB != 0 {
 		if env.Kind != Machine {
 			return Environment{}, Unsupportedf("CPU and memory settings only apply to Machines")
 		}
-		if env.Settings.CPUs != 0 && (env.Settings.CPUs < 1 || env.Settings.CPUs > 64) {
-			return Environment{}, Invalidf("cpus must be between 1 and 64")
+		// 0 means the default.
+		if env.Settings.CPUs != 0 {
+			if err := validateCPUs(env.Settings.CPUs); err != nil {
+				return Environment{}, err
+			}
 		}
-		if env.Settings.MemoryMiB != 0 && (env.Settings.MemoryMiB < 256 || env.Settings.MemoryMiB > 262144) {
-			return Environment{}, Invalidf("memory-mib must be between 256 and 262144")
+		if env.Settings.MemoryMiB != 0 {
+			if err := validateMemory(env.Settings.MemoryMiB); err != nil {
+				return Environment{}, err
+			}
 		}
 	}
 
-	unlock, err := s.store.Lock(ctx)
-	if err != nil {
-		return Environment{}, err
-	}
-	defer unlock()
-	envs, err := s.store.Load()
-	if err != nil {
-		return Environment{}, err
-	}
-	if _, idx := findEnvironment(envs, env.Name); idx != -1 {
-		return Environment{}, fmt.Errorf("%w: %s", ErrAlreadyExists, env.Name)
-	}
 	backend, err := s.backendFor(env.Kind)
 	if err != nil {
 		return Environment{}, err
 	}
-
 	id, err := newID()
 	if err != nil {
 		return Environment{}, err
 	}
 	env.ID = id
-
-	if err := backend.Create(ctx, env); err != nil {
-		return Environment{}, fmt.Errorf("create %s: %w", env.Name, err)
-	}
-	// Persist ownership only after the backend completed creation.
 	env.Backend = backend.Name()
 
-	envs = append(envs, env)
-	if err := s.store.Save(envs); err != nil {
-		// The backend already created a real resource (a container, a
-		// VM disk) but the registry write failed — this would otherwise
-		// leave that resource orphaned: it exists, but nothing in the
-		// CLI/GUI can see or manage it since it was never registered.
-		// Best-effort undo the backend side too, so a failure here
-		// reads the same as the create having never happened, instead
-		// of silently leaking a resource (same "never leave a
-		// half-succeeded operation invisible" rule as the snapshot
-		// retention fix above).
-		if removeErr := backend.Remove(ctx, env); removeErr != nil {
+	// The name is reserved in the registry for as long as the backend
+	// takes (pulling a Box's image can take minutes), with only this
+	// environment's lock held meanwhile, not the registry's: other
+	// environments stay usable. The lock is taken before the reservation
+	// appears, so nobody can mistake it for an interrupted creation.
+	unlockEnv, err := s.store.LockEnvironment(ctx, id)
+	if err != nil {
+		return Environment{}, err
+	}
+	defer unlockEnv()
+	if err := s.reserve(ctx, env); err != nil {
+		return Environment{}, err
+	}
+
+	if err := backend.Create(ctx, env); err != nil {
+		if dropErr := s.drop(ctx, id); dropErr != nil {
+			return Environment{}, fmt.Errorf("create %s: %w (and it could not be taken out of the registry: %v)", env.Name, err, dropErr)
+		}
+		return Environment{}, fmt.Errorf("create %s: %w", env.Name, err)
+	}
+	created, err := s.update(ctx, id, func(e *Environment) { e.Operation = "" })
+	if err != nil {
+		// The backend created a real resource (a container, a VM disk)
+		// but the registry can't say so: undo it rather than leave it
+		// orphaned and invisible to the CLI/GUI.
+		removeErr := backend.Remove(ctx, env)
+		_ = s.drop(ctx, id)
+		if removeErr != nil {
 			return Environment{}, fmt.Errorf("save registry after creating %s: %w (cleanup also failed, resource may be orphaned: %v)", env.Name, err, removeErr)
 		}
 		return Environment{}, fmt.Errorf("save registry after creating %s: %w", env.Name, err)
 	}
-	s.syncLauncher(env)
-	return env, nil
+	s.syncLauncher(created)
+	return created, nil
 }
 
-func (s *Service) resolve(ctx context.Context, name string) (Environment, Backend, error) {
+// reserve adds env to the registry marked as being created, if its name
+// is free.
+func (s *Service) reserve(ctx context.Context, env Environment) error {
+	unlock, err := s.store.Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	envs, err := s.store.Load()
+	if err != nil {
+		return err
+	}
+	if _, idx := findEnvironment(envs, env.Name); idx != -1 {
+		return fmt.Errorf("%w: %s", ErrAlreadyExists, env.Name)
+	}
+	env.Operation = OperationCreating
+	return s.store.Save(append(envs, env))
+}
+
+// resolve finds an environment for an operation that doesn't change it
+// (status, open, exec, ...), and so takes no lock.
+func (s *Service) resolve(ctx context.Context, name string) (Environment, Backend, error) {
+	env, err := s.lookup(name)
 	if err != nil {
 		return Environment{}, nil, err
 	}
-	env, idx := findEnvironment(envs, name)
-	if idx == -1 {
-		return Environment{}, nil, fmt.Errorf("%w: %s", ErrNotFound, name)
+	if env.Operation != "" {
+		return Environment{}, nil, operationError(env, s.interrupted(env))
 	}
 	backend, err := s.backendFor(env.Kind)
 	if err != nil {
@@ -224,10 +477,11 @@ func (s *Service) resolve(ctx context.Context, name string) (Environment, Backen
 }
 
 func (s *Service) Start(ctx context.Context, name string) error {
-	env, backend, err := s.resolve(ctx, name)
+	env, backend, unlock, err := s.acquire(ctx, name)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	if err := backend.Start(ctx, env); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
 	}
@@ -237,6 +491,8 @@ func (s *Service) Start(ctx context.Context, name string) error {
 	return nil
 }
 
+// Open takes no lock: a Box's Open is its interactive shell and lasts as
+// long as the user keeps it.
 func (s *Service) Open(ctx context.Context, name string) error {
 	env, backend, err := s.resolve(ctx, name)
 	if err != nil {
@@ -270,62 +526,77 @@ func (s *Service) Preview(ctx context.Context, name string) (string, error) {
 }
 
 func (s *Service) Stop(ctx context.Context, name string) error {
-	env, backend, err := s.resolve(ctx, name)
+	env, backend, unlock, err := s.acquire(ctx, name)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	if err := backend.Stop(ctx, env); err != nil {
 		return fmt.Errorf("stop %s: %w", name, err)
 	}
 	return nil
 }
 
-func (s *Service) advancedLifecycle(ctx context.Context, name string) (Environment, AdvancedLifecycle, error) {
-	env, backend, err := s.resolve(ctx, name)
+// advancedLifecycle is acquire for the Machine-only controls; the caller
+// releases the lock.
+func (s *Service) advancedLifecycle(ctx context.Context, name string) (Environment, AdvancedLifecycle, func(), error) {
+	env, backend, unlock, err := s.acquire(ctx, name)
 	if err != nil {
-		return Environment{}, nil, err
+		return Environment{}, nil, nil, err
 	}
 	lifecycle, ok := backend.(AdvancedLifecycle)
 	if !ok {
-		return Environment{}, nil, Unsupportedf("%s is a Box: restart, pause, resume and force stop are only available for Machines", name)
+		unlock()
+		return Environment{}, nil, nil, Unsupportedf("%s is a Box: restart, pause, resume and force stop are only available for Machines", name)
 	}
-	return env, lifecycle, nil
+	return env, lifecycle, unlock, nil
 }
 
 func (s *Service) Restart(ctx context.Context, name string) error {
-	env, lifecycle, err := s.advancedLifecycle(ctx, name)
+	env, lifecycle, unlock, err := s.advancedLifecycle(ctx, name)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	return lifecycle.Restart(ctx, env)
 }
 
 func (s *Service) Pause(ctx context.Context, name string) error {
-	env, lifecycle, err := s.advancedLifecycle(ctx, name)
+	env, lifecycle, unlock, err := s.advancedLifecycle(ctx, name)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	return lifecycle.Pause(ctx, env)
 }
 
 func (s *Service) Resume(ctx context.Context, name string) error {
-	env, lifecycle, err := s.advancedLifecycle(ctx, name)
+	env, lifecycle, unlock, err := s.advancedLifecycle(ctx, name)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	return lifecycle.Resume(ctx, env)
 }
 
 func (s *Service) ForceStop(ctx context.Context, name string) error {
-	env, lifecycle, err := s.advancedLifecycle(ctx, name)
+	env, lifecycle, unlock, err := s.advancedLifecycle(ctx, name)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	return lifecycle.ForceStop(ctx, env)
 }
 
 func (s *Service) Status(ctx context.Context, name string) (Status, error) {
-	env, backend, err := s.resolve(ctx, name)
+	env, err := s.lookup(name)
+	if err != nil {
+		return Status{}, err
+	}
+	if env.Operation != "" {
+		return s.operationStatus(env), nil
+	}
+	backend, err := s.backendFor(env.Kind)
 	if err != nil {
 		return Status{}, err
 	}
@@ -388,6 +659,11 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 	if idx == -1 {
 		return EnvironmentSettings{}, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
+	if env.Operation != "" {
+		// TryLock never waits, so trying the environment's lock while
+		// holding the registry's can't deadlock.
+		return EnvironmentSettings{}, operationError(env, s.interrupted(env))
+	}
 	// Start from the raw, persisted settings — not EffectiveSettings().
 	// EffectiveSettings() substitutes defaults for CPUs/MemoryMiB/
 	// SnapshotLimit (0 -> 2/2048/10) purely for display; starting the
@@ -411,7 +687,9 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 	}
 	if patch.Description != nil {
 		settings.Description = strings.TrimSpace(*patch.Description)
-		if len(settings.Description) > 500 {
+		// Characters, not bytes: the Settings dialog counts characters,
+		// and an accented letter takes two bytes.
+		if utf8.RuneCountInString(settings.Description) > 500 {
 			return EnvironmentSettings{}, Invalidf("description must be at most 500 characters")
 		}
 	}
@@ -446,14 +724,14 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 		settings.SharedReadOnly = *patch.SharedReadOnly
 	}
 	if patch.CPUs != nil {
-		if *patch.CPUs < 1 || *patch.CPUs > 64 {
-			return EnvironmentSettings{}, Invalidf("cpus must be between 1 and 64")
+		if err := validateCPUs(*patch.CPUs); err != nil {
+			return EnvironmentSettings{}, err
 		}
 		settings.CPUs = *patch.CPUs
 	}
 	if patch.MemoryMiB != nil {
-		if *patch.MemoryMiB < 256 || *patch.MemoryMiB > 262144 {
-			return EnvironmentSettings{}, Invalidf("memory-mib must be between 256 and 262144")
+		if err := validateMemory(*patch.MemoryMiB); err != nil {
+			return EnvironmentSettings{}, err
 		}
 		settings.MemoryMiB = *patch.MemoryMiB
 	}
@@ -501,6 +779,12 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 		// desktop-integration path as a Machine's viewer (docs/TODO.md P2).
 		settings.EmptyWorkspaceDisabled = !*patch.OpenInEmptyWorkspace
 	}
+	if patch.Fullscreen != nil {
+		if env.Kind != Machine {
+			return EnvironmentSettings{}, Unsupportedf("fullscreen only applies to a Machine's display; a Box opens as a terminal")
+		}
+		settings.FullscreenDisabled = !*patch.Fullscreen
+	}
 	env.Settings = settings
 	envs[idx] = env
 	if err := s.store.Save(envs); err != nil {
@@ -515,7 +799,11 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 	if patch.Color != nil {
 		if backend, backendErr := s.backendFor(env.Kind); backendErr == nil {
 			if linker, ok := backend.(HostLinker); ok {
-				_, _ = linker.Link(ctx, env, settings.Color)
+				if _, err := linker.Link(ctx, env, settings.Color); err != nil {
+					// ~/OmaVM/<name> taken by a file of the user's own,
+					// for example: the color still holds inside OmaVM.
+					slog.Warn("host link not updated", "environment", env.Name, "error", err)
+				}
 			}
 		}
 	}
@@ -559,48 +847,27 @@ func (s *Service) CreateSnapshot(ctx context.Context, name, label string) (Snaps
 	if label == "" {
 		return Snapshot{}, Invalidf("snapshot label is required")
 	}
-
-	unlock, err := s.store.Lock(ctx)
+	env, manager, unlock, err := s.snapshotManager(ctx, name)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	defer unlock()
-	envs, err := s.store.Load()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	env, idx := findEnvironment(envs, name)
-	if idx == -1 {
-		return Snapshot{}, fmt.Errorf("%w: %s", ErrNotFound, name)
-	}
-	backend, err := s.backendFor(env.Kind)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	manager, ok := backend.(SnapshotManager)
-	if !ok {
-		return Snapshot{}, Unsupportedf("%s is a Box: snapshots are only available for Machines for now", name)
-	}
 
 	tag, err := snapshotTag(label)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if err := manager.CreateSnapshot(ctx, env, tag); err != nil {
+	crashConsistent, err := manager.CreateSnapshot(ctx, env, tag)
+	if err != nil {
 		return Snapshot{}, fmt.Errorf("create snapshot %s: %w", name, err)
 	}
-	snap := Snapshot{ID: tag, Label: label, CreatedAt: time.Now().UTC()}
-	env.Snapshots = append(env.Snapshots, snap)
+	snap := Snapshot{ID: tag, Label: label, CreatedAt: time.Now().UTC(), CrashConsistent: crashConsistent}
 
-	// Persist right after the backend confirms the new snapshot, before
-	// touching retention: the qcow2/QMP snapshot already exists at this
-	// point, so if a later discard below fails partway, the registry
-	// must not lose track of it — that would leave a snapshot the
-	// backend has but the Core doesn't know about, invisible to
-	// `snapshot list` with no way to reach it again except by editing
-	// the state file by hand.
-	envs[idx] = env
-	if err := s.store.Save(envs); err != nil {
+	// Recorded right after the backend confirms it, before retention: if
+	// a discard below fails, the registry must still know this snapshot,
+	// or it would exist in the disk with no way to reach it.
+	env, err = s.update(ctx, env.ID, func(e *Environment) { e.Snapshots = append(e.Snapshots, snap) })
+	if err != nil {
 		return Snapshot{}, err
 	}
 
@@ -608,22 +875,45 @@ func (s *Service) CreateSnapshot(ctx context.Context, name, label string) (Snaps
 	for limit > 0 && len(env.Snapshots) > limit {
 		oldest := env.Snapshots[0]
 		if err := manager.RemoveSnapshot(ctx, env, oldest.ID); err != nil {
-			// snap itself was already saved above and is not lost; only
-			// the retention discard failed, so surface that distinctly
-			// while still returning the snapshot that really was created.
+			// snap itself is saved; only the retention discard failed.
 			return snap, fmt.Errorf("created %s, but discarding the oldest snapshot for %s failed: %w", label, name, err)
 		}
-		env.Snapshots = env.Snapshots[1:]
-		// Persist each discard immediately too: the backend has already
-		// deleted this one, so the registry must not still list it if a
-		// later discard in this same loop fails.
-		envs[idx] = env
-		if err := s.store.Save(envs); err != nil {
+		// Each discard is recorded at once: the backend has already
+		// deleted it, so a later failure must not leave it listed.
+		env, err = s.update(ctx, env.ID, func(e *Environment) { e.Snapshots = withoutSnapshot(e.Snapshots, oldest.ID) })
+		if err != nil {
 			return snap, err
 		}
 	}
-
 	return snap, nil
+}
+
+// snapshotManager is acquire for snapshot operations; the caller
+// releases the lock. Holding the environment's lock across the backend
+// call serializes snapshot operations on one Machine (reproduced
+// 2026-09-27: a lock-free go-to racing a create hit qemu-img's own image
+// lock with a raw "Failed to get \"write\" lock").
+func (s *Service) snapshotManager(ctx context.Context, name string) (Environment, SnapshotManager, func(), error) {
+	env, backend, unlock, err := s.acquire(ctx, name)
+	if err != nil {
+		return Environment{}, nil, nil, err
+	}
+	manager, ok := backend.(SnapshotManager)
+	if !ok {
+		unlock()
+		return Environment{}, nil, nil, Unsupportedf("%s is a Box: snapshots are only available for Machines for now", name)
+	}
+	return env, manager, unlock, nil
+}
+
+func withoutSnapshot(snapshots []Snapshot, id string) []Snapshot {
+	out := make([]Snapshot, 0, len(snapshots))
+	for _, snap := range snapshots {
+		if snap.ID != id {
+			out = append(out, snap)
+		}
+	}
+	return out
 }
 
 // ListSnapshots only reads the store: the Core, not the Backend, owns
@@ -647,37 +937,12 @@ func findSnapshot(snapshots []Snapshot, id string) int {
 
 // GoToSnapshot restores the environment to a prior captured state. Named
 // "Go To" rather than "revert"/"restore" per UX Principle #9.
-//
-// Takes the same registry lock CreateSnapshot/RemoveSnapshot hold across
-// their whole backend call, even though this doesn't itself mutate the
-// registry: reproduced 2026-09-27 (docs/TODO.md P0) that a concurrent
-// CreateSnapshot/RemoveSnapshot racing a lock-free GoToSnapshot on the
-// same stopped Machine hits qemu-img's own image locking ("Failed to get
-// \"write\" lock") — no corruption, but a confusing raw error for
-// whichever call lost. Serializing here removes the race instead of
-// prettifying the error.
 func (s *Service) GoToSnapshot(ctx context.Context, name, id string) error {
-	unlock, err := s.store.Lock(ctx)
+	env, manager, unlock, err := s.snapshotManager(ctx, name)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	envs, err := s.store.Load()
-	if err != nil {
-		return err
-	}
-	env, idx := findEnvironment(envs, name)
-	if idx == -1 {
-		return fmt.Errorf("%w: %s", ErrNotFound, name)
-	}
-	backend, err := s.backendFor(env.Kind)
-	if err != nil {
-		return err
-	}
-	manager, ok := backend.(SnapshotManager)
-	if !ok {
-		return Unsupportedf("%s is a Box: snapshots are only available for Machines for now", name)
-	}
 	if findSnapshot(env.Snapshots, id) == -1 {
 		return fmt.Errorf("%w: snapshot %s", ErrNotFound, id)
 	}
@@ -688,37 +953,19 @@ func (s *Service) GoToSnapshot(ctx context.Context, name, id string) error {
 }
 
 func (s *Service) RemoveSnapshot(ctx context.Context, name, id string) error {
-	unlock, err := s.store.Lock(ctx)
+	env, manager, unlock, err := s.snapshotManager(ctx, name)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	envs, err := s.store.Load()
-	if err != nil {
-		return err
-	}
-	env, idx := findEnvironment(envs, name)
-	if idx == -1 {
-		return fmt.Errorf("%w: %s", ErrNotFound, name)
-	}
-	backend, err := s.backendFor(env.Kind)
-	if err != nil {
-		return err
-	}
-	manager, ok := backend.(SnapshotManager)
-	if !ok {
-		return Unsupportedf("%s is a Box: snapshots are only available for Machines for now", name)
-	}
-	snapIdx := findSnapshot(env.Snapshots, id)
-	if snapIdx == -1 {
+	if findSnapshot(env.Snapshots, id) == -1 {
 		return fmt.Errorf("%w: snapshot %s", ErrNotFound, id)
 	}
 	if err := manager.RemoveSnapshot(ctx, env, id); err != nil {
 		return fmt.Errorf("remove snapshot on %s: %w", name, err)
 	}
-	env.Snapshots = append(env.Snapshots[:snapIdx], env.Snapshots[snapIdx+1:]...)
-	envs[idx] = env
-	return s.store.Save(envs)
+	_, err = s.update(ctx, env.ID, func(e *Environment) { e.Snapshots = withoutSnapshot(e.Snapshots, id) })
+	return err
 }
 
 // ListApps lists applications a Box's engine can export as a host-visible
@@ -791,29 +1038,41 @@ func (s *Service) Exec(ctx context.Context, name string, args []string) error {
 }
 
 // Remove deletes an environment through its Backend and drops it from
-// the store. It only forgets the environment locally if the backend
-// confirms removal, so a failed backend removal never leaves state
-// pointing at nothing.
+// the registry. The environment is marked as being removed for the whole
+// backend call, and only forgotten once the backend confirms, so a failed
+// removal never leaves the registry pointing at nothing. An environment
+// whose creation or removal was interrupted can always be removed.
 func (s *Service) Remove(ctx context.Context, name string) error {
-	unlock, err := s.store.Lock(ctx)
+	env, err := s.lookup(name)
 	if err != nil {
 		return err
 	}
-	defer unlock()
-	envs, err := s.store.Load()
+	unlockEnv, err := s.store.LockEnvironment(ctx, env.ID)
 	if err != nil {
 		return err
 	}
-	env, idx := findEnvironment(envs, name)
-	if idx == -1 {
-		return fmt.Errorf("%w: %s", ErrNotFound, name)
+	defer unlockEnv()
+	var previous string
+	env, err = s.update(ctx, env.ID, func(e *Environment) {
+		previous = e.Operation
+		e.Operation = OperationRemoving
+	})
+	if err != nil {
+		return err
 	}
 	backend, err := s.backendFor(env.Kind)
 	if err != nil {
+		_, _ = s.update(ctx, env.ID, func(e *Environment) { e.Operation = previous })
 		return err
 	}
 	if err := backend.Remove(ctx, env); err != nil {
-		return fmt.Errorf("remove %s: %w", name, err)
+		if previous != OperationCreating {
+			_, _ = s.update(ctx, env.ID, func(e *Environment) { e.Operation = previous })
+			return fmt.Errorf("remove %s: %w", name, err)
+		}
+		// An interrupted creation may never have got as far as the
+		// resource the backend fails to find now.
+		slog.Warn("removing an interrupted creation", "environment", name, "error", err)
 	}
 	if linker, ok := backend.(HostLinker); ok {
 		_ = linker.Unlink(ctx, env)
@@ -825,8 +1084,7 @@ func (s *Service) Remove(ctx context.Context, name string) error {
 			slog.Warn("launcher entry not removed", "environment", env.Name, "error", err)
 		}
 	}
-	envs = append(envs[:idx], envs[idx+1:]...)
-	return s.store.Save(envs)
+	return s.drop(ctx, env.ID)
 }
 
 func newID() (string, error) {

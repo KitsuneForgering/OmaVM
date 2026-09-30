@@ -446,6 +446,24 @@ private slots:
     QCOMPARE(cellText(session, 0, 4), QStringLiteral("d"));
     session.write(QByteArrayLiteral("\x04")); // EOF (Ctrl+D) to end cat
   }
+
+  // Regression: write() ignored short writes on the non-blocking PTY, so
+  // a paste larger than what the program had read so far lost its tail.
+  void largeWriteReachesTheProgramWhole() {
+    TerminalSession session;
+    // Raw mode first: the canonical line discipline itself drops what
+    // passes 4095 bytes in one line. The program then sleeps without
+    // reading, so the PTY fills up and write() has to wait for it.
+    session.startProgram("/bin/sh",
+                         {"-c", "stty raw -echo; printf R; sleep 1; "
+                                "head -c 200000 | wc -c"},
+                         80, 24);
+    QTRY_VERIFY_WITH_TIMEOUT(cellText(session, 0, 0) == QStringLiteral("R"),
+                             5000);
+    session.write(QByteArray(200000, 'x'));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session.text(0, 1, 0, 79).trimmed() == QStringLiteral("200000"), 10000);
+  }
 };
 
 QTEST_GUILESS_MAIN(TerminalTest)

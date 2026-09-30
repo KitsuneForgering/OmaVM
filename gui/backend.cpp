@@ -67,17 +67,8 @@ QString hyprctlRepl(const QString &luaCode, bool *ok) {
   return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
 }
 
-enum class WorkspacePlacement {
-  NotApplicable,          // no Hyprland session, or the user's own window
-                          // rule places OmaVM's viewer: open as usual,
-                          // silently
-  LaunchNormally,         // switched to an empty workspace; go ahead and open
-  AlreadyFocusedExisting, // an existing window for this environment was
-                          // found and focused; do not open another
-  Unavailable             // no Hyprland, no eligible workspace, or the
-                          // dispatch failed; caller should fall back to
-                          // opening on the current workspace
-};
+
+} // namespace
 
 // Finds this environment's already-open viewer/terminal window by class
 // + title (the shared `dev.omavm.viewer` app id alone can't tell two
@@ -94,10 +85,7 @@ enum class WorkspacePlacement {
 // queryable "configured workspace range" to respect, so the search is
 // capped at a fixed, generous bound (30) instead.
 WorkspacePlacement placeInEmptyWorkspace(const QString &title) {
-  if (!hyprlandAvailable() ||
-      hasPersonalViewerRule(QStandardPaths::writableLocation(
-                                QStandardPaths::GenericConfigLocation) +
-                            QStringLiteral("/hypr")))
+  if (!hyprlandAvailable() || hasPersonalViewerRule(hyprConfigDir()))
     return WorkspacePlacement::NotApplicable;
 
   const QString script =
@@ -139,13 +127,17 @@ WorkspacePlacement placeInEmptyWorkspace(const QString &title) {
   return WorkspacePlacement::Unavailable;
 }
 
-} // namespace
-
 // Whether the user's Hyprland config has a window rule of its own for the
 // viewer (contrib/hypr/omavm-viewer.lua, or anything else naming
 // dev.omavm.viewer). Such a rule moves the window after it opens, so
 // switching to an empty workspace first would only leave the user
 // looking at an empty workspace. The rule is theirs and wins.
+QString hyprConfigDir() {
+  return QStandardPaths::writableLocation(
+             QStandardPaths::GenericConfigLocation) +
+         QStringLiteral("/hypr");
+}
+
 bool hasPersonalViewerRule(const QString &hyprConfigDir) {
   QDirIterator it(hyprConfigDir, {QStringLiteral("*.lua"), QStringLiteral("*.conf")},
                   QDir::Files, QDirIterator::Subdirectories);
@@ -208,38 +200,56 @@ QString Backend::cliPath() const {
   return sibling;
 }
 
-QString Backend::busyMessage() const {
-  return m_busyAction.isEmpty()
-             ? QStringLiteral("Still working — please wait.")
-             : QStringLiteral("Still %1 — please wait.").arg(m_busyAction);
+QString Backend::busyAction() const {
+  if (m_busy.size() == 1)
+    return m_busy.first();
+  return m_busy.isEmpty() ? QString()
+                          : QStringLiteral("%1 actions").arg(m_busy.size());
 }
 
-bool Backend::beginBusy(const QString &label) {
-  if (m_busy) {
+QVariantMap Backend::busyEnvironments() const {
+  QVariantMap names;
+  for (auto it = m_busy.cbegin(); it != m_busy.cend(); ++it)
+    if (!it.key().isEmpty())
+      names.insert(it.key(), it.value());
+  return names;
+}
+
+QString Backend::busyMessage(const QString &key) const {
+  const QString action = m_busy.value(key);
+  return action.isEmpty()
+             ? QStringLiteral("Still working — please wait.")
+             : QStringLiteral("Still %1 — please wait.").arg(action);
+}
+
+// Actions run concurrently, one per environment: the Core serializes the
+// operations on one environment itself (a lock per environment), so a Box
+// pulling its image for minutes no longer holds every other card. key is
+// the environment's name, or "" for reloading the list.
+bool Backend::beginBusy(const QString &key, const QString &label) {
+  if (m_busy.contains(key)) {
     // Identify what's already running instead of silently dropping the
     // new request (docs/TODO.md P0: no action may look like it succeeded
     // without executing). Not an error — the user just needs to wait.
-    emit message(busyMessage(), false);
+    emit message(busyMessage(key), false);
     return false;
   }
-  m_busy = true;
-  m_busyAction = label;
+  m_busy.insert(key, label);
   ++m_pollGeneration; // Discard a background poll started before this action.
   emit busyChanged();
   return true;
 }
 
-void Backend::endBusy() {
-  m_busy = false;
-  m_busyAction.clear();
+void Backend::endBusy(const QString &key) {
+  m_busy.remove(key);
   emit busyChanged();
-  if (m_quitRequested)
+  if (m_quitRequested && m_busy.isEmpty())
     emit readyToQuit();
 }
 
 void Backend::requestQuit() {
   m_quitRequested = true;
-  if (!m_busy)
+  if (m_busy.isEmpty())
     QMetaObject::invokeMethod(this, &Backend::readyToQuit,
                               Qt::QueuedConnection);
 }
@@ -247,15 +257,32 @@ void Backend::requestQuit() {
 void Backend::refresh() { refreshImpl(false); }
 
 void Backend::poll() {
-  if (m_busy || m_polling)
+  if (m_busy.contains(QString()) || m_polling)
     return;
   refreshImpl(true);
+}
+
+// After an action: a reload that is already running may have read the
+// registry before the action ended, so one more follows it.
+void Backend::refreshSoon() {
+  if (m_polling || m_busy.contains(QString())) {
+    m_refreshPending = true;
+    return;
+  }
+  refreshImpl(true);
+}
+
+void Backend::listLoaded() {
+  if (m_refreshPending && !m_quitRequested) {
+    m_refreshPending = false;
+    refreshImpl(true);
+  }
 }
 
 void Backend::refreshImpl(bool silent) {
   if (silent) {
     m_polling = true;
-  } else if (!beginBusy(QStringLiteral("loading environments"))) {
+  } else if (!beginBusy(QString(), QStringLiteral("loading environments"))) {
     return;
   }
   const int pollGeneration = m_pollGeneration;
@@ -268,7 +295,9 @@ void Backend::refreshImpl(bool silent) {
         if (silent)
           m_polling = false;
         else
-          endBusy();
+          endBusy(QString());
+        QMetaObject::invokeMethod(this, &Backend::listLoaded,
+                                  Qt::QueuedConnection);
         if (silent && pollGeneration != m_pollGeneration) {
           process->deleteLater();
           return;
@@ -291,7 +320,9 @@ void Backend::refreshImpl(bool silent) {
             if (silent)
               m_polling = false;
             else
-              endBusy();
+              endBusy(QString());
+            QMetaObject::invokeMethod(this, &Backend::listLoaded,
+                                      Qt::QueuedConnection);
             if (silent && pollGeneration != m_pollGeneration)
               return;
             if (code != 0) {
@@ -312,35 +343,43 @@ void Backend::refreshImpl(bool silent) {
             }
             const QJsonDocument document = QJsonDocument::fromJson(output);
             QVariantList next;
-            for (const QJsonValue &value : document.array())
-              next.append(value.toObject().toVariantMap());
-            // Keep enrichment from the previous poll until fresh results
-            // arrive. Clearing it on every list response makes cards and
-            // previews flash. The list is small (the UI is designed around up
-            // to 30 environments), so a name lookup here is simpler than
-            // keeping another index in sync.
-            for (QVariant &item : next) {
-              QVariantMap current = item.toMap();
-              for (const QVariant &previousItem :
-                   std::as_const(m_environments)) {
-                const QVariantMap previous = previousItem.toMap();
-        if (previous.value(QStringLiteral("name")) !=
-                current.value(QStringLiteral("name")) ||
-            previous.value(QStringLiteral("kind")) !=
-                current.value(QStringLiteral("kind")) ||
-            previous.value(QStringLiteral("id")) !=
-                current.value(QStringLiteral("id")))
-                  continue;
-                for (const QString &key :
-                     {QStringLiteral("status"), QStringLiteral("guestAgent"),
-                      QStringLiteral("integrationHint"),
-                      QStringLiteral("preview")}) {
-                  if (previous.contains(key))
-                    current.insert(key, previous.value(key));
-                }
-                break;
+            for (const QJsonValue &value : document.array()) {
+              // `list --status` nests what the backend reports; the cards
+              // read it as flat fields.
+              QVariantMap current = value.toObject().toVariantMap();
+              const QVariantMap status =
+                  current.take(QStringLiteral("status")).toMap();
+              current.insert(QStringLiteral("status"),
+                             status.value(QStringLiteral("state")));
+              current.insert(QStringLiteral("statusDetail"),
+                             status.value(QStringLiteral("detail")));
+              const QVariantMap integration =
+                  current.take(QStringLiteral("integration")).toMap();
+              if (!integration.isEmpty()) {
+                current.insert(QStringLiteral("guestAgent"),
+                               integration.value(QStringLiteral("guest_agent")));
+                current.insert(QStringLiteral("integrationHint"),
+                               integration.value(QStringLiteral("hint")));
               }
-              item = current;
+              // Keep the previous preview while the Machine keeps running:
+              // recapturing it every poll made cards flash. The list is
+              // small (the UI is designed around up to 30 environments),
+              // so a lookup here is simpler than another index.
+              if (current.value(QStringLiteral("status")) ==
+                  QStringLiteral("running")) {
+                for (const QVariant &previousItem :
+                     std::as_const(m_environments)) {
+                  const QVariantMap previous = previousItem.toMap();
+                  if (previous.value(QStringLiteral("id")) ==
+                          current.value(QStringLiteral("id")) &&
+                      previous.contains(QStringLiteral("preview"))) {
+                    current.insert(QStringLiteral("preview"),
+                                   previous.value(QStringLiteral("preview")));
+                    break;
+                  }
+                }
+              }
+              next.append(current);
             }
             const int generation = ++m_environmentsGeneration;
             if (next != m_environments) {
@@ -348,127 +387,74 @@ void Backend::refreshImpl(bool silent) {
               emit environmentsChanged();
             }
             for (int i = 0; i < m_environments.size(); ++i)
-              enrichEnvironment(i, generation);
+              capturePreview(i, generation);
           });
-  process->start(cliPath(), {QStringLiteral("list"), QStringLiteral("--json")});
+  process->start(cliPath(), {QStringLiteral("list"), QStringLiteral("--status"),
+                             QStringLiteral("--json")});
 }
 
-void Backend::enrichEnvironment(int index, int generation) {
+// capturePreview asks for a thumbnail of a running Machine that has none
+// yet. Status and guest tools already came with the list.
+void Backend::capturePreview(int index, int generation) {
   if (generation != m_environmentsGeneration || index < 0 ||
       index >= m_environments.size())
     return;
-  const QString name =
-      m_environments.at(index).toMap().value("name").toString();
-  auto *status = new QProcess(this);
-  connect(
-      status, &QProcess::finished, this,
-      [this, status, index, name, generation](int code) {
-        const QJsonDocument document =
-            QJsonDocument::fromJson(status->readAllStandardOutput());
-        status->deleteLater();
-        // A periodic poll (gui/Main.qml) can start a new refresh() while
-        // this cycle's status/integration/preview calls are still in
-        // flight; a stale generation's result must never touch the
-        // current m_environments by raw index (docs/TODO.md P1).
-        if (code != 0 || generation != m_environmentsGeneration ||
-            index >= m_environments.size())
-          return;
-        QVariantMap environment = m_environments.at(index).toMap();
-        const QString state = document.object().value("state").toString();
-        const QVariantMap previous = environment;
-        environment.insert(QStringLiteral("status"), state);
-        if (state != QStringLiteral("running"))
-          environment.remove(QStringLiteral("preview"));
-        if (environment != previous) {
-          m_environments[index] = environment;
-          emit environmentsChanged();
-        }
-
-        if (environment.value("kind").toString() != QStringLiteral("machine"))
-          return;
-        auto *integration = new QProcess(this);
-        connect(
-            integration, &QProcess::finished, this,
-            [this, integration, index, generation](int integrationCode) {
-              const QJsonDocument report =
-                  QJsonDocument::fromJson(integration->readAllStandardOutput());
-              integration->deleteLater();
-              if (integrationCode != 0 ||
-                  generation != m_environmentsGeneration ||
-                  index >= m_environments.size())
-                return;
-              QVariantMap current = m_environments.at(index).toMap();
-              const QString guestAgent =
-                  report.object()
-                      .value(QStringLiteral("guest_agent"))
-                      .toString();
-              const QString hint =
-                  report.object().value(QStringLiteral("hint")).toString();
-              if (current.value(QStringLiteral("guestAgent")).toString() !=
-                      guestAgent ||
-                  current.value(QStringLiteral("integrationHint")).toString() !=
-                      hint) {
-                current.insert(QStringLiteral("guestAgent"), guestAgent);
-                current.insert(QStringLiteral("integrationHint"), hint);
-                m_environments[index] = current;
-                emit environmentsChanged();
-              }
-            });
-        integration->start(cliPath(), {QStringLiteral("integration"), name,
-                                       QStringLiteral("--json")});
-
-        const QString id = environment.value(QStringLiteral("id")).toString();
-        if (state != QStringLiteral("running")) {
-          m_previewRetryAt.remove(id);
-          return;
-        }
-        if (environment.contains(QStringLiteral("preview")) ||
-            QDateTime::currentMSecsSinceEpoch() < m_previewRetryAt.value(id))
-          return;
-        auto *preview = new QProcess(this);
-        connect(
-            preview, &QProcess::finished, this,
-            [this, preview, index, generation, id](int previewCode) {
-              const QString path =
-                  QString::fromUtf8(preview->readAllStandardOutput()).trimmed();
-              preview->deleteLater();
-              if (previewCode != 0 || path.isEmpty()) {
-                m_previewRetryAt.insert(
-                    id, QDateTime::currentMSecsSinceEpoch() + 60000);
-                return;
-              }
-              m_previewRetryAt.remove(id);
-              if (generation != m_environmentsGeneration ||
-                  index >= m_environments.size())
-                return;
-              QVariantMap current = m_environments.at(index).toMap();
-              const QUrl previewUrl = QUrl::fromLocalFile(path);
-              if (current.value(QStringLiteral("preview")).toUrl() !=
-                  previewUrl) {
-                current.insert(QStringLiteral("preview"), previewUrl);
-                m_environments[index] = current;
-                emit environmentsChanged();
-              }
-            });
-        preview->start(cliPath(), {QStringLiteral("preview"), name});
-      });
-  status->start(cliPath(),
-                {QStringLiteral("status"), name, QStringLiteral("--json")});
+  const QVariantMap environment = m_environments.at(index).toMap();
+  const QString id = environment.value(QStringLiteral("id")).toString();
+  if (environment.value(QStringLiteral("kind")).toString() !=
+          QStringLiteral("machine") ||
+      environment.value(QStringLiteral("status")).toString() !=
+          QStringLiteral("running")) {
+    m_previewRetryAt.remove(id);
+    return;
+  }
+  if (environment.contains(QStringLiteral("preview")) ||
+      QDateTime::currentMSecsSinceEpoch() < m_previewRetryAt.value(id))
+    return;
+  auto *preview = new QProcess(this);
+  connect(preview, &QProcess::finished, this,
+          [this, preview, index, generation, id](int previewCode) {
+            const QString path =
+                QString::fromUtf8(preview->readAllStandardOutput()).trimmed();
+            preview->deleteLater();
+            if (previewCode != 0 || path.isEmpty()) {
+              m_previewRetryAt.insert(
+                  id, QDateTime::currentMSecsSinceEpoch() + 60000);
+              return;
+            }
+            m_previewRetryAt.remove(id);
+            // A poll that landed meanwhile may have reordered the list:
+            // never write by a stale index.
+            if (generation != m_environmentsGeneration ||
+                index >= m_environments.size())
+              return;
+            QVariantMap current = m_environments.at(index).toMap();
+            const QUrl previewUrl = QUrl::fromLocalFile(path);
+            if (current.value(QStringLiteral("preview")).toUrl() !=
+                previewUrl) {
+              current.insert(QStringLiteral("preview"), previewUrl);
+              m_environments[index] = current;
+              emit environmentsChanged();
+            }
+          });
+  preview->start(cliPath(), {QStringLiteral("preview"),
+                             environment.value(QStringLiteral("name")).toString()});
 }
 
-void Backend::run(const QStringList &arguments, const QString &label,
-                  const QString &tag, bool refreshAfter) {
-  if (!beginBusy(label)) {
+void Backend::run(const QString &key, const QStringList &arguments,
+                  const QString &label, const QString &tag,
+                  bool refreshAfter) {
+  if (!beginBusy(key, label)) {
     if (!tag.isEmpty())
-      emit actionFinished(tag, false, busyMessage());
+      emit actionFinished(tag, false, busyMessage(key));
     return;
   }
   auto *process = new QProcess(this);
   connect(process, &QProcess::errorOccurred, this,
-          [this, process, tag](QProcess::ProcessError error) {
+          [this, process, tag, key](QProcess::ProcessError error) {
             if (error != QProcess::FailedToStart)
               return;
-            endBusy();
+            endBusy(key);
             const QString text = QStringLiteral("Could not start omavm: ") +
                                  process->errorString();
             emit message(text, true);
@@ -477,13 +463,17 @@ void Backend::run(const QStringList &arguments, const QString &label,
             process->deleteLater();
           });
   connect(process, &QProcess::finished, this,
-          [this, process, refreshAfter, tag](int code) {
+          [this, process, refreshAfter, tag, key](int code) {
             const QString output =
                 QString::fromUtf8(process->readAllStandardOutput()).trimmed();
             const QString errorText =
                 QString::fromUtf8(process->readAllStandardError()).trimmed();
             process->deleteLater();
-            endBusy();
+            endBusy(key);
+            // Even a failed action may have changed the state (a Start
+            // that got halfway).
+            if (refreshAfter && !m_quitRequested)
+              refreshSoon();
             if (code != 0) {
               const QString text = errorText.isEmpty()
                                        ? QStringLiteral("Action failed")
@@ -497,8 +487,6 @@ void Backend::run(const QStringList &arguments, const QString &label,
               emit message(output, false);
             if (!tag.isEmpty())
               emit actionFinished(tag, true, output);
-            if (refreshAfter && !m_quitRequested)
-              refresh();
           });
   process->start(cliPath(), arguments);
 }
@@ -525,32 +513,32 @@ void Backend::createEnvironment(const QString &name, const QString &image,
     if (memoryTouched)
       arguments << QStringLiteral("--memory-mib") << QString::number(memoryMiB);
   }
-  run(arguments, QStringLiteral("creating %1").arg(name),
+  run(name, arguments, QStringLiteral("creating %1").arg(name),
       QStringLiteral("create"));
 }
 
 void Backend::start(const QString &name) {
-  run({QStringLiteral("start"), name}, QStringLiteral("starting %1").arg(name),
+  run(name, {QStringLiteral("start"), name}, QStringLiteral("starting %1").arg(name),
       QStringLiteral("start"));
 }
 void Backend::stop(const QString &name) {
-  run({QStringLiteral("stop"), name}, QStringLiteral("stopping %1").arg(name),
+  run(name, {QStringLiteral("stop"), name}, QStringLiteral("stopping %1").arg(name),
       QStringLiteral("stop"));
 }
 void Backend::restart(const QString &name) {
-  run({QStringLiteral("restart"), name},
+  run(name, {QStringLiteral("restart"), name},
       QStringLiteral("restarting %1").arg(name), QStringLiteral("restart"));
 }
 void Backend::pause(const QString &name) {
-  run({QStringLiteral("pause"), name}, QStringLiteral("pausing %1").arg(name),
+  run(name, {QStringLiteral("pause"), name}, QStringLiteral("pausing %1").arg(name),
       QStringLiteral("pause"));
 }
 void Backend::resume(const QString &name) {
-  run({QStringLiteral("resume"), name}, QStringLiteral("resuming %1").arg(name),
+  run(name, {QStringLiteral("resume"), name}, QStringLiteral("resuming %1").arg(name),
       QStringLiteral("resume"));
 }
 void Backend::forceStop(const QString &name) {
-  run({QStringLiteral("force-stop"), name},
+  run(name, {QStringLiteral("force-stop"), name},
       QStringLiteral("force stopping %1").arg(name),
       QStringLiteral("force-stop"));
 }
@@ -560,7 +548,8 @@ void Backend::configure(const QString &name, const QString &description,
                         const QString &sharedPath, bool sharedReadOnly,
                         bool disconnectISO, const QString &color,
                         bool shareClipboard, bool travelMode, bool vulkan,
-                        bool openInEmptyWorkspace, bool launcher, bool ssh) {
+                        bool openInEmptyWorkspace, bool launcher, bool ssh,
+                        bool fullscreen) {
   QStringList arguments{QStringLiteral("settings"),      name,
                         QStringLiteral("--description"), description,
                         QStringLiteral("--color"),       color};
@@ -595,27 +584,29 @@ void Backend::configure(const QString &name, const QString &description,
                          : QStringLiteral("--vulkan=false"));
     arguments << (ssh ? QStringLiteral("--ssh=true")
                       : QStringLiteral("--ssh=false"));
+    arguments << (fullscreen ? QStringLiteral("--fullscreen=true")
+                             : QStringLiteral("--fullscreen=false"));
   }
-  run(arguments, QStringLiteral("saving settings for %1").arg(name),
+  run(name, arguments, QStringLiteral("saving settings for %1").arg(name),
       QStringLiteral("configure"));
 }
 void Backend::remove(const QString &name) {
-  run({QStringLiteral("remove"), name}, QStringLiteral("deleting %1").arg(name),
+  run(name, {QStringLiteral("remove"), name}, QStringLiteral("deleting %1").arg(name),
       QStringLiteral("remove"));
 }
 
 void Backend::runForApps(const QStringList &arguments, const QString &name,
                          const QString &label, const QString &tag) {
-  if (!beginBusy(label)) {
-    emit actionFinished(tag, false, busyMessage());
+  if (!beginBusy(name, label)) {
+    emit actionFinished(tag, false, busyMessage(name));
     return;
   }
   auto *process = new QProcess(this);
   connect(process, &QProcess::errorOccurred, this,
-          [this, process, tag](QProcess::ProcessError error) {
+          [this, process, tag, name](QProcess::ProcessError error) {
             if (error != QProcess::FailedToStart)
               return;
-            endBusy();
+            endBusy(name);
             const QString text = QStringLiteral("Could not start omavm: ") +
                                  process->errorString();
             emit message(text, true);
@@ -627,7 +618,7 @@ void Backend::runForApps(const QStringList &arguments, const QString &name,
         const QString errorText =
             QString::fromUtf8(process->readAllStandardError()).trimmed();
         process->deleteLater();
-        endBusy();
+        endBusy(name);
         if (code != 0) {
           const QString text =
               errorText.isEmpty() ? QStringLiteral("Action failed") : errorText;
@@ -642,14 +633,15 @@ void Backend::runForApps(const QStringList &arguments, const QString &name,
 }
 
 void Backend::refreshApps(const QString &name) {
-  if (!beginBusy(QStringLiteral("loading applications for %1").arg(name)))
+  if (!beginBusy(name,
+                 QStringLiteral("loading applications for %1").arg(name)))
     return;
   auto *process = new QProcess(this);
   connect(process, &QProcess::errorOccurred, this,
           [this, process, name](QProcess::ProcessError error) {
             if (error != QProcess::FailedToStart)
               return;
-            endBusy();
+            endBusy(name);
             const QString text = QStringLiteral("Could not start omavm: ") +
                                  process->errorString();
             m_appsError = text;
@@ -663,7 +655,7 @@ void Backend::refreshApps(const QString &name) {
     const QString errorText =
         QString::fromUtf8(process->readAllStandardError()).trimmed();
     process->deleteLater();
-    endBusy();
+    endBusy(name);
     if (code != 0) {
       m_appsError = errorText.isEmpty()
                         ? QStringLiteral("Could not list applications")
@@ -700,18 +692,18 @@ void Backend::unexportApp(const QString &name, const QString &id) {
 }
 
 void Backend::createSnapshot(const QString &name, const QString &label) {
-  run({QStringLiteral("snapshot"), QStringLiteral("create"), name,
+  run(name, {QStringLiteral("snapshot"), QStringLiteral("create"), name,
        QStringLiteral("--label"), label},
       QStringLiteral("creating a snapshot of %1").arg(name),
       QStringLiteral("snapshot-create"));
 }
 void Backend::goToSnapshot(const QString &name, const QString &id) {
-  run({QStringLiteral("snapshot"), QStringLiteral("go-to"), name, id},
+  run(name, {QStringLiteral("snapshot"), QStringLiteral("go-to"), name, id},
       QStringLiteral("going to a snapshot of %1").arg(name),
       QStringLiteral("snapshot-goto"));
 }
 void Backend::removeSnapshot(const QString &name, const QString &id) {
-  run({QStringLiteral("snapshot"), QStringLiteral("remove"), name, id},
+  run(name, {QStringLiteral("snapshot"), QStringLiteral("remove"), name, id},
       QStringLiteral("deleting a snapshot of %1").arg(name),
       QStringLiteral("snapshot-remove"));
 }
@@ -731,38 +723,21 @@ void Backend::copyToClipboard(const QString &text) const {
 }
 
 void Backend::open(const QString &name, const QString &kind) {
-  bool openInEmptyWorkspace = true;
+  // The viewer itself picks the workspace (and goes fullscreen) when it
+  // starts, so it happens however the environment is opened: here, from
+  // its launcher entry or with `omavm open`.
+  bool emptyWorkspace = true;
   bool shareClipboard = true;
   for (const QVariant &item : m_environments) {
     const QVariantMap env = item.toMap();
     if (env.value(QStringLiteral("name")).toString() == name) {
       const QVariantMap settings =
           env.value(QStringLiteral("settings")).toMap();
-      openInEmptyWorkspace =
+      emptyWorkspace =
           !settings.value(QStringLiteral("empty_workspace_disabled")).toBool();
       shareClipboard =
           !settings.value(QStringLiteral("clipboard_disabled")).toBool();
       break;
-    }
-  }
-  if (openInEmptyWorkspace) {
-    const QString title = name + QStringLiteral(" — OmaVM");
-    switch (placeInEmptyWorkspace(title)) {
-    case WorkspacePlacement::AlreadyFocusedExisting:
-      // A viewer/terminal for this environment is already open somewhere
-      // — switched to its workspace above; opening another would be a
-      // duplicate (docs/TODO.md P2 "não abrir outra cópia").
-      return;
-    case WorkspacePlacement::NotApplicable:
-      break; // on by default: no Hyprland, or the user's own rule places it
-    case WorkspacePlacement::Unavailable:
-      emit message(QStringLiteral("Couldn't find an empty workspace for %1; "
-                                  "opening on the current one instead.")
-                       .arg(name),
-                   false);
-      break;
-    case WorkspacePlacement::LaunchNormally:
-      break; // switched to the target workspace; fall through and launch
     }
   }
   if (kind == QStringLiteral("box")) {
@@ -772,16 +747,18 @@ void Backend::open(const QString &name, const QString &kind) {
     // (internal/backend/qemu/qemu.go), so a Box opens inside OmaVM's own
     // window instead of whatever external terminal emulator the user has
     // configured.
-    QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                            {QStringLiteral("--terminal"), name,
-                             QStringLiteral("--title"),
-                             name + QStringLiteral(" — OmaVM"),
-                             QStringLiteral("--share-clipboard"),
-                             shareClipboard ? QStringLiteral("true")
-                                            : QStringLiteral("false")});
+    const auto flag = [](bool on) {
+      return on ? QStringLiteral("true") : QStringLiteral("false");
+    };
+    QProcess::startDetached(
+        QCoreApplication::applicationFilePath(),
+        {QStringLiteral("--terminal"), name, QStringLiteral("--title"),
+         name + QStringLiteral(" — OmaVM"), QStringLiteral("--share-clipboard"),
+         flag(shareClipboard), QStringLiteral("--empty-workspace"),
+         flag(emptyWorkspace)});
     return;
   }
-  run({QStringLiteral("open"), name}, QStringLiteral("opening %1").arg(name),
+  run(name, {QStringLiteral("open"), name}, QStringLiteral("opening %1").arg(name),
       QStringLiteral("open"));
 }
 
@@ -823,6 +800,15 @@ void Backend::loadTheme() {
                                         surface).name();
   m_themeMuted = readableTextColor(QColor(m_themeMuted), background, surface)
                      .name();
+  // Status colors are read as text ("Running", errors) and icons: WCAG
+  // 1.4.6 (7:1) with their hue kept. The raw accent stays for Material
+  // controls, which draw their own text on it.
+  m_themeGreen = accessibleColor(QColor(m_themeGreen), background, surface)
+                     .name();
+  m_themeRed =
+      accessibleColor(QColor(m_themeRed), background, surface).name();
+  m_themeAccentText =
+      accessibleColor(QColor(m_themeAccent), background, surface).name();
 
   const QStringList watched =
       m_themeWatcher.files() + m_themeWatcher.directories();

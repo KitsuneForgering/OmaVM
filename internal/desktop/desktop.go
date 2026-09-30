@@ -59,6 +59,20 @@ func ColorIcon(color string) string {
 	return ""
 }
 
+// appIcon is OmaVM's own icon for an entry: the themed name when OmaVM is
+// installed into the icon theme (make install, the package), or the SVG
+// that ships next to the binaries in the release tarball OmaStore
+// installs under $HOME, where no icon theme has it.
+func appIcon(cli string) string {
+	svg := filepath.Join(filepath.Dir(cli), "..", "data", "icons", "dev.omavm.app.svg")
+	if info, err := os.Stat(svg); err == nil && !info.IsDir() {
+		if abs, err := filepath.Abs(svg); err == nil {
+			return abs
+		}
+	}
+	return "dev.omavm.app"
+}
+
 // Launcher writes one .desktop entry per environment. It is on by default
 // (opt-out per environment, EnvironmentSettings.LauncherDisabled).
 type Launcher struct {
@@ -150,6 +164,9 @@ func (l *Launcher) entry(env core.Environment) []byte {
 		if env.Settings.ClipboardDisabled {
 			exec = append(exec, "--share-clipboard", "false")
 		}
+		if env.Settings.EmptyWorkspaceDisabled {
+			exec = append(exec, "--empty-workspace", "false")
+		}
 	default:
 		// Without omavm-gui, a Box's shell still opens in the user's own
 		// terminal: `omavm open` on a Box is interactive.
@@ -159,7 +176,7 @@ func (l *Launcher) entry(env core.Environment) []byte {
 	}
 	icon := ColorIcon(env.Settings.Color)
 	if icon == "" {
-		icon = "dev.omavm.app"
+		icon = appIcon(l.CLI)
 	}
 	comment := env.Settings.Description
 	if comment == "" {

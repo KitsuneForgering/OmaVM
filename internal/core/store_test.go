@@ -154,3 +154,33 @@ func TestLockReportsWaitingOnce(t *testing.T) {
 		t.Fatalf("OnWait called %d times without contention", quiet)
 	}
 }
+
+// The registry is still written as the bare list an older OmaVM reads,
+// but a newer format is refused rather than rewritten without what it
+// added.
+func TestRegistryFormats(t *testing.T) {
+	store := &core.FileStore{Path: filepath.Join(t.TempDir(), "environments.json")}
+	if err := store.Save([]core.Environment{{ID: "1", Name: "dev", Image: "fedora", Kind: core.Box}}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(store.Path)
+	if !strings.HasPrefix(string(data), "[") {
+		t.Fatalf("saved in a format an older OmaVM can't read:\n%s", data)
+	}
+
+	envelope := `{"version": 1, "environments": [{"id":"1","name":"dev","image":"fedora","kind":"box"}]}`
+	if err := os.WriteFile(store.Path, []byte(envelope), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if envs, err := store.Load(); err != nil || len(envs) != 1 || envs[0].Name != "dev" {
+		t.Fatalf("versioned format: %v, %v", envs, err)
+	}
+
+	newer := `{"version": 2, "environments": []}`
+	if err := os.WriteFile(store.Path, []byte(newer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(); err == nil || !strings.Contains(err.Error(), "newer OmaVM") {
+		t.Fatalf("a newer format must be refused, got %v", err)
+	}
+}

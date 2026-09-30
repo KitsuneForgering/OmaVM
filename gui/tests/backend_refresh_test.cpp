@@ -3,6 +3,7 @@
 
 #include <QFile>
 #include <QDir>
+#include <QDirIterator>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -22,7 +23,116 @@ private slots:
   void pickedFilesBecomeLocalPaths();
   void boxTerminalIsTaggedAsTerminal();
   void onlyActiveViewerRulesCount();
+  void actionsOnDifferentEnvironmentsRunTogether();
+  void everyThemeTextMeetsAAA();
 };
+
+// Regression: status colors were used as text straight from the theme —
+// red errors, green "Running", accent labels — and most Omarchy themes
+// put them under WCAG 1.4.6's 7:1 (red under it in 20 of the 22 themes
+// shipped on 2026-09-29, 4 of them under even 3:1). Every theme
+// installed here is checked, plus a fixed set for machines without
+// Omarchy, the colors taken from its nord, catppuccin-latte and miasma.
+void BackendRefreshTest::everyThemeTextMeetsAAA() {
+  QStringList themes;
+  QDirIterator it(QStringLiteral("/usr/share/omarchy/themes"),
+                  {QStringLiteral("colors.toml")}, QDir::Files,
+                  QDirIterator::Subdirectories);
+  while (it.hasNext())
+    themes << QString::fromUtf8(
+        [&] {
+          QFile f(it.next());
+          return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        }());
+  themes << QStringLiteral(
+                "mode = \"dark\"\naccent = \"#81a1c1\"\nmuted = \"#4c566a\"\n"
+                "background = \"#2e3440\"\nlighter_background = \"#3b4252\"\n"
+                "foreground = \"#d8dee9\"\nred = \"#bf616a\"\ngreen = \"#a3be8c\"\n")
+         << QStringLiteral(
+                "mode = \"light\"\naccent = \"#1e66f5\"\nmuted = \"#9ca0b0\"\n"
+                "background = \"#eff1f5\"\nlighter_background = \"#e6e9ef\"\n"
+                "foreground = \"#4c4f69\"\nred = \"#d20f39\"\ngreen = \"#40a02b\"\n")
+         << QStringLiteral(
+                "mode = \"dark\"\naccent = \"#78824b\"\nmuted = \"#666666\"\n"
+                "background = \"#222222\"\nlighter_background = \"#333333\"\n"
+                "foreground = \"#c2c2b0\"\nred = \"#685742\"\ngreen = \"#5f875f\"\n");
+
+  const QByteArray oldHome = qgetenv("HOME");
+  for (const QString &theme : std::as_const(themes)) {
+    QTemporaryDir home;
+    QVERIFY(home.isValid());
+    const QString dir =
+        home.filePath(QStringLiteral(".local/state/omarchy/current/theme"));
+    QVERIFY(QDir().mkpath(dir));
+    QFile colors(dir + QStringLiteral("/colors.toml"));
+    QVERIFY(colors.open(QIODevice::WriteOnly));
+    colors.write(theme.toUtf8());
+    colors.close();
+    qputenv("HOME", home.path().toUtf8());
+    Backend backend;
+    const QColor background(backend.themeBackground()),
+        surface(backend.themeSurface());
+    for (const QString &text :
+         {backend.themeForeground(), backend.themeMuted(),
+          backend.themeAccentText(), backend.themeGreen(),
+          backend.themeRed()}) {
+      const double ratio =
+          minimumContrastRatio(QColor(text), background, surface);
+      QVERIFY2(ratio >= 7.0, qPrintable(QStringLiteral("%1 at %2:1 in\n%3")
+                                            .arg(text)
+                                            .arg(ratio, 0, 'f', 2)
+                                            .arg(theme)));
+    }
+  }
+  qputenv("HOME", oldHome);
+}
+
+// Actions used to run one at a time across the whole window: a Box
+// pulling its image for minutes disabled every other card. Different
+// environments now run together; a second action on the same one is
+// refused with what is running, and quitting waits for all of them.
+void BackendRefreshTest::actionsOnDifferentEnvironmentsRunTogether() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QString log = dir.filePath(QStringLiteral("log"));
+  QFile cli(dir.filePath(QStringLiteral("omavm")));
+  QVERIFY(cli.open(QIODevice::WriteOnly));
+  cli.write("#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  start) echo \"begin $2\" >> \"$OMAVM_TEST_LOG\"; sleep 0.4;\n"
+            "         echo \"end $2\" >> \"$OMAVM_TEST_LOG\" ;;\n"
+            "  list) printf '[]' ;;\n"
+            "esac\n");
+  cli.close();
+  QVERIFY(cli.setPermissions(QFile::ReadOwner | QFile::WriteOwner |
+                             QFile::ExeOwner));
+  qputenv("OMAVM_TEST_LOG", log.toUtf8());
+  qputenv("PATH", dir.path().toUtf8() + ':' + qgetenv("PATH"));
+
+  Backend backend;
+  QSignalSpy finished(&backend, &Backend::actionFinished);
+  QSignalSpy ready(&backend, &Backend::readyToQuit);
+  backend.start(QStringLiteral("a"));
+  backend.start(QStringLiteral("b"));
+  QCOMPARE(finished.size(), 0); // neither refused
+  QVERIFY(backend.busyEnvironments().contains(QStringLiteral("a")));
+  QVERIFY(backend.busyEnvironments().contains(QStringLiteral("b")));
+
+  backend.start(QStringLiteral("a"));
+  QCOMPARE(finished.size(), 1);
+  QCOMPARE(finished.at(0).at(1).toBool(), false);
+  QVERIFY(finished.at(0).at(2).toString().contains(QStringLiteral("starting a")));
+
+  backend.requestQuit();
+  QTRY_COMPARE_WITH_TIMEOUT(ready.size(), 1, 5000);
+  QFile out(log);
+  QVERIFY(out.open(QIODevice::ReadOnly));
+  const QList<QByteArray> lines = out.readAll().trimmed().split('\n');
+  QCOMPARE(lines.size(), 4);
+  // Both began before either ended.
+  QVERIFY(lines.at(0).startsWith("begin") && lines.at(1).startsWith("begin"));
+  QVERIFY(backend.busyEnvironments().isEmpty());
+}
 
 // Regression: Omarchy's Super+C reached a Box's terminal as Ctrl+C
 // (SIGINT) because the window lacked the "terminal" tag.
@@ -58,6 +168,13 @@ void BackendRefreshTest::onlyActiveViewerRulesCount() {
 }
 
 void BackendRefreshTest::textColorsMeetEnhancedContrast() {
+  // A color with meaning keeps its hue: a red error stays red.
+  const QColor red = accessibleColor(QColor("#bf616a"), QColor("#2e3440"),
+                                     QColor("#3b4252"));
+  QVERIFY(minimumContrastRatio(red, QColor("#2e3440"), QColor("#3b4252")) >=
+          7.0);
+  QVERIFY(red.red() > red.green() && red.red() > red.blue());
+
   const auto ratio = [](QColor a, QColor b) {
     const auto luminance = [](QColor c) {
       const auto channel = [](int value) {
@@ -137,9 +254,8 @@ void BackendRefreshTest::unchangedPollDoesNotFlash() {
       "#!/bin/sh\n"
       "if [ \"$1\" = list ]; then\n"
       "  printf 'x' >> \"$OMAVM_TEST_POLLS\"\n"
-            "  printf '[{\"id\":\"one\",\"name\":\"demo\",\"kind\":\"box\",\"settings\":{}}]'\n"
-      "elif [ \"$1\" = status ]; then\n"
-      "  printf '{\"state\":\"stopped\"}'\n"
+      "  printf '[{\"id\":\"one\",\"name\":\"demo\",\"kind\":\"box\","
+      "\"settings\":{},\"status\":{\"state\":\"stopped\"}}]'\n"
       "fi\n");
   cli.close();
   QVERIFY(cli.setPermissions(QFile::ReadOwner | QFile::WriteOwner |
@@ -179,9 +295,8 @@ void BackendRefreshTest::failedPreviewIsNotRetriedEveryPoll() {
       "printf '%s\\n' \"$1\" >> \"$OMAVM_TEST_CALLS\"\n"
       "case \"$1\" in\n"
       "  list) printf '[{\"id\":\"m\",\"name\":\"vm\",\"kind\":\"machine\","
-      "\"settings\":{}}]' ;;\n"
-      "  status) printf '{\"state\":\"running\"}' ;;\n"
-      "  integration) printf '{\"guest_agent\":\"unavailable\"}' ;;\n"
+      "\"settings\":{},\"status\":{\"state\":\"running\"},"
+      "\"integration\":{\"guest_agent\":\"unavailable\"}}]' ;;\n"
       "  preview) echo 'no surface' >&2; exit 1 ;;\n"
       "esac\n");
   cli.close();
@@ -199,11 +314,14 @@ void BackendRefreshTest::failedPreviewIsNotRetriedEveryPoll() {
   Backend backend;
   backend.poll();
   QTRY_COMPARE(count("preview"), 1);
-  QTRY_COMPARE(count("integration"), 1);
+  QTRY_COMPARE(backend.environments().first().toMap().value("guestAgent"),
+               QVariant(QStringLiteral("unavailable")));
   backend.poll();
-  QTRY_COMPARE(count("integration"), 2);
+  QTRY_COMPARE(count("list"), 2);
   QTest::qWait(100);
   QCOMPARE(count("preview"), 1);
+  // One process per poll: status and guest tools come with the list.
+  QCOMPARE(count("status") + count("integration"), 0);
 }
 
 // Closing the Experience Center mid-action used to destroy the QProcess,

@@ -147,3 +147,38 @@ func TestColorIconFromDataDir(t *testing.T) {
 		t.Errorf("entry should use the color icon:\n%s", entry)
 	}
 }
+
+// Regression: a Box opened from its launcher entry ignored "open in an
+// empty workspace" being turned off, because only the Experience Center
+// knew the setting.
+func TestBoxEntryCarriesTheWorkspaceSetting(t *testing.T) {
+	l := testLauncher(t)
+	env := core.Environment{ID: "abc", Name: "dev", Kind: core.Box, Settings: core.EnvironmentSettings{EmptyWorkspaceDisabled: true}}
+	if err := l.Publish(env); err != nil {
+		t.Fatal(err)
+	}
+	if entry := readEntry(t, l, env); !strings.Contains(entry, `"--empty-workspace" "false"`) {
+		t.Fatalf("setting not passed to the terminal:\n%s", entry)
+	}
+}
+
+// Regression: installed from the release tarball (OmaStore), OmaVM isn't
+// in the icon theme, so entries named a themed icon nothing provides.
+func TestEntryUsesTheBundledIconOutsideTheIconTheme(t *testing.T) {
+	root := t.TempDir()
+	svg := filepath.Join(root, "data", "icons", "dev.omavm.app.svg")
+	if err := os.MkdirAll(filepath.Dir(svg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(svg, []byte("<svg/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := &Launcher{Dir: filepath.Join(t.TempDir(), "applications"), CLI: filepath.Join(root, "bin", "omavm")}
+	env := core.Environment{ID: "abc", Name: "vm", Kind: core.Machine}
+	if err := l.Publish(env); err != nil {
+		t.Fatal(err)
+	}
+	if entry := readEntry(t, l, env); !strings.Contains(entry, "Icon="+svg+"\n") {
+		t.Fatalf("entry doesn't use the bundled icon:\n%s", entry)
+	}
+}

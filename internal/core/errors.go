@@ -12,6 +12,9 @@ var (
 	ErrAlreadyExists = errors.New("environment already exists")
 	ErrUnsupported   = errors.New("operation not supported by this backend")
 	ErrInvalidInput  = errors.New("invalid input")
+	// ErrBusy means another operation on the environment (its creation
+	// or removal) is still running.
+	ErrBusy = errors.New("environment is busy")
 )
 
 // Invalidf and Unsupportedf build errors that match ErrInvalidInput and
@@ -24,6 +27,10 @@ func Invalidf(format string, args ...any) error {
 
 func Unsupportedf(format string, args ...any) error {
 	return &classifiedError{kind: ErrUnsupported, err: fmt.Errorf(format, args...)}
+}
+
+func Busyf(format string, args ...any) error {
+	return &classifiedError{kind: ErrBusy, err: fmt.Errorf(format, args...)}
 }
 
 type classifiedError struct {

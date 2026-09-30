@@ -2,6 +2,8 @@
 
 #include <QFileSystemWatcher>
 #include <QHash>
+#include <QMap>
+#include <QVariantMap>
 #include <QObject>
 #include <QProcess>
 #include <QUrl>
@@ -13,6 +15,9 @@ class Backend final : public QObject {
       QVariantList environments READ environments NOTIFY environmentsChanged)
   Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
   Q_PROPERTY(QString busyAction READ busyAction NOTIFY busyChanged)
+  // Environment name -> what is running on it right now.
+  Q_PROPERTY(
+      QVariantMap busyEnvironments READ busyEnvironments NOTIFY busyChanged)
   Q_PROPERTY(QString listError READ listError NOTIFY listErrorChanged)
   Q_PROPERTY(QVariantList apps READ apps NOTIFY appsChanged)
   Q_PROPERTY(bool appsLoading READ appsLoading NOTIFY appsChanged)
@@ -22,6 +27,9 @@ class Backend final : public QObject {
   Q_PROPERTY(QString themeBackground READ themeBackground NOTIFY themeChanged)
   Q_PROPERTY(QString themeForeground READ themeForeground NOTIFY themeChanged)
   Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeChanged)
+  // The accent where it is text or an icon, at 7:1 (WCAG AAA).
+  Q_PROPERTY(
+      QString themeAccentText READ themeAccentText NOTIFY themeChanged)
   Q_PROPERTY(QString themeSelection READ themeSelection NOTIFY themeChanged)
   Q_PROPERTY(QString themeMuted READ themeMuted NOTIFY themeChanged)
   Q_PROPERTY(QString themeSurface READ themeSurface NOTIFY themeChanged)
@@ -34,8 +42,9 @@ public:
 
   QVariantList environments() const { return m_environments; }
   QVariantList apps() const { return m_apps; }
-  bool busy() const { return m_busy; }
-  QString busyAction() const { return m_busyAction; }
+  bool busy() const { return !m_busy.isEmpty(); }
+  QString busyAction() const;
+  QVariantMap busyEnvironments() const;
   QString listError() const { return m_listError; }
   bool appsLoading() const { return m_appsLoading; }
   QString appsEnvironment() const { return m_appsEnvironment; }
@@ -44,6 +53,7 @@ public:
   QString themeBackground() const { return m_themeBackground; }
   QString themeForeground() const { return m_themeForeground; }
   QString themeAccent() const { return m_themeAccent; }
+  QString themeAccentText() const { return m_themeAccentText; }
   QString themeSelection() const { return m_themeSelection; }
   QString themeMuted() const { return m_themeMuted; }
   QString themeSurface() const { return m_themeSurface; }
@@ -76,7 +86,7 @@ public:
                              bool disconnectISO, const QString &color,
                              bool shareClipboard, bool travelMode, bool vulkan,
                              bool openInEmptyWorkspace, bool launcher,
-                             bool ssh);
+                             bool ssh, bool fullscreen);
   Q_INVOKABLE void remove(const QString &name);
   Q_INVOKABLE void createSnapshot(const QString &name, const QString &label);
   Q_INVOKABLE void goToSnapshot(const QString &name, const QString &id);
@@ -109,32 +119,32 @@ signals:
 
 private:
   // Returns false (and emits an explanatory message instead of silently
-  // no-opping) when another action is already in flight — the codebase
-  // deliberately keeps a single in-flight action rather than adding a
-  // queue or concurrency (CLAUDE.md, docs/TODO.md P0).
-  bool beginBusy(const QString &label);
-  void endBusy();
-  QString busyMessage() const;
-  void run(const QStringList &arguments, const QString &label,
-           const QString &tag = QString(), bool refreshAfter = true);
+  // no-opping) when an action on the same key (environment name, or ""
+  // for reloading the list) is already in flight. Different environments
+  // run concurrently; the Core serializes one environment's operations.
+  bool beginBusy(const QString &key, const QString &label);
+  void endBusy(const QString &key);
+  QString busyMessage(const QString &key) const;
+  void run(const QString &key, const QStringList &arguments,
+           const QString &label, const QString &tag = QString(),
+           bool refreshAfter = true);
+  void refreshSoon();
+  void listLoaded();
   void runForApps(const QStringList &arguments, const QString &name,
                   const QString &label, const QString &tag);
-  void enrichEnvironment(int index, int generation);
+  void capturePreview(int index, int generation);
   void refreshImpl(bool silent);
   void loadTheme();
   QString cliPath() const;
 
   QVariantList m_environments;
-  // Bumped every time a list response is accepted. Each
-  // enrichEnvironment() call (and the status/integration/preview
-  // subprocesses it spawns) captures the generation valid when it was
-  // spawned; a periodic poll (gui/Main.qml) can start a fresh refresh()
-  // while a previous cycle's enrichment calls are still in flight
-  // (refresh() itself is single-flight via beginBusy, but its spawned
-  // per-environment enrichment isn't), so a stale generation's result
-  // landing late must never mutate the current array by raw index —
-  // that index may now point at a different environment (docs/TODO.md
-  // P1 "impedir resultados atrasados de atualizar o ambiente errado").
+  // Bumped every time a list response is accepted. Each capturePreview()
+  // call captures the generation valid when it was spawned; a periodic
+  // poll (gui/Main.qml) can start a fresh refresh() while a previous
+  // cycle's preview is still in flight, so a stale result landing late
+  // must never mutate the current array by raw index — that index may now
+  // point at a different environment (docs/TODO.md P1 "impedir resultados
+  // atrasados de atualizar o ambiente errado").
   int m_environmentsGeneration = 0;
   // A silent poll never changes busy UI state. A foreground action bumps
   // this token so a list response started before it cannot overwrite it.
@@ -147,8 +157,9 @@ private:
   QHash<QString, qint64> m_previewRetryAt;
   QVariantList m_apps;
   QFileSystemWatcher m_themeWatcher;
-  bool m_busy = false;
-  QString m_busyAction;
+  // Key (environment name, "" for the list) -> action label.
+  QMap<QString, QString> m_busy;
+  bool m_refreshPending = false;
   QString m_listError;
   bool m_appsLoading = false;
   QString m_appsEnvironment;
@@ -157,6 +168,7 @@ private:
   QString m_themeBackground = QStringLiteral("#101010");
   QString m_themeForeground = QStringLiteral("#eeeeee");
   QString m_themeAccent = QStringLiteral("#5584aa");
+  QString m_themeAccentText = QStringLiteral("#5584aa");
   QString m_themeSelection = QStringLiteral("#186a9a");
   QString m_themeMuted = QStringLiteral("#777777");
   QString m_themeSurface = QStringLiteral("#202020");
@@ -167,4 +179,20 @@ private:
 
 // Hyprland integration, exposed for tests.
 bool hasPersonalViewerRule(const QString &hyprConfigDir);
+
+enum class WorkspacePlacement {
+  NotApplicable,          // no Hyprland session, or the user's own window
+                          // rule places OmaVM's viewer: open as usual,
+                          // silently
+  LaunchNormally,         // switched to an empty workspace; go ahead and open
+  AlreadyFocusedExisting, // an existing window for this environment was
+                          // found and focused; do not open another
+  Unavailable             // no eligible workspace, or the dispatch failed:
+                          // open on the current workspace
+};
+// Run by a viewer (Machine display or Box terminal) before its window
+// exists, so the window opens on the workspace it switched to.
+WorkspacePlacement placeInEmptyWorkspace(const QString &title);
+// The user's Hyprland config directory.
+QString hyprConfigDir();
 QString terminalTagScript(qint64 pid);

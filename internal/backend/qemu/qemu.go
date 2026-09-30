@@ -10,6 +10,7 @@ package qemu
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,7 +26,13 @@ import (
 	"github.com/KitsuneSemCalda/OmaVM/internal/power"
 )
 
-const defaultDiskSize = "20G"
+// diskSize is the virtual size of every Machine's disk: 1 TiB. The qcow2
+// is sparse: it starts at a few hundred KiB and takes host space only as
+// the guest writes, so the size costs nothing up front and no installer
+// runs out of room. The guest can believe in more space than the host
+// has; when the host fills up, QEMU pauses the Machine (io-error) and
+// Status says why.
+const diskSize int64 = 1 << 40
 const gracefulShutdownTimeout = 10 * time.Second
 
 // Backend implements core.Backend for Machine environments via
@@ -48,21 +55,62 @@ func New() (*Backend, error) {
 func (b *Backend) Name() string { return "qemu" }
 
 // maxSocketPath is the usable length of a Unix socket path (sun_path is
-// 108 bytes including the terminating NUL). The Machine's name is part of
-// every socket path, so a long name would otherwise pass Create and only
-// fail at Start with QEMU's "UNIX socket path is too long".
+// 108 bytes including the terminating NUL). The Machine's directory is
+// part of every socket path, so a long one would otherwise pass Create and
+// only fail at Start with QEMU's "UNIX socket path is too long".
 const maxSocketPath = 107
 
-func (b *Backend) checkNameLength(name string) error {
-	longest := b.virtiofsPath(name)
+func (b *Backend) checkNameLength(key string) error {
+	longest := b.virtiofsPath(key)
 	if len(longest) <= maxSocketPath {
 		return nil
 	}
-	limit := len(name) - (len(longest) - maxSocketPath)
-	if limit < 1 {
+	limit := len(key) - (len(longest) - maxSocketPath)
+	if limit < 16 {
 		return core.Invalidf("the OmaVM state directory %s is too long for a Machine's sockets; set XDG_STATE_HOME to a shorter path", b.stateDir)
 	}
+	// Only a Machine created before directories were named by ID.
 	return core.Invalidf("machine name is too long; use at most %d bytes (accented letters count as two)", limit)
+}
+
+// key names the Machine's state directory: its ID, which never changes,
+// so the directory doesn't depend on the name (socket paths don't grow
+// with it, and a name is never a path component). Machines created before
+// live under their name and move to their ID the first time they are
+// seen stopped: a running QEMU was given paths in the old directory, and
+// is only recognized by them.
+func (b *Backend) key(env core.Environment) string {
+	if env.ID == "" {
+		return env.Name
+	}
+	if _, err := os.Stat(b.dir(env.ID)); err == nil {
+		return env.ID
+	}
+	legacy := env.Name
+	if _, err := os.Stat(b.dir(legacy)); err != nil {
+		return env.ID
+	}
+	if running, _ := b.isRunning(legacy); running {
+		return legacy
+	}
+	if err := os.Rename(b.dir(legacy), b.dir(env.ID)); err != nil {
+		// Another OmaVM process may have just moved it.
+		if _, statErr := os.Stat(b.dir(env.ID)); statErr == nil {
+			return env.ID
+		}
+		slog.Warn("machine state directory not moved to its id", "machine", env.Name, "error", err)
+		return legacy
+	}
+	slog.Info("machine state directory moved to its id", "machine", env.Name, "id", env.ID)
+	// ~/OmaVM/<name> pointed into the old directory.
+	if link, err := b.hostLinkPath(env.Name); err == nil {
+		if target, err := os.Readlink(link); err == nil && target == b.diskPath(legacy) {
+			if _, err := b.Link(context.Background(), env, env.Settings.Color); err != nil {
+				slog.Warn("host link not updated", "machine", env.Name, "error", err)
+			}
+		}
+	}
+	return env.ID
 }
 
 func (b *Backend) dir(name string) string      { return filepath.Join(b.stateDir, name) }
@@ -79,17 +127,17 @@ func (b *Backend) virtiofsPIDPath(name string) string {
 func (b *Backend) previewPath(name string) string { return filepath.Join(b.dir(name), "preview.ppm") }
 
 func (b *Backend) Create(ctx context.Context, env core.Environment) error {
-	if err := b.checkNameLength(env.Name); err != nil {
+	if err := b.checkNameLength(b.key(env)); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(b.dir(env.Name), 0o755); err != nil {
+	if err := os.MkdirAll(b.dir(b.key(env)), 0o755); err != nil {
 		return fmt.Errorf("create machine state dir: %w", err)
 	}
-	disk := b.diskPath(env.Name)
+	disk := b.diskPath(b.key(env))
 	if _, err := os.Stat(disk); err == nil {
 		return nil // idempotent: disk already provisioned
 	}
-	out, err := runQEMU(ctx, "qemu-img", "create", "-f", "qcow2", disk, defaultDiskSize)
+	out, err := runQEMU(ctx, "qemu-img", "create", "-f", "qcow2", disk, strconv.FormatInt(diskSize, 10))
 	if err != nil {
 		return qemuErr("qemu-img create", err, out)
 	}
@@ -97,22 +145,23 @@ func (b *Backend) Create(ctx context.Context, env core.Environment) error {
 }
 
 func (b *Backend) Start(ctx context.Context, env core.Environment) error {
-	running, err := b.isRunning(env.Name)
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return err
 	}
 	if running {
 		return nil
 	}
-	if err := b.checkNameLength(env.Name); err != nil {
+	if err := b.checkNameLength(b.key(env)); err != nil {
 		return err
 	}
 
-	for _, socket := range []string{b.qgaPath(env.Name), b.qmpPath(env.Name)} {
+	for _, socket := range []string{b.qgaPath(b.key(env)), b.qmpPath(b.key(env))} {
 		if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove stale socket: %w", err)
 		}
 	}
+	b.growDisk(ctx, env)
 	settings := env.EffectiveSettings()
 	if !settings.TravelModeDisabled && env.Settings.CPUs == 0 && power.OnBattery() {
 		// Travel Mode: the host is unplugged and the user hasn't pinned
@@ -126,7 +175,7 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 	}
 	virtiofsRunning := false
 	if settings.SharedPath != "" {
-		if err := b.startVirtiofs(ctx, env.Name, settings); err != nil {
+		if err := b.startVirtiofs(ctx, b.key(env), settings); err != nil {
 			return err
 		}
 		virtiofsRunning = true
@@ -137,7 +186,7 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 		"-m", strconv.Itoa(settings.MemoryMiB),
 		"-smp", strconv.Itoa(settings.CPUs),
 		"-enable-kvm",
-		"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2", b.diskPath(env.Name)),
+		"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2", b.diskPath(b.key(env))),
 		// Absolute pointer: the viewer sends guest coordinates, never
 		// relative motion that drifts from the host cursor.
 		"-device", "qemu-xhci",
@@ -145,12 +194,12 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 		"-device", "virtio-serial-pci",
 		"-chardev", "qemu-vdagent,id=clipboard,clipboard=on,mouse=off",
 		"-device", "virtserialport,chardev=clipboard,name=com.redhat.spice.0",
-		"-chardev", "socket,path=" + b.qgaPath(env.Name) + ",server=on,wait=off,id=qga0",
+		"-chardev", "socket,path=" + b.qgaPath(b.key(env)) + ",server=on,wait=off,id=qga0",
 		"-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
 		"-audiodev", "pipewire,id=audio0",
 		"-device", "virtio-sound-pci,audiodev=audio0",
-		"-qmp", "unix:" + b.qmpPath(env.Name) + ",server,nowait",
-		"-pidfile", b.pidPath(env.Name),
+		"-qmp", "unix:" + b.qmpPath(b.key(env)) + ",server,nowait",
+		"-pidfile", b.pidPath(b.key(env)),
 		"-daemonize",
 	}
 	graphics := detectGraphics(ctx)
@@ -159,17 +208,24 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 	args = append(args, displayArgs(graphics.openGL, vulkan, settings.MemoryMiB, virtiofsRunning)...)
 	if virtiofsRunning {
 		args = append(args,
-			"-chardev", "socket,id=virtiofs,path="+b.virtiofsPath(env.Name),
+			"-chardev", "socket,id=virtiofs,path="+b.virtiofsPath(b.key(env)),
 			"-device", "vhost-user-fs-pci,chardev=virtiofs,tag=omavm-share")
 	}
 	if env.Image != "" && !settings.DisconnectISO {
-		args = append(args, "-cdrom", env.Image, "-boot", "order=cd,menu=on")
+		// The disk boots first anyway: an ISO deleted, moved or on a USB
+		// stick that isn't plugged in must not keep an installed Machine
+		// from starting (QEMU refuses a -cdrom it can't open).
+		if _, err := os.Stat(env.Image); err == nil {
+			args = append(args, "-cdrom", env.Image, "-boot", "order=cd,menu=on")
+		} else {
+			slog.Warn("installation media not found; starting from the disk", "machine", env.Name, "image", env.Image, "error", err)
+		}
 	}
 
 	vsock := !settings.SSHDisabled && canOpenRW(vhostVsockPath)
 	var cid uint32
 	if vsock {
-		if cid, err = b.guestCID(env.Name, false); err != nil {
+		if cid, err = b.guestCID(b.key(env), false); err != nil {
 			return err
 		}
 	}
@@ -177,7 +233,7 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 	if err != nil && vsock && cidTaken(out) {
 		// Another VM on this host holds the CID: draw a new one. The
 		// guest's SSH host key is remembered per Machine, not per CID.
-		if cid, err = b.guestCID(env.Name, true); err != nil {
+		if cid, err = b.guestCID(b.key(env), true); err != nil {
 			return err
 		}
 		out, err = runQEMU(ctx, "qemu-system-x86_64", withVsock(args, vsock, cid)...)
@@ -195,15 +251,52 @@ func (b *Backend) Start(ctx context.Context, env core.Environment) error {
 		// now (the other Start won), this call's goal was met: treat it
 		// as the idempotent success it already is a few lines up when
 		// isRunning() finds it running before even trying.
-		if running, runningErr := b.isRunning(env.Name); runningErr == nil && running {
+		if running, runningErr := b.isRunning(b.key(env)); runningErr == nil && running {
 			return nil
 		}
 		if virtiofsRunning {
-			_ = b.stopVirtiofs(env.Name)
+			_ = b.stopVirtiofs(b.key(env))
 		}
 		return qemuErr("qemu-system-x86_64", err, out)
 	}
 	return nil
+}
+
+// growDisk brings a stopped Machine's disk up to diskSize: Machines
+// created when disks were 20 GiB, and any Machine sent back to a snapshot
+// taken before its disk grew (a qcow2 snapshot keeps its own size). Only
+// the virtual size changes, so it costs no host space; the guest sees the
+// new space as unpartitioned until its own partition is extended. Never
+// shrinks a disk, and best-effort: a Machine still starts with the disk
+// it has.
+func (b *Backend) growDisk(ctx context.Context, env core.Environment) {
+	disk := b.diskPath(b.key(env))
+	size, err := diskVirtualSize(ctx, disk)
+	if err != nil || size >= diskSize {
+		if err != nil {
+			slog.Warn("disk size not checked", "machine", env.Name, "error", err)
+		}
+		return
+	}
+	if out, err := runQEMU(ctx, "qemu-img", "resize", disk, strconv.FormatInt(diskSize, 10)); err != nil {
+		slog.Warn("disk not grown", "machine", env.Name, "error", qemuErr("qemu-img resize", err, out))
+		return
+	}
+	slog.Info("disk grown", "machine", env.Name, "from", size, "to", diskSize)
+}
+
+func diskVirtualSize(ctx context.Context, disk string) (int64, error) {
+	out, err := runQEMU(ctx, "qemu-img", "info", "--output=json", disk)
+	if err != nil {
+		return 0, qemuErr("qemu-img info", err, out)
+	}
+	var info struct {
+		VirtualSize int64 `json:"virtual-size"`
+	}
+	if err := json.Unmarshal([]byte(out), &info); err != nil {
+		return 0, fmt.Errorf("qemu-img info: %w", err)
+	}
+	return info.VirtualSize, nil
 }
 
 // virtiofsdPath is overridable in tests, like the host paths in hostcaps.go.
@@ -378,7 +471,7 @@ func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 	if err != nil {
 		return core.Unsupportedf("omavm-gui not found (install OmaVM's GUI to view a Machine's display)")
 	}
-	display, err := b.attachDisplay(env.Name)
+	display, err := b.attachDisplay(b.key(env))
 	if err != nil {
 		return err
 	}
@@ -388,16 +481,27 @@ func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 	// while, not something that should die when this call's context
 	// ends (same reasoning as the GUI's own openInTerminal). It inherits
 	// its end of the display connection as fd 3.
-	settings := env.EffectiveSettings()
-	cmd := exec.CommandContext(context.Background(), viewer,
-		"--display-fd", "3",
-		"--title", env.Name+" — OmaVM",
-		"--share-clipboard", strconv.FormatBool(!settings.ClipboardDisabled))
+	cmd := exec.CommandContext(context.Background(), viewer, viewerArgs(env)...)
 	cmd.ExtraFiles = []*os.File{display}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch display viewer: %w", err)
 	}
 	return nil
+}
+
+// viewerArgs are omavm-gui's arguments for a Machine's display. The
+// viewer itself picks the workspace and goes fullscreen, so it happens
+// however the Machine was opened: Experience Center, launcher entry or
+// `omavm open`.
+func viewerArgs(env core.Environment) []string {
+	settings := env.EffectiveSettings()
+	return []string{
+		"--display-fd", "3",
+		"--title", env.Name + " — OmaVM",
+		"--share-clipboard", strconv.FormatBool(!settings.ClipboardDisabled),
+		"--empty-workspace", strconv.FormatBool(!settings.EmptyWorkspaceDisabled),
+		"--fullscreen", strconv.FormatBool(!settings.FullscreenDisabled),
+	}
 }
 
 // attachDisplay opens a new peer-to-peer connection to the Machine's D-Bus
@@ -439,7 +543,7 @@ func guiBinaryPath() (string, error) {
 // Returns a PPM image path; gdk-pixbuf loads PNM natively, so the GUI
 // can hand this straight to a Picture/Image widget.
 func (b *Backend) Preview(ctx context.Context, env core.Environment) (string, error) {
-	running, err := b.isRunning(env.Name)
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return "", err
 	}
@@ -447,8 +551,8 @@ func (b *Backend) Preview(ctx context.Context, env core.Environment) (string, er
 		return "", core.Unsupportedf("machine is not running")
 	}
 
-	dst := b.previewPath(env.Name)
-	if err := qmpScreendump(b.qmpPath(env.Name), dst); err != nil {
+	dst := b.previewPath(b.key(env))
+	if err := qmpScreendump(b.qmpPath(b.key(env)), dst); err != nil {
 		return "", fmt.Errorf("screendump: %w", err)
 	}
 	return dst, nil
@@ -465,22 +569,28 @@ const bootDisk = "virtio0"
 // (tested on QEMU 11.1: "State blocked by non-migratable device
 // virtio-sound", and "virgl is not yet migratable" with 3D acceleration),
 // so snapshots of a running Machine never worked before this.
-func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) error {
-	running, err := b.isRunning(env.Name)
+func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (bool, error) {
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !running {
-		out, err := runQEMU(ctx, "qemu-img", "snapshot", "-c", tag, b.diskPath(env.Name))
+		out, err := runQEMU(ctx, "qemu-img", "snapshot", "-c", tag, b.diskPath(b.key(env)))
 		if err != nil {
-			return qemuErr("qemu-img snapshot -c", err, out)
+			return false, qemuErr("qemu-img snapshot -c", err, out)
 		}
-		return nil
+		return false, nil
 	}
-	if _, err := qmpExecute(b.qmpPath(env.Name), "blockdev-snapshot-internal-sync", map[string]any{"device": bootDisk, "name": tag}); err != nil {
-		return fmt.Errorf("snapshot the disk: %w", err)
+	// With the guest agent, the guest flushes and freezes its
+	// filesystems for the instant of the snapshot.
+	thaw := freezeGuest(ctx, b.qgaPath(b.key(env)), env.Name)
+	if thaw != nil {
+		defer thaw()
 	}
-	return nil
+	if _, err := qmpExecute(b.qmpPath(b.key(env)), "blockdev-snapshot-internal-sync", map[string]any{"device": bootDisk, "name": tag}); err != nil {
+		return false, fmt.Errorf("snapshot the disk: %w", err)
+	}
+	return thaw == nil, nil
 }
 
 // GoToSnapshot restores the disk to a snapshot. Only a stopped Machine:
@@ -488,14 +598,14 @@ func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag 
 // ("Revert to it offline using qemu-img"), and every snapshot here is
 // disk-only.
 func (b *Backend) GoToSnapshot(ctx context.Context, env core.Environment, tag string) error {
-	running, err := b.isRunning(env.Name)
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return err
 	}
 	if running {
 		return core.Invalidf("shut down %s first: going to a snapshot replaces its disk, which can't change under a running system", env.Name)
 	}
-	out, err := runQEMU(ctx, "qemu-img", "snapshot", "-a", tag, b.diskPath(env.Name))
+	out, err := runQEMU(ctx, "qemu-img", "snapshot", "-a", tag, b.diskPath(b.key(env)))
 	if err != nil {
 		return qemuErr("qemu-img snapshot -a", err, out)
 	}
@@ -503,50 +613,50 @@ func (b *Backend) GoToSnapshot(ctx context.Context, env core.Environment, tag st
 }
 
 func (b *Backend) RemoveSnapshot(ctx context.Context, env core.Environment, tag string) error {
-	running, err := b.isRunning(env.Name)
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return err
 	}
 	if !running {
-		out, err := runQEMU(ctx, "qemu-img", "snapshot", "-d", tag, b.diskPath(env.Name))
+		out, err := runQEMU(ctx, "qemu-img", "snapshot", "-d", tag, b.diskPath(b.key(env)))
 		if err != nil {
 			return qemuErr("qemu-img snapshot -d", err, out)
 		}
 		return nil
 	}
-	if _, err := qmpExecute(b.qmpPath(env.Name), "blockdev-snapshot-delete-internal-sync", map[string]any{"device": bootDisk, "name": tag}); err != nil {
+	if _, err := qmpExecute(b.qmpPath(b.key(env)), "blockdev-snapshot-delete-internal-sync", map[string]any{"device": bootDisk, "name": tag}); err != nil {
 		return fmt.Errorf("delete the disk snapshot: %w", err)
 	}
 	return nil
 }
 
 func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
-	running, err := b.isRunning(env.Name)
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return err
 	}
 	if !running {
-		_ = b.stopVirtiofs(env.Name)
+		_ = b.stopVirtiofs(b.key(env))
 		return nil
 	}
-	if status, err := qmpStatus(b.qmpPath(env.Name)); err == nil && (status == "paused" || status == "suspended") {
-		if err := qmpCommand(b.qmpPath(env.Name), "cont"); err != nil {
+	if status, err := qmpStatus(b.qmpPath(b.key(env))); err == nil && (status == "paused" || status == "suspended") {
+		if err := qmpCommand(b.qmpPath(b.key(env)), "cont"); err != nil {
 			return fmt.Errorf("resume machine before shutdown: %w", err)
 		}
 	}
 
 	// A slow guest must never turn an ordinary shutdown into a power cut.
-	if err := qmpCommand(b.qmpPath(env.Name), "system_powerdown"); err != nil {
+	if err := qmpCommand(b.qmpPath(b.key(env)), "system_powerdown"); err != nil {
 		return fmt.Errorf("request shutdown: %w (use Force Stop only if necessary; unsaved work may be lost)", err)
 	} else {
 		deadline := time.Now().Add(gracefulShutdownTimeout)
 		for time.Now().Before(deadline) {
-			running, err := b.isRunning(env.Name)
+			running, err := b.isRunning(b.key(env))
 			if err != nil {
 				return err
 			}
 			if !running {
-				_ = b.stopVirtiofs(env.Name)
+				_ = b.stopVirtiofs(b.key(env))
 				return nil
 			}
 			select {
@@ -560,7 +670,7 @@ func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 }
 
 func (b *Backend) Restart(ctx context.Context, env core.Environment) error {
-	if running, err := b.isRunning(env.Name); err != nil {
+	if running, err := b.isRunning(b.key(env)); err != nil {
 		return err
 	} else if !running {
 		return b.Start(ctx, env)
@@ -572,32 +682,32 @@ func (b *Backend) Restart(ctx context.Context, env core.Environment) error {
 }
 
 func (b *Backend) Pause(ctx context.Context, env core.Environment) error {
-	if running, err := b.isRunning(env.Name); err != nil {
+	if running, err := b.isRunning(b.key(env)); err != nil {
 		return err
 	} else if !running {
 		return core.Unsupportedf("machine is not running")
 	}
-	return qmpCommand(b.qmpPath(env.Name), "stop")
+	return qmpCommand(b.qmpPath(b.key(env)), "stop")
 }
 
 func (b *Backend) Resume(ctx context.Context, env core.Environment) error {
-	if running, err := b.isRunning(env.Name); err != nil {
+	if running, err := b.isRunning(b.key(env)); err != nil {
 		return err
 	} else if !running {
 		return core.Unsupportedf("machine is not running")
 	}
-	return qmpCommand(b.qmpPath(env.Name), "cont")
+	return qmpCommand(b.qmpPath(b.key(env)), "cont")
 }
 
 func (b *Backend) ForceStop(ctx context.Context, env core.Environment) error {
-	if running, err := b.isRunning(env.Name); err != nil {
+	if running, err := b.isRunning(b.key(env)); err != nil {
 		return err
 	} else if !running {
-		_ = b.stopVirtiofs(env.Name)
+		_ = b.stopVirtiofs(b.key(env))
 		return nil
 	}
-	if err := qmpCommand(b.qmpPath(env.Name), "quit"); err != nil {
-		pid, err := b.readPID(env.Name)
+	if err := qmpCommand(b.qmpPath(b.key(env)), "quit"); err != nil {
+		pid, err := b.readPID(b.key(env))
 		if err != nil {
 			return err
 		}
@@ -609,13 +719,13 @@ func (b *Backend) ForceStop(ctx context.Context, env core.Environment) error {
 			return fmt.Errorf("stop machine process: %w", err)
 		}
 	}
-	_ = b.stopVirtiofs(env.Name)
+	_ = b.stopVirtiofs(b.key(env))
 	// QEMU takes a moment to exit after quit. Returning before that let a
 	// Delete right after Force Stop find it still running and try a
 	// normal shutdown through the QMP socket QEMU had already closed.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if running, err := b.isRunning(env.Name); err != nil || !running {
+		if running, err := b.isRunning(b.key(env)); err != nil || !running {
 			return err
 		}
 		select {
@@ -628,29 +738,47 @@ func (b *Backend) ForceStop(ctx context.Context, env core.Environment) error {
 }
 
 func (b *Backend) Status(ctx context.Context, env core.Environment) (core.Status, error) {
-	running, err := b.isRunning(env.Name)
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return core.Status{}, err
 	}
 	if !running {
 		return core.Status{State: core.StateStopped}, nil
 	}
-	status, err := qmpStatus(b.qmpPath(env.Name))
+	status, err := qmpStatus(b.qmpPath(b.key(env)))
 	if err != nil {
 		return core.Status{State: core.StateUnknown, Detail: err.Error()}, nil
+	}
+	if status == "io-error" {
+		return ioErrorStatus(b.dir(b.key(env))), nil
 	}
 	return statusFromQMP(status), nil
 }
 
+// ioErrorStatus explains a Machine QEMU paused because its disk couldn't
+// be written. The usual cause is the host's disk filling up under the
+// sparse qcow2; the Machine is paused, not lost, and Resume continues it
+// once there is room.
+func ioErrorStatus(dir string) core.Status {
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(dir, &fs); err == nil {
+		free := fs.Bavail * uint64(fs.Bsize)
+		if free < 1<<30 {
+			return core.Status{State: core.StatePaused, Detail: fmt.Sprintf("paused: this computer's disk is full (%d MiB free); free up space, then Resume", free>>20)}
+		}
+	}
+	return core.Status{State: core.StatePaused, Detail: "paused: the Machine's disk could not be written; check the disk holding OmaVM's state, then Resume"}
+}
+
 func (b *Backend) Integration(ctx context.Context, env core.Environment) (core.IntegrationReport, error) {
-	running, err := b.isRunning(env.Name)
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return core.IntegrationReport{}, err
 	}
 	if !running {
 		return core.IntegrationReport{GuestAgent: "stopped", Hint: "Start the Machine to check guest tools"}, nil
 	}
-	if err := qgaPing(ctx, b.qgaPath(env.Name)); err != nil {
+	if err := qgaPing(ctx, b.qgaPath(b.key(env))); err != nil {
 		return core.IntegrationReport{GuestAgent: "unavailable", Hint: "Install and start qemu-guest-agent inside the guest"}, nil
 	}
 	return core.IntegrationReport{GuestAgent: "connected"}, nil
@@ -666,7 +794,7 @@ func statusFromQMP(status string) core.Status {
 		return core.Status{State: core.StateStarting, Detail: status}
 	case "shutdown":
 		return core.Status{State: core.StateStopping}
-	case "internal-error", "io-error", "watchdog", "guest-panicked":
+	case "internal-error", "watchdog", "guest-panicked":
 		return core.Status{State: core.StateError, Detail: status}
 	default:
 		return core.Status{State: core.StateUnknown, Detail: status}
@@ -680,7 +808,7 @@ func (b *Backend) Remove(ctx context.Context, env core.Environment) error {
 	if err := b.Stop(ctx, env); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(b.dir(env.Name)); err != nil {
+	if err := os.RemoveAll(b.dir(b.key(env))); err != nil {
 		return fmt.Errorf("remove machine state dir: %w", err)
 	}
 	return nil

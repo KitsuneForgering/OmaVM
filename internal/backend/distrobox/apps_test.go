@@ -11,7 +11,8 @@ import (
 
 func TestListAppsParsesOutputAndDetectsExported(t *testing.T) {
 	bin := t.TempDir()
-	writeDistrobox(t, bin, `if [ "$1" = list ]; then printf 'ID | NAME | STATUS | IMAGE\n1 | omavm-dev-12345678 | Up | fedora\n'; exit 0; fi; printf '/usr/share/applications/foo.desktop\tFoo App\n/usr/share/applications/bar.desktop\tBar App\n'`)
+	writeDistrobox(t, bin, `printf '/usr/share/applications/foo.desktop\tFoo App\n/usr/share/applications/bar.desktop\tBar App\n'`)
+	writeEngine(t, bin, "omavm-dev-12345678\trunning\tUp\n")
 	t.Setenv("PATH", bin)
 
 	home := t.TempDir()
@@ -46,7 +47,8 @@ func TestListAppsParsesOutputAndDetectsExported(t *testing.T) {
 func TestExportAppPassesAbsolutePathToDistroboxExport(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "args")
-	writeDistrobox(t, bin, `if [ "$1" = list ]; then printf 'ID | NAME | STATUS | IMAGE\n1 | omavm-dev-12345678 | Up | fedora\n'; exit 0; fi; printf '%s\n' "$@" > "$OMAVM_TEST_LOG"`)
+	writeDistrobox(t, bin, `printf '%s\n' "$@" > "$OMAVM_TEST_LOG"`)
+	writeEngine(t, bin, "omavm-dev-12345678\trunning\tUp\n")
 	t.Setenv("PATH", bin)
 	t.Setenv("OMAVM_TEST_LOG", log)
 
@@ -67,7 +69,8 @@ func TestExportAppPassesAbsolutePathToDistroboxExport(t *testing.T) {
 func TestUnexportAppAddsDeleteFlag(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "args")
-	writeDistrobox(t, bin, `if [ "$1" = list ]; then printf 'ID | NAME | STATUS | IMAGE\n1 | omavm-dev-12345678 | Up | fedora\n'; exit 0; fi; printf '%s\n' "$@" > "$OMAVM_TEST_LOG"`)
+	writeDistrobox(t, bin, `printf '%s\n' "$@" > "$OMAVM_TEST_LOG"`)
+	writeEngine(t, bin, "omavm-dev-12345678\trunning\tUp\n")
 	t.Setenv("PATH", bin)
 	t.Setenv("OMAVM_TEST_LOG", log)
 

@@ -25,6 +25,26 @@ Item {
             return menu
         }
 
+        // A Machine paused because the host's disk filled up says so, and
+        // offers Resume; a running one doesn't show its routine detail.
+        function test_pausedMachineShowsWhy() {
+            const why = "paused: this computer's disk is full (12 MiB free); free up space, then Resume"
+            loader.setSource("qrc:/EnvironmentCard.qml", {
+                width: 680,
+                environment: { name: "vm", kind: "machine", status: "paused", statusDetail: why, settings: {} }
+            })
+            tryVerify(() => loader.status === Loader.Ready)
+            const detail = findChild(loader.item, "statusDetailLabel")
+            verify(detail.visible)
+            compare(detail.text, why)
+            loader.setSource("qrc:/EnvironmentCard.qml", {
+                width: 680,
+                environment: { name: "vm", kind: "machine", status: "running", statusDetail: "display available", settings: {} }
+            })
+            tryVerify(() => loader.status === Loader.Ready)
+            verify(!findChild(loader.item, "statusDetailLabel").visible)
+        }
+
         // A hidden MenuItem still takes its full height in a Qt Quick Menu,
         // leaving blank rows (a Box's menu had four).
         function test_hiddenActionsLeaveNoGap_data() {

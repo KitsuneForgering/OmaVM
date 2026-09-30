@@ -73,9 +73,19 @@ func (f *fakeBackend) Remove(ctx context.Context, env core.Environment) error {
 type memStore struct {
 	envs    []core.Environment
 	saveErr error
+	// savesBeforeErr lets that many saves succeed before saveErr applies.
+	savesBeforeErr int
 }
 
 func (m *memStore) Lock(context.Context) (func(), error) { return func() {}, nil }
+
+func (m *memStore) LockEnvironment(context.Context, string) (func(), error) {
+	return func() {}, nil
+}
+
+func (m *memStore) TryLockEnvironment(string) (func(), bool, error) {
+	return func() {}, true, nil
+}
 
 func (m *memStore) Load() ([]core.Environment, error) {
 	out := make([]core.Environment, len(m.envs))
@@ -84,7 +94,9 @@ func (m *memStore) Load() ([]core.Environment, error) {
 }
 
 func (m *memStore) Save(envs []core.Environment) error {
-	if m.saveErr != nil {
+	if m.saveErr != nil && m.savesBeforeErr > 0 {
+		m.savesBeforeErr--
+	} else if m.saveErr != nil {
 		return m.saveErr
 	}
 	m.envs = envs
@@ -96,21 +108,22 @@ func (m *memStore) Save(envs []core.Environment) error {
 // separately from one that doesn't (e.g. Box today).
 type fakeSnapshotBackend struct {
 	*fakeBackend
-	snapshots map[string]bool
-	createErr error
-	removeErr error
+	snapshots       map[string]bool
+	createErr       error
+	removeErr       error
+	crashConsistent bool
 }
 
 func newFakeSnapshotBackend(name string) *fakeSnapshotBackend {
 	return &fakeSnapshotBackend{fakeBackend: newFakeBackend(name), snapshots: map[string]bool{}}
 }
 
-func (f *fakeSnapshotBackend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) error {
+func (f *fakeSnapshotBackend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (bool, error) {
 	if f.createErr != nil {
-		return f.createErr
+		return false, f.createErr
 	}
 	f.snapshots[tag] = true
-	return nil
+	return f.crashConsistent, nil
 }
 
 func (f *fakeSnapshotBackend) GoToSnapshot(ctx context.Context, env core.Environment, tag string) error {
@@ -425,27 +438,42 @@ func TestCreateRollsBackBackendWhenRegistrySaveFails(t *testing.T) {
 	store := &memStore{}
 	svc := core.NewService(store, box, newFakeBackend("fake-machine"))
 
+	// The reservation is saved; recording the finished creation fails.
 	store.saveErr = errors.New("disk full")
+	store.savesBeforeErr = 1
 	_, err := svc.Create(ctx, core.Environment{Name: "radic", Image: "fedora:latest", Kind: core.Box})
 	if err == nil {
 		t.Fatal("expected the registry save failure to surface as an error")
 	}
-	// fakeBackend.Remove clears its own "created" bookkeeping as part of
-	// removing, so observing that it ran (removed=true) after Create
-	// already returned is the meaningful signal here — Create must have
-	// called backend.Create (there'd be nothing to roll back otherwise)
-	// and then backend.Remove once the registry save failed.
+	// fakeBackend.Remove clears its own "created" bookkeeping, so
+	// removed=true means Create created the resource and then undid it.
 	if !box.removed["radic"] {
 		t.Fatal("expected Create to roll back the backend resource when the registry save fails")
 	}
 
+	// With the disk still full, the reservation can't be dropped either:
+	// it stays, marked as an unfinished creation, never as a usable one.
 	store.saveErr = nil
 	envs, err := svc.List(ctx)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(envs) != 0 {
-		t.Fatalf("expected no environment registered after the rolled-back create, got %+v", envs)
+	for _, env := range envs {
+		if env.Operation != core.OperationCreating {
+			t.Fatalf("a rolled-back create left a usable environment: %+v", env)
+		}
+	}
+}
+
+func TestCreateTouchesNoBackendWhenTheNameCantBeReserved(t *testing.T) {
+	box := newFakeBackend("fake-box")
+	store := &memStore{saveErr: errors.New("disk full")}
+	svc := core.NewService(store, box, nil)
+	if _, err := svc.Create(context.Background(), core.Environment{Name: "radic", Image: "fedora", Kind: core.Box}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if box.created["radic"] {
+		t.Fatal("the backend created a resource the registry never reserved")
 	}
 }
 
@@ -994,5 +1022,46 @@ func TestSnapshotCreatedButRetentionDiscardFailsStillPersistsNewSnapshot(t *test
 	}
 	if len(list) != 3 || labels[2] != "three" {
 		t.Fatalf("expected the new snapshot to still be tracked despite the discard failure, got %+v", labels)
+	}
+}
+
+// Regression: the 500-character description limit counted bytes, so a
+// Portuguese description the Settings dialog accepted (it counts
+// characters) was refused on save.
+func TestDescriptionLimitCountsCharacters(t *testing.T) {
+	svc, _, _ := newTestService()
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Image: "fedora", Kind: core.Box}); err != nil {
+		t.Fatal(err)
+	}
+	accented := strings.Repeat("ã", 500) // 1000 bytes
+	if _, err := svc.Configure(ctx, "dev", core.SettingsPatch{Description: &accented}); err != nil {
+		t.Fatalf("500 characters refused: %v", err)
+	}
+	tooLong := accented + "a"
+	if _, err := svc.Configure(ctx, "dev", core.SettingsPatch{Description: &tooLong}); !errors.Is(err, core.ErrInvalidInput) {
+		t.Fatalf("501 characters accepted: %v", err)
+	}
+}
+
+func TestFullscreenIsOnByDefaultAndMachineOnly(t *testing.T) {
+	svc, _, _ := newTestService()
+	ctx := context.Background()
+	iso := testISO(t)
+	if _, err := svc.Create(ctx, core.Environment{Name: "vm", Image: iso, Kind: core.Machine}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Image: "fedora", Kind: core.Box}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := svc.Settings(ctx, "vm"); s.FullscreenDisabled {
+		t.Fatal("fullscreen must be on by default")
+	}
+	off := false
+	if s, err := svc.Configure(ctx, "vm", core.SettingsPatch{Fullscreen: &off}); err != nil || !s.FullscreenDisabled {
+		t.Fatalf("turning fullscreen off: %v, %v", s, err)
+	}
+	if _, err := svc.Configure(ctx, "dev", core.SettingsPatch{Fullscreen: &off}); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("fullscreen on a Box = %v, want ErrUnsupported", err)
 	}
 }

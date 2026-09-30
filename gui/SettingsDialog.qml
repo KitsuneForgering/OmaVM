@@ -66,6 +66,7 @@ Dialog {
         launcher.checked = !settings.launcher_disabled
         ssh.checked = !settings.ssh_disabled
         openInEmptyWorkspace.checked = !settings.empty_workspace_disabled
+        fullscreen.checked = !settings.fullscreen_disabled
         errorText = ""
         submitting = false
     }
@@ -97,6 +98,7 @@ Dialog {
         TextArea {
             id: description
             Layout.fillWidth: true
+            Accessible.name: qsTr("Description")
             Layout.preferredHeight: 82
             placeholderText: qsTr("Description")
             wrapMode: TextEdit.Wrap
@@ -113,9 +115,12 @@ Dialog {
                 implicitHeight: 44
                 objectName: "colorSwatch-none"
                 Accessible.name: qsTr("No color")
-                // The selection is only drawn as a thicker border; say it.
-                Accessible.checkable: true
-                Accessible.checked: dialog.selectedColor === ""
+                // The selection is only drawn as a thicker border, so the
+                // button itself is checkable: with a screen reader active,
+                // Qt announces the control's own checked state and ignores
+                // an Accessible.checked set by hand.
+                checkable: true
+                checked: dialog.selectedColor === ""
                 contentItem: Rectangle {
                     width: 22
                     height: 22
@@ -126,7 +131,10 @@ Dialog {
                     border.color: dialog.selectedColor === "" ? backend.themeAccent : backend.themeMuted
                     Behavior on border.width { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
                 }
-                onClicked: dialog.selectedColor = ""
+                onClicked: {
+                    dialog.selectedColor = ""
+                    checked = Qt.binding(() => dialog.selectedColor === "")
+                }
             }
             Repeater {
                 model: dialog.palette
@@ -136,8 +144,8 @@ Dialog {
                     implicitHeight: 44
                     objectName: "colorSwatch-" + modelData
                     Accessible.name: modelData
-                    Accessible.checkable: true
-                    Accessible.checked: dialog.selectedColor === modelData
+                    checkable: true
+                    checked: dialog.selectedColor === modelData
                     contentItem: Rectangle {
                         width: 22
                         height: 22
@@ -148,7 +156,10 @@ Dialog {
                         border.color: dialog.selectedColor === modelData ? backend.themeAccent : backend.themeMuted
                         Behavior on border.width { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
                     }
-                    onClicked: dialog.selectedColor = modelData
+                    onClicked: {
+                        dialog.selectedColor = modelData
+                        checked = Qt.binding(() => dialog.selectedColor === modelData)
+                    }
                 }
             }
         }
@@ -169,6 +180,8 @@ Dialog {
             SpinBox {
                 id: cpus
                 Layout.fillWidth: true
+                Accessible.name: qsTr("CPUs")
+                Component.onCompleted: contentItem.Accessible.name = Accessible.name
                 from: 1
                 to: 64
                 onValueModified: dialog.cpusTouched = true
@@ -195,10 +208,14 @@ Dialog {
             SpinBox {
                 id: memory
                 Layout.fillWidth: true
+                Accessible.name: qsTr("Memory in MiB")
                 from: 256
                 to: 262144
                 stepSize: 256
                 editable: true
+                // Typing goes into the inner text field, which is what a
+                // screen reader announces.
+                Component.onCompleted: contentItem.Accessible.name = Accessible.name
                 onValueModified: dialog.memoryTouched = true
             }
             Label {
@@ -291,6 +308,13 @@ Dialog {
             ToolTip.visible: hovered
             ToolTip.text: qsTr("If it is already open, switches to it instead. Needs Omarchy's Hyprland; a window rule of your own for OmaVM's viewer takes precedence.")
         }
+        CheckBox {
+            id: fullscreen
+            visible: dialog.machine
+            text: qsTr("Open the display fullscreen")
+            ToolTip.visible: hovered
+            ToolTip.text: qsTr("Leave fullscreen with Hyprland's own fullscreen key. A window rule of your own for OmaVM's viewer takes precedence.")
+        }
 
         Label {
             visible: dialog.machine
@@ -316,6 +340,7 @@ Dialog {
             TextField {
                 id: sharedPath
                 Layout.fillWidth: true
+                Accessible.name: qsTr("Shared folder")
                 placeholderText: qsTr("Host folder (optional)")
                 selectByMouse: true
             }
@@ -375,7 +400,7 @@ Dialog {
                 onClicked: {
                     dialog.errorText = ""
                     dialog.submitting = true
-                    backend.configure(environment.name, description.text.trim(), cpus.value, dialog.cpusTouched, memory.value, dialog.memoryTouched, dialog.machine, sharedPath.text.trim(), sharedReadOnly.checked, disconnectISO.checked, dialog.selectedColor, shareClipboard.checked, travelMode.checked, vulkan.checked, openInEmptyWorkspace.checked, launcher.checked, ssh.checked)
+                    backend.configure(environment.name, description.text.trim(), cpus.value, dialog.cpusTouched, memory.value, dialog.memoryTouched, dialog.machine, sharedPath.text.trim(), sharedReadOnly.checked, disconnectISO.checked, dialog.selectedColor, shareClipboard.checked, travelMode.checked, vulkan.checked, openInEmptyWorkspace.checked, launcher.checked, ssh.checked, fullscreen.checked)
                 }
             }
         }

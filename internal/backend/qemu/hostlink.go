@@ -34,10 +34,11 @@ func (b *Backend) hostLinkPath(name string) (string, error) {
 }
 
 // ownLink reports whether something exists at link and, if so, whether it
-// is the link OmaVM made: a symlink to this Machine's disk. ~/OmaVM is in
-// the user's home, so anything else there (a note, a copied disk, their
-// own symlink) is theirs and must never be removed or replaced.
-func (b *Backend) ownLink(link, name string) (exists, ours bool) {
+// is the link OmaVM made: a symlink to this Machine's disk, where it is
+// now or where it was before Machine directories were named by ID.
+// ~/OmaVM is in the user's home, so anything else there (a note, a copied
+// disk, their own symlink) is theirs and must never be removed or replaced.
+func (b *Backend) ownLink(link string, env core.Environment) (exists, ours bool) {
 	info, err := os.Lstat(link)
 	if err != nil {
 		return false, false
@@ -46,7 +47,7 @@ func (b *Backend) ownLink(link, name string) (exists, ours bool) {
 		return true, false
 	}
 	target, err := os.Readlink(link)
-	return true, err == nil && target == b.diskPath(name)
+	return true, err == nil && (target == b.diskPath(b.key(env)) || target == b.diskPath(env.Name))
 }
 
 // Link ensures ~/OmaVM/<name> exists as a symlink to the Machine's disk
@@ -69,14 +70,14 @@ func (b *Backend) Link(ctx context.Context, env core.Environment, color string) 
 	if err != nil {
 		return "", err
 	}
-	if exists, ours := b.ownLink(link, env.Name); exists && !ours {
+	if exists, ours := b.ownLink(link, env); exists && !ours {
 		return "", core.Invalidf("%s already exists and was not created by OmaVM; move or rename it to link this Machine there", link)
 	} else if exists {
 		if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("remove stale link: %w", err)
 		}
 	}
-	if err := os.Symlink(b.diskPath(env.Name), link); err != nil {
+	if err := os.Symlink(b.diskPath(b.key(env)), link); err != nil {
 		return "", fmt.Errorf("link %s: %w", link, err)
 	}
 	if color != "" {
@@ -93,7 +94,7 @@ func (b *Backend) Unlink(ctx context.Context, env core.Environment) error {
 	if err != nil {
 		return err
 	}
-	if _, ours := b.ownLink(link, env.Name); !ours {
+	if _, ours := b.ownLink(link, env); !ours {
 		return nil
 	}
 	if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {

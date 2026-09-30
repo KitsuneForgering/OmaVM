@@ -142,7 +142,7 @@ Dialog {
                     Layout.fillWidth: true
                     implicitHeight: 3
                     radius: 2
-                    color: index <= dialog.step ? backend.themeAccent : backend.themeMuted
+                    color: index <= dialog.step ? backend.themeAccentText : backend.themeMuted
                     opacity: index <= dialog.step ? 1 : 0.35
                 }
             }
@@ -167,6 +167,9 @@ Dialog {
                 Button {
                     id: desktopChoice
                     Layout.fillWidth: true
+                    // The card's text is drawn by its own contentItem.
+                    Accessible.name: qsTr("Desktop")
+                    Accessible.description: qsTr("A complete system with its own kernel, from an installation ISO")
                     checkable: true
                     checked: dialog.machine
                     padding: 16
@@ -185,14 +188,14 @@ Dialog {
                             Layout.alignment: Qt.AlignHCenter
                             source: "qrc:/icons/machine.svg"
                             iconSize: 32
-                            color: desktopChoice.checked ? backend.themeAccent : backend.themeMuted
+                            color: desktopChoice.checked ? backend.themeAccentText : backend.themeMuted
                         }
                         Label {
                             Layout.fillWidth: true
                             text: qsTr("Desktop")
                             font.bold: true
                             horizontalAlignment: Text.AlignHCenter
-                            color: desktopChoice.checked ? backend.themeAccent : backend.themeForeground
+                            color: desktopChoice.checked ? backend.themeAccentText : backend.themeForeground
                         }
                         Label {
                             Layout.fillWidth: true
@@ -215,6 +218,8 @@ Dialog {
                 Button {
                     id: boxChoice
                     Layout.fillWidth: true
+                    Accessible.name: qsTr("Development Box")
+                    Accessible.description: qsTr("Linux tools and apps sharing your home folder and this computer's kernel")
                     checkable: true
                     checked: !dialog.machine
                     padding: 16
@@ -226,14 +231,14 @@ Dialog {
                             Layout.alignment: Qt.AlignHCenter
                             source: "qrc:/icons/box.svg"
                             iconSize: 32
-                            color: boxChoice.checked ? backend.themeAccent : backend.themeMuted
+                            color: boxChoice.checked ? backend.themeAccentText : backend.themeMuted
                         }
                         Label {
                             Layout.fillWidth: true
                             text: qsTr("Development Box")
                             font.bold: true
                             horizontalAlignment: Text.AlignHCenter
-                            color: boxChoice.checked ? backend.themeAccent : backend.themeForeground
+                            color: boxChoice.checked ? backend.themeAccentText : backend.themeForeground
                         }
                         Label {
                             Layout.fillWidth: true
@@ -282,6 +287,7 @@ Dialog {
                     TextField {
                         id: image
                         Layout.fillWidth: true
+                        Accessible.name: dialog.machine ? qsTr("Installation ISO") : qsTr("Container image")
                         readOnly: dialog.machine
                         placeholderText: dialog.machine ? qsTr("Choose a boot ISO…") : qsTr("Container image, for example opensuse/tumbleweed")
                     }
@@ -314,7 +320,7 @@ Dialog {
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 16
-                Label { text: dialog.machine ? qsTr("Desktop") : qsTr("Development Box"); color: backend.themeAccent; font.weight: Font.DemiBold }
+                Label { text: dialog.machine ? qsTr("Desktop") : qsTr("Development Box"); color: backend.themeAccentText; font.weight: Font.DemiBold }
                 Label {
                     Layout.fillWidth: true
                     text: dialog.machine ? image.text : dialog.boxes[boxImage.currentIndex].label
@@ -324,6 +330,7 @@ Dialog {
                 TextField {
                     id: name
                     Layout.fillWidth: true
+                    Accessible.name: qsTr("Environment name")
                     placeholderText: qsTr("Environment name")
                     focus: dialog.step === 2
                     onAccepted: createButton.clicked()
@@ -350,7 +357,7 @@ Dialog {
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 16
-                Label { text: qsTr("Ready to create"); color: backend.themeAccent; font.weight: Font.DemiBold }
+                Label { text: qsTr("Ready to create"); color: backend.themeAccentText; font.weight: Font.DemiBold }
                 GridLayout {
                     Layout.fillWidth: true
                     columns: 2
@@ -361,7 +368,7 @@ Dialog {
                         spacing: 6
                         Icon {
                             source: dialog.machine ? "qrc:/icons/machine.svg" : "qrc:/icons/box.svg"
-                            color: backend.themeAccent
+                            color: backend.themeAccentText
                             iconSize: 16
                         }
                         Label { text: dialog.machine ? qsTr("Desktop") : qsTr("Development Box") }
@@ -387,6 +394,8 @@ Dialog {
                         Label { text: qsTr("CPUs"); color: backend.themeMuted }
                         SpinBox {
                             id: cpus
+                            Accessible.name: qsTr("CPUs")
+                            Component.onCompleted: contentItem.Accessible.name = Accessible.name
                             from: 1
                             to: 64
                             value: 2
@@ -397,10 +406,14 @@ Dialog {
                         Label { text: qsTr("Memory (MiB)"); color: backend.themeMuted }
                         SpinBox {
                             id: memory
+                            Accessible.name: qsTr("Memory in MiB")
                             from: 256
                             to: 262144
                             stepSize: 256
                             editable: true
+                // Typing goes into the inner text field, which is what a
+                // screen reader announces.
+                Component.onCompleted: contentItem.Accessible.name = Accessible.name
                             value: 2048
                             onValueModified: dialog.memoryTouched = true
                         }

@@ -8,7 +8,7 @@ Window {
     id: win
     width: 1280
     height: 800
-    visible: true
+    visible: false
     title: displayTitle
     color: backend.themeBackground
     Material.theme: backend.themeMode === "light" ? Material.Light : Material.Dark
@@ -17,13 +17,16 @@ Window {
     Material.background: backend.themeBackground
     Material.foreground: backend.themeForeground
 
-    // No client-side fullscreen request here on purpose: a Hyprland
-    // window rule (contrib/hypr/omavm-viewer.lua) is the intended way to
-    // fullscreen this on its own workspace. If both the client and the
-    // compositor's rule request fullscreen independently, Wayland treats
-    // the second request as a toggle, so the two fight and the window can
-    // end up NOT fullscreen. Without that opt-in rule, this just opens as
-    // an ordinary window — see README.md.
+    // Fullscreen is a Machine setting (on by default). main.cpp turns it
+    // off here when a personal Hyprland rule for the viewer
+    // (contrib/hypr/omavm-viewer.lua) already makes it fullscreen: two
+    // independent requests act as a toggle and cancel each other.
+    Component.onCompleted: {
+        if (displayFullscreen)
+            showFullScreen()
+        else
+            show()
+    }
 
     // Clipboard sharing is a Machine Settings toggle (opt-out, on by
     // default — see gui/SettingsDialog.qml), not a per-window checkbox:

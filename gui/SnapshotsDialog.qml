@@ -6,6 +6,7 @@ import QtQuick.Layouts
 Dialog {
     id: dialog
     property var environment: ({})
+    readonly property bool busy: !!(backend.busyEnvironments && backend.busyEnvironments[environment.name])
     readonly property var snapshots: environment.snapshots || []
     // Mirrors internal/core/environment.go's defaultSnapshotLimit: the CLI
     // only emits snapshot_limit in JSON when it was explicitly customized
@@ -68,6 +69,7 @@ Dialog {
             TextField {
                 id: newLabel
                 Layout.fillWidth: true
+                Accessible.name: qsTr("Snapshot label")
                 placeholderText: qsTr("Label (e.g. Before system upgrade)")
                 selectByMouse: true
                 enabled: !dialog.creating
@@ -77,7 +79,7 @@ Dialog {
                 id: createButton
                 text: dialog.creating ? qsTr("Creating…") : qsTr("Create")
                 highlighted: true
-                enabled: !dialog.creating && !backend.busy && newLabel.text.trim().length > 0
+                enabled: !dialog.creating && !dialog.busy && newLabel.text.trim().length > 0
                 onClicked: {
                     dialog.createError = ""
                     dialog.creating = true
@@ -158,7 +160,7 @@ Dialog {
                 RowLayout {
                     anchors.fill: parent
                     spacing: 10
-                    Icon { source: "qrc:/icons/history.svg"; color: backend.themeAccent; iconSize: 20 }
+                    Icon { source: "qrc:/icons/history.svg"; color: backend.themeAccentText; iconSize: 20 }
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 2
@@ -169,15 +171,22 @@ Dialog {
                             elide: Text.ElideRight
                         }
                         Label {
+                            Layout.fillWidth: true
+                            // Taken while running without guest tools: the
+                            // guest couldn't flush its disks first.
                             text: Qt.formatDateTime(new Date(modelData.created_at), "yyyy-MM-dd hh:mm")
+                                  + (modelData.crash_consistent
+                                     ? qsTr(" · taken while running without guest tools: going to it is like restarting after a power cut")
+                                     : "")
                             color: backend.themeMuted
                             font.pixelSize: 12
+                            wrapMode: Text.WordWrap
                         }
                     }
                     Button {
                         objectName: "goToButton"
                         text: qsTr("Go To")
-                        enabled: !backend.busy && dialog.canGoTo
+                        enabled: !dialog.busy && dialog.canGoTo
                         onClicked: {
                             confirmGoTo.snapshotId = modelData.id
                             confirmGoTo.snapshotLabel = modelData.label
@@ -186,7 +195,7 @@ Dialog {
                     }
                     ToolButton {
                         text: qsTr("Delete")
-                        enabled: !backend.busy
+                        enabled: !dialog.busy
                         onClicked: {
                             confirmDeleteSnapshot.snapshotId = modelData.id
                             confirmDeleteSnapshot.snapshotLabel = modelData.label

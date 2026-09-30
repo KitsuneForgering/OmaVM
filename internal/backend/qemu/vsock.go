@@ -161,14 +161,14 @@ func (b *Backend) Exec(ctx context.Context, env core.Environment, args []string)
 }
 
 func (b *Backend) ssh(ctx context.Context, env core.Environment, login string, command []string, batch bool) error {
-	running, err := b.isRunning(env.Name)
+	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return err
 	}
 	if !running {
 		return core.Invalidf("%s is not running; start it first", env.Name)
 	}
-	cid, ok := b.runningCID(env.Name)
+	cid, ok := b.runningCID(b.key(env))
 	if !ok {
 		if env.Settings.SSHDisabled {
 			return core.Unsupportedf("SSH is turned off for %s (omavm settings %s --ssh=true, then restart it)", env.Name, env.Name)

@@ -45,6 +45,50 @@ func (b *Backend) Remove(ctx context.Context, env core.Environment) error {
 	return b.forEnv(env).Remove(ctx, env)
 }
 
+// Statuses asks the Distrobox engine once for every Box it owns; Boxes of
+// the legacy direct engine are asked one by one.
+func (b *Backend) Statuses(ctx context.Context, envs []core.Environment) (map[string]core.Status, error) {
+	statuses := make(map[string]core.Status, len(envs))
+	var primary []core.Environment
+	for _, env := range envs {
+		if b.forEnv(env) == b.primary {
+			primary = append(primary, env)
+			continue
+		}
+		status, err := b.legacy.Status(ctx, env)
+		if err != nil {
+			status = core.Status{State: core.StateUnknown, Detail: err.Error()}
+		}
+		statuses[env.ID] = status
+	}
+	if len(primary) == 0 {
+		return statuses, nil
+	}
+	lister, ok := b.primary.(core.StatusLister)
+	if !ok {
+		for _, env := range primary {
+			status, err := b.primary.Status(ctx, env)
+			if err != nil {
+				status = core.Status{State: core.StateUnknown, Detail: err.Error()}
+			}
+			statuses[env.ID] = status
+		}
+		return statuses, nil
+	}
+	batch, err := lister.Statuses(ctx, primary)
+	for _, env := range primary {
+		status, found := batch[env.ID]
+		switch {
+		case err != nil:
+			status = core.Status{State: core.StateUnknown, Detail: err.Error()}
+		case !found:
+			status = core.Status{State: core.StateUnknown}
+		}
+		statuses[env.ID] = status
+	}
+	return statuses, nil
+}
+
 // appExporter resolves env's backend as an AppExporter, or ErrUnsupported
 // when it's routed to the legacy engine — distrobox-export (the Blend
 // Mode base) is a Distrobox-native feature the legacy container adapter

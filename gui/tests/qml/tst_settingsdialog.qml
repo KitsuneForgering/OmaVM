@@ -26,7 +26,7 @@ Item {
             return {
                 cpusTouched: call[4], memoryTouched: call[6],
                 shareClipboard: call[12], travelMode: call[13], vulkan: call[14],
-                launcher: call[16], ssh: call[17]
+                launcher: call[16], ssh: call[17], fullscreen: call[18]
             }
         }
 
@@ -46,6 +46,7 @@ Item {
             compare(saved.vulkan, true)
             compare(saved.launcher, true)
             compare(saved.ssh, true)
+            compare(saved.fullscreen, true)
         }
 
         // Repeater delegates live in the visual tree, not among QObject
@@ -91,12 +92,13 @@ Item {
         }
 
         function test_optOutsRoundTrip() {
-            const saved = saveUntouched({ clipboard_disabled: true, travel_mode_disabled: true, vulkan_disabled: true, launcher_disabled: true, ssh_disabled: true })
+            const saved = saveUntouched({ clipboard_disabled: true, travel_mode_disabled: true, vulkan_disabled: true, launcher_disabled: true, ssh_disabled: true, fullscreen_disabled: true })
             compare(saved.shareClipboard, false)
             compare(saved.travelMode, false)
             compare(saved.vulkan, false)
             compare(saved.launcher, false)
             compare(saved.ssh, false)
+            compare(saved.fullscreen, false)
         }
     }
 }

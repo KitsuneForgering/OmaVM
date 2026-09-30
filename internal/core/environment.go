@@ -86,7 +86,18 @@ type Environment struct {
 	Kind      EnvironmentKind     `json:"kind"`
 	Settings  EnvironmentSettings `json:"settings,omitempty"`
 	Snapshots []Snapshot          `json:"snapshots,omitempty"`
+	// Operation is set while the environment is being created or removed:
+	// the registry keeps it for the whole backend call (so the name is
+	// taken and other clients can show it) without holding the registry
+	// locked meanwhile.
+	Operation string `json:"operation,omitempty"`
 }
+
+// Operations that take an environment out of normal use while they run.
+const (
+	OperationCreating = "creating"
+	OperationRemoving = "removing"
+)
 
 // Snapshot is a point-in-time state of an Environment the user can return
 // to. Label is the significant, user-facing text (UX Principle #9:
@@ -97,6 +108,10 @@ type Snapshot struct {
 	ID        string    `json:"id"`
 	Label     string    `json:"label"`
 	CreatedAt time.Time `json:"created_at"`
+	// CrashConsistent marks a snapshot of a running environment whose
+	// guest couldn't flush its disks first (no guest agent): going to it
+	// is like booting after a power cut.
+	CrashConsistent bool `json:"crash_consistent,omitempty"`
 }
 
 // defaultSnapshotLimit caps automatic snapshot history per Environment
@@ -139,6 +154,9 @@ type EnvironmentSettings struct {
 	// key: whoever set that wanted it on, which is now the default, so
 	// the old key needs no migration.
 	EmptyWorkspaceDisabled bool `json:"empty_workspace_disabled,omitempty"`
+	// FullscreenDisabled opens a Machine's display in a window instead of
+	// fullscreen, which is the default.
+	FullscreenDisabled bool `json:"fullscreen_disabled,omitempty"`
 }
 
 func (e Environment) EffectiveSettings() EnvironmentSettings {
@@ -186,4 +204,5 @@ type SettingsPatch struct {
 	Launcher             *bool
 	SSH                  *bool
 	OpenInEmptyWorkspace *bool
+	Fullscreen           *bool
 }

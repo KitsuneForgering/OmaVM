@@ -11,13 +11,34 @@
 #include <QQuickWindow>
 
 namespace {
+// Placement shared by both viewer modes, done before the window exists so
+// it opens on the workspace switched to. Returns false when a window for
+// this environment is already open (and was focused): no second one.
+bool placeViewer(const QString &title, bool emptyWorkspace) {
+  if (!emptyWorkspace)
+    return true;
+  switch (placeInEmptyWorkspace(title)) {
+  case WorkspacePlacement::AlreadyFocusedExisting:
+    return false;
+  case WorkspacePlacement::Unavailable:
+    qWarning("omavm: no empty workspace found; opening on the current one");
+    break;
+  case WorkspacePlacement::NotApplicable:
+  case WorkspacePlacement::LaunchNormally:
+    break;
+  }
+  return true;
+}
+
 // A Machine's display: a single view of QEMU's D-Bus display, launched by
 // the qemu backend's Open() rather than by the user picking it from the
 // Experience Center. Kept as a mode of this same binary so there's one
 // Qt app to build and package instead of two. connectionFd is a socket
 // QEMU already accepted (the backend hands it over as an inherited fd).
 int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
-              bool shareClipboard) {
+              bool shareClipboard, bool emptyWorkspace, bool fullscreen) {
+  if (!placeViewer(title, emptyWorkspace))
+    return 0;
   app.setApplicationName(QStringLiteral("dev.omavm.viewer"));
   app.setDesktopFileName(QStringLiteral("dev.omavm.viewer"));
   // Guest frames are imported as dma-bufs through EGL into GL textures.
@@ -36,6 +57,11 @@ int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
   // not a per-window checkbox the user has to remember to re-check.
   engine.rootContext()->setContextProperty(
       QStringLiteral("displayShareClipboard"), shareClipboard);
+  // A personal window rule for the viewer (contrib/hypr/omavm-viewer.lua)
+  // already makes it fullscreen: asking too would toggle it back off.
+  engine.rootContext()->setContextProperty(
+      QStringLiteral("displayFullscreen"),
+      fullscreen && !hasPersonalViewerRule(hyprConfigDir()));
   engine.load(QUrl(QStringLiteral("qrc:/Viewer.qml")));
   if (engine.rootObjects().isEmpty())
     return -1;
@@ -49,7 +75,10 @@ int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
 // "dev.omavm.viewer" app id so the same opt-in Hyprland window rule
 // (contrib/hypr/omavm-viewer.lua) covers both.
 int runTerminal(QGuiApplication &app, const QString &envName,
-                const QString &title, bool shareClipboard) {
+                const QString &title, bool shareClipboard,
+                bool emptyWorkspace) {
+  if (!placeViewer(title, emptyWorkspace))
+    return 0;
   app.setApplicationName(QStringLiteral("dev.omavm.viewer"));
   app.setDesktopFileName(QStringLiteral("dev.omavm.viewer"));
 
@@ -99,19 +128,30 @@ int main(int argc, char *argv[]) {
   parser.addOption(viewerOption);
   parser.addOption(terminalOption);
   parser.addOption(titleOption);
+  QCommandLineOption emptyWorkspaceOption(
+      QStringLiteral("empty-workspace"),
+      QStringLiteral("Open in an empty Hyprland workspace"),
+      QStringLiteral("bool"), QStringLiteral("true"));
+  QCommandLineOption fullscreenOption(
+      QStringLiteral("fullscreen"),
+      QStringLiteral("Open a Machine's display fullscreen"),
+      QStringLiteral("bool"), QStringLiteral("true"));
   parser.addOption(shareClipboardOption);
+  parser.addOption(emptyWorkspaceOption);
+  parser.addOption(fullscreenOption);
   parser.process(app);
 
+  const auto on = [&parser](const QCommandLineOption &option) {
+    return parser.value(option) != QStringLiteral("false");
+  };
   if (parser.isSet(viewerOption))
     return runViewer(app, parser.value(viewerOption).toInt(),
-                     parser.value(titleOption),
-                     parser.value(shareClipboardOption) !=
-                         QStringLiteral("false"));
+                     parser.value(titleOption), on(shareClipboardOption),
+                     on(emptyWorkspaceOption), on(fullscreenOption));
   if (parser.isSet(terminalOption))
     return runTerminal(app, parser.value(terminalOption),
-                       parser.value(titleOption),
-                       parser.value(shareClipboardOption) !=
-                           QStringLiteral("false"));
+                       parser.value(titleOption), on(shareClipboardOption),
+                       on(emptyWorkspaceOption));
 
   app.setApplicationName(QStringLiteral("dev.omavm.app"));
   app.setDesktopFileName(QStringLiteral("dev.omavm.app"));

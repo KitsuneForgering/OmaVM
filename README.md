@@ -221,9 +221,26 @@ inside a Linux guest, mount it with `mount -t virtiofs omavm-share /mnt/omavm-sh
 `list` and `status` accept `--json` (in any position, e.g. both
 `omavm list --json` and `omavm status radic --json` work) for
 structured output aimed at agents, scripts, and the Quickshell bar
-widget below.
+widget below. `omavm list --status --json` adds every environment's
+current state (and, for Machines, whether guest tools answer) in one
+call, asking the container engine once for all Boxes; the GUI refreshes
+with it. The JSON shapes are covered by golden files in
+`cmd/omavm/testdata`: changing them is a deliberate, visible diff.
 
 ## Machines
+
+Every Machine has a 1 TiB virtual disk. It is a sparse qcow2 file: it
+starts at a few hundred KiB and takes space on your computer only as the
+guest writes to it, up to 1 TiB, so installers never run short. Machines
+created with a smaller disk grow to 1 TiB the next time they start (so
+does one sent back to a snapshot taken before that); inside an installed
+guest, the new space shows up as unpartitioned until you extend its
+partition. The guest can believe in more space than your computer
+has; if your disk fills up, the Machine is paused (its card says why) and
+**Resume** continues it once you free some space.
+
+An installed Machine whose ISO was deleted or moved still starts, from its
+disk.
 
 Machines try the installed disk before the ISO, falling back to installation
 media while the disk is not bootable. After installation, enable **Installation
@@ -309,10 +326,15 @@ optional and never enabled automatically — see
 rule applies to a Box's terminal viewer too, since it shares the same
 `dev.omavm.viewer` app id — no separate rule needed for Boxes.
 
+Without such a rule, a Machine's display opens fullscreen by default
+(**Settings → Automation → Open the display fullscreen**, or `omavm
+settings NAME --fullscreen=false` to open it as a window).
+
 Separately, **Settings → Automation → Open in an empty workspace** (on by
 default for both Machines and Boxes; `omavm settings NAME
 --open-in-empty-workspace=false` turns it off) switches to a fresh, empty workspace
-on the active monitor right before opening that environment, and — if a
+on the active monitor right before opening that environment — however it
+is opened: the Experience Center, its launcher entry or `omavm open` — and — if a
 viewer/terminal for it is already open somewhere — switches to its
 workspace instead of opening a second one. This needs Omarchy's
 Lua-configured Hyprland specifically (it queries `hl.get_workspaces()`/
@@ -374,6 +396,25 @@ any still exist, it prints a note instead of silently leaving them
 behind unmentioned. To remove those too, run `make uninstall-environments`
 separately; it lists everything that will be deleted and asks for
 confirmation (`CONFIRM=1` skips the prompt for scripted use).
+
+### From OmaStore
+
+OmaVM is listed in OmaStore through [`omastore.toml`](omastore.toml):
+
+```bash
+omastore install KitsuneSemCalda/OmaVM
+```
+
+The store installs the release tarball under your home directory and puts
+`omavm-gui` (the Experience Center) on `PATH`. The `omavm` CLI ships next to
+it in the same `bin/` directory, where the Experience Center, launcher
+entries and viewers find it; to use it from a shell, add that directory to
+`PATH` or use `make install` instead. It uses your system's Qt 6, which
+Omarchy already has.
+
+Releases get their tarball from `.github/workflows/release.yml` on every
+`v*` tag; `make dist VERSION=x.y.z` builds the same one locally
+(`build/dist/omavm-x.y.z-x86_64-linux.tar.gz`, with a `.sha256`).
 
 ## Logs
 

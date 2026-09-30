@@ -173,6 +173,11 @@ private:
   qint64 m_childPid = -1; // pid_t, kept as qint64 to avoid a <sys/types.h>
                           // dependency in this header — see terminal.cpp
   QSocketNotifier *m_notifier = nullptr;
+  // Input the PTY hasn't taken yet (it is non-blocking, and a program
+  // that isn't reading fills it): written as soon as it takes more.
+  QByteArray m_pendingInput;
+  QSocketNotifier *m_writeNotifier = nullptr;
+  void flushInput();
 
   int m_cols = 80;
   int m_rows = 24;

@@ -396,6 +396,7 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	ssh := fs.Bool("ssh", false, "reach the Machine with omavm ssh/exec over a local channel any program on this computer can use, Boxes included (Machines only, on by default)")
 	launcher := fs.Bool("launcher", false, "list this environment in the application launcher (on by default)")
 	openInEmptyWorkspace := fs.Bool("open-in-empty-workspace", false, "open this environment in an empty Hyprland workspace instead of the current one (on by default; requires Omarchy's Lua-based Hyprland)")
+	fullscreen := fs.Bool("fullscreen", false, "open the Machine's display fullscreen (Machines only, on by default)")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -405,6 +406,7 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	}
 	patch := core.SettingsPatch{}
 	changed := false
+	modeFlags := 0
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "disconnect-iso":
@@ -443,21 +445,24 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 		case "open-in-empty-workspace":
 			patch.OpenInEmptyWorkspace = openInEmptyWorkspace
 			changed = true
+		case "fullscreen":
+			patch.Fullscreen = fullscreen
+			changed = true
 		case "shared-path":
 			patch.SharedPath = sharedPath
 			changed = true
 		case "shared-read-only":
-			if *sharedWritable {
-				return
-			}
 			patch.SharedReadOnly = sharedReadOnly
+			modeFlags++
 			changed = true
 		case "shared-writable":
-			patch.SharedReadOnly = new(bool)
+			readOnly := !*sharedWritable
+			patch.SharedReadOnly = &readOnly
+			modeFlags++
 			changed = true
 		}
 	})
-	if *sharedReadOnly && *sharedWritable {
+	if modeFlags > 1 {
 		return errors.New("settings: choose only one of --shared-read-only or --shared-writable")
 	}
 	var settings core.EnvironmentSettings
@@ -480,6 +485,7 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 		fmt.Printf("hardware: %d CPUs, %d MiB memory\n", settings.CPUs, settings.MemoryMiB)
 		fmt.Printf("installation media disconnected on next start: %t\n", settings.DisconnectISO)
 		fmt.Printf("vulkan acceleration (when the host supports it): %t\n", !settings.VulkanDisabled)
+		fmt.Printf("open the display fullscreen: %t\n", !settings.FullscreenDisabled)
 		fmt.Printf("ssh (reachable by any program on this computer, Boxes included): %t\n", !settings.SSHDisabled)
 	}
 	fmt.Printf("share clipboard: %t\n", !settings.ClipboardDisabled)
@@ -545,7 +551,29 @@ func cmdSSH(ctx context.Context, svc *core.Service, args []string) error {
 }
 
 func cmdList(ctx context.Context, svc *core.Service, args []string) error {
-	_, jsonOut := extractBoolFlag(args, "json")
+	args, jsonOut := extractBoolFlag(args, "json")
+	_, withStatus := extractBoolFlag(args, "status")
+
+	if withStatus {
+		states, err := svc.ListWithStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			if states == nil {
+				states = []core.EnvironmentState{}
+			}
+			return json.NewEncoder(os.Stdout).Encode(states)
+		}
+		if len(states) == 0 {
+			fmt.Println("no environments yet — try: omavm create --name <name> --kind box --image <distro>")
+			return nil
+		}
+		for _, s := range states {
+			fmt.Printf("%s\t%s\t%s\t%s\n", s.Name, s.Kind, s.Status.State, s.Image)
+		}
+		return nil
+	}
 
 	envs, err := svc.List(ctx)
 	if err != nil {
@@ -652,8 +680,9 @@ commands:
   host [--json]                                            show what this computer offers Machines
   settings NAME [--description TEXT] [--cpus N] [--color C] view or change settings
     [--share-clipboard=BOOL] [--travel-mode=BOOL]           (on by default)
-    [--vulkan=BOOL] [--ssh=BOOL]                           (Machines only, on by default)
+    [--vulkan=BOOL] [--ssh=BOOL] [--fullscreen=BOOL]       (Machines only, on by default)
     [--launcher=BOOL]                                      list in the app launcher (on by default)
+    [--open-in-empty-workspace=BOOL]                       open in an empty workspace (on by default)
   preview NAME                                             capture a Machine screenshot
   snapshot create NAME --label TEXT                        capture the environment's current state
   snapshot list NAME [--json]                              list snapshots
@@ -666,5 +695,5 @@ commands:
   ssh NAME [--user LOGIN] [-- CMD...]                      open a shell in a Machine (guest needs systemd 256+
                                                            and sshd; any program here can reach it, Boxes too)
   rm NAME                                                  remove an environment
-  list [--json]                                            list known environments`)
+  list [--status] [--json]                                 list known environments, with their state`)
 }

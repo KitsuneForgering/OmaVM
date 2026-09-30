@@ -15,6 +15,10 @@ const (
 	StateStopped  State = "stopped"
 	StateError    State = "error"
 	StateUnknown  State = "unknown"
+	// StateCreating and StateRemoving are the Core's own: the environment
+	// is in the registry while its Backend creates or removes it.
+	StateCreating State = "creating"
+	StateRemoving State = "removing"
 )
 
 // Status is the observed state of an Environment as reported by its Backend.
@@ -45,6 +49,16 @@ type Backend interface {
 	Status(ctx context.Context, env Environment) (Status, error)
 	Exec(ctx context.Context, env Environment, args []string) error
 	Remove(ctx context.Context, env Environment) error
+}
+
+// StatusLister is an optional Backend capability: the status of many
+// environments from one query to the engine, instead of one per
+// environment. The GUI asks for every status every few seconds, and a
+// container engine answers for all its containers as cheaply as for one.
+// The result is keyed by Environment.ID; an environment missing from it is
+// reported as unknown.
+type StatusLister interface {
+	Statuses(ctx context.Context, envs []Environment) (map[string]Status, error)
 }
 
 // Previewer is an optional Backend capability: a screenshot of the
@@ -88,7 +102,10 @@ type IntegrationReport struct {
 // (e.g. Box today) makes Service.CreateSnapshot/GoToSnapshot/RemoveSnapshot
 // fail with ErrUnsupported rather than pretending to support it.
 type SnapshotManager interface {
-	CreateSnapshot(ctx context.Context, env Environment, tag string) error
+	// CreateSnapshot reports crashConsistent when the snapshot was taken
+	// of a running environment that couldn't be told to flush its disks
+	// first: going to it is like booting after a power cut.
+	CreateSnapshot(ctx context.Context, env Environment, tag string) (crashConsistent bool, err error)
 	GoToSnapshot(ctx context.Context, env Environment, tag string) error
 	RemoveSnapshot(ctx context.Context, env Environment, tag string) error
 }

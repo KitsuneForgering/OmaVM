@@ -146,8 +146,12 @@ func TestSnapshotOfRunningMachineIsDiskOnly(t *testing.T) {
 	env := core.Environment{Name: "guest", Kind: core.Machine}
 	startFakeQEMU(t, b, env.Name)
 	calls := recordQMP(t, b.qmpPath(env.Name))
-	if err := b.CreateSnapshot(context.Background(), env, "before-upgrade"); err != nil {
+	crash, err := b.CreateSnapshot(context.Background(), env, "before-upgrade")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !crash {
+		t.Fatal("without a guest agent the snapshot is crash-consistent and must say so")
 	}
 	if err := b.RemoveSnapshot(context.Background(), env, "before-upgrade"); err != nil {
 		t.Fatal(err)
@@ -191,7 +195,7 @@ func TestSnapshotLifecycleOnStoppedMachine(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := b.CreateSnapshot(ctx, env, "clean-install"); err != nil {
+	if crash, err := b.CreateSnapshot(ctx, env, "clean-install"); err != nil || crash {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
 	out, err := runOutput(ctx, "qemu-img", "snapshot", "-l", b.diskPath(env.Name))
@@ -287,7 +291,11 @@ func TestBootMediaArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := &Backend{stateDir: dir}
-	env := core.Environment{Name: "guest", Kind: core.Machine, Image: "/missing/installer.iso"}
+	iso := filepath.Join(t.TempDir(), "installer.iso")
+	if err := os.WriteFile(iso, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := core.Environment{Name: "guest", Kind: core.Machine, Image: iso}
 	for _, disconnect := range []bool{false, true} {
 		env.Settings.DisconnectISO = disconnect
 		if err := b.Start(context.Background(), env); err != nil {

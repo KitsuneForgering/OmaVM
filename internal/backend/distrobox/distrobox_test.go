@@ -33,9 +33,9 @@ func TestCreateUsesStableUniqueDistroboxName(t *testing.T) {
 	}
 }
 
-func TestStatusParsesDistroboxList(t *testing.T) {
+func TestStatusComesFromTheContainerEngine(t *testing.T) {
 	bin := t.TempDir()
-	writeDistrobox(t, bin, `printf 'ID | NAME | STATUS | IMAGE\n1 | omavm-fast-12345678 | Up 2 minutes | fedora:latest\n'`)
+	writeEngine(t, bin, "omavm-fast-12345678\trunning\tUp 2 minutes\n")
 	t.Setenv("PATH", bin)
 
 	status, err := New().Status(context.Background(), core.Environment{ID: "12345678", Name: "fast"})
@@ -52,6 +52,17 @@ func TestMissingDistroboxReturnsInstallHint(t *testing.T) {
 	err := New().Create(context.Background(), core.Environment{Name: "fast", Image: "fedora"})
 	if err == nil || !strings.Contains(err.Error(), "sudo pacman -S distrobox") {
 		t.Fatalf("expected install hint, got %v", err)
+	}
+}
+
+// writeEngine fakes Podman answering `podman ps` with lines of name, state
+// and status, as listContainers asks for them.
+func writeEngine(t *testing.T, dir, ps string) {
+	t.Helper()
+	t.Setenv("DBX_CONTAINER_MANAGER", "podman")
+	script := "#!/bin/sh\n[ \"$1\" = ps ] || exit 1\nprintf '%s' '" + ps + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "podman"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -98,8 +109,8 @@ func TestBoxNameIsAValidContainerName(t *testing.T) {
 func TestMissingContainerIsNeverRecreatedByEnter(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "calls")
-	writeDistrobox(t, bin, `echo "$1" >> "$OMAVM_TEST_LOG"
-if [ "$1" = list ]; then printf 'ID | NAME | STATUS | IMAGE\n1 | omavm-other-99999999 | Up | fedora\n'; fi`)
+	writeDistrobox(t, bin, `echo "$1" >> "$OMAVM_TEST_LOG"`)
+	writeEngine(t, bin, "omavm-other-99999999\trunning\tUp\n")
 	t.Setenv("PATH", bin)
 	t.Setenv("OMAVM_TEST_LOG", log)
 	env := core.Environment{ID: "12345678", Name: "ubuntu", Image: "ubuntu:latest"}
@@ -126,5 +137,81 @@ if [ "$1" = list ]; then printf 'ID | NAME | STATUS | IMAGE\n1 | omavm-other-999
 	}
 	if err := b.Stop(context.Background(), env); err != nil {
 		t.Fatalf("Stop of a missing container must be a no-op: %v", err)
+	}
+}
+
+func TestParseContainersReadsPodmanAndDockerStates(t *testing.T) {
+	got := parseContainers("omavm-a-1\trunning\tUp 3 minutes\nomavm-b-2,alias\texited\tExited (0) 2 hours ago\nomavm-c-3\tpaused\tUp (Paused)\n\n")
+	want := map[string]core.State{"omavm-a-1": core.StateRunning, "omavm-b-2": core.StateStopped, "alias": core.StateStopped, "omavm-c-3": core.StatePaused}
+	for name, state := range want {
+		if got[name].State != state {
+			t.Errorf("%s: %q, want %q", name, got[name].State, state)
+		}
+	}
+	if got["omavm-a-1"].Detail != "Up 3 minutes" {
+		t.Errorf("detail = %q", got["omavm-a-1"].Detail)
+	}
+}
+
+func TestStatusesAsksTheEngineOnce(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "calls")
+	t.Setenv("DBX_CONTAINER_MANAGER", "podman")
+	script := "#!/bin/sh\necho call >> \"$OMAVM_TEST_LOG\"\nprintf 'omavm-a-11111111\\trunning\\tUp\\nomavm-b-22222222\\texited\\tExited\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "podman"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("OMAVM_TEST_LOG", log)
+
+	envs := []core.Environment{{ID: "11111111", Name: "a"}, {ID: "22222222", Name: "b"}, {ID: "33333333", Name: "c"}}
+	got, err := New().Statuses(context.Background(), envs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["11111111"].State != core.StateRunning || got["22222222"].State != core.StateStopped || got["33333333"].State != core.StateError {
+		t.Fatalf("unexpected statuses: %#v", got)
+	}
+	calls, _ := os.ReadFile(log)
+	if n := strings.Count(string(calls), "call"); n != 1 {
+		t.Fatalf("podman called %d times for three Boxes, want once", n)
+	}
+}
+
+// Regression: every status poll also ran `docker ps`, which starts the
+// Docker daemon on hosts where only docker.socket is enabled, although
+// Distrobox only uses Docker without Podman or when configured to. Docker
+// is asked only for Boxes Podman doesn't have.
+func TestDockerIsOnlyAskedForBoxesPodmanDoesntHave(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "calls")
+	t.Setenv("DBX_CONTAINER_MANAGER", "")
+	t.Setenv("PATH", bin)
+	t.Setenv("OMAVM_TEST_LOG", log)
+	for engine, ps := range map[string]string{
+		"podman": `omavm-a-11111111\trunning\tUp\n`,
+		"docker": `omavm-b-22222222\texited\tExited\n`,
+	} {
+		script := "#!/bin/sh\necho " + engine + " >> \"$OMAVM_TEST_LOG\"\nprintf '" + ps + "'\n"
+		if err := os.WriteFile(filepath.Join(bin, engine), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := func() string { data, _ := os.ReadFile(log); _ = os.Remove(log); return string(data) }
+
+	got, err := New().Statuses(context.Background(), []core.Environment{{ID: "11111111", Name: "a"}})
+	if err != nil || got["11111111"].State != core.StateRunning {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if c := calls(); strings.Contains(c, "docker") {
+		t.Fatalf("docker asked although Podman has every Box:\n%s", c)
+	}
+
+	got, err = New().Statuses(context.Background(), []core.Environment{{ID: "11111111", Name: "a"}, {ID: "22222222", Name: "b"}})
+	if err != nil || got["22222222"].State != core.StateStopped {
+		t.Fatalf("a Box in Docker was not found: %v, %v", got, err)
+	}
+	if c := calls(); !strings.Contains(c, "docker") {
+		t.Fatalf("docker not asked for the Box Podman doesn't have:\n%s", c)
 	}
 }

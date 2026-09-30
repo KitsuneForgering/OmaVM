@@ -40,6 +40,48 @@ QColor readableTextColor(const QColor &preferred, const QColor &background,
              : white;
 }
 
+double minimumContrastRatio(const QColor &text, const QColor &background,
+                            const QColor &surface) {
+  return minimumContrast(text, background, surface);
+}
+
+QColor accessibleColor(const QColor &preferred, const QColor &background,
+                       const QColor &surface, double ratio) {
+  if (!preferred.isValid())
+    return readableTextColor(preferred, background, surface);
+  if (minimumContrast(preferred, background, surface) >= ratio)
+    return preferred;
+  // Toward whichever extreme contrasts more with both surfaces. Mixing in
+  // more of it only increases the contrast, so the smallest mix that is
+  // enough can be found by bisection.
+  const QColor black(Qt::black), white(Qt::white);
+  const QColor target = minimumContrast(white, background, surface) >=
+                                minimumContrast(black, background, surface)
+                            ? white
+                            : black;
+  const auto mix = [&](double t) {
+    return QColor::fromRgbF(
+        float(preferred.redF() + (target.redF() - preferred.redF()) * t),
+        float(preferred.greenF() + (target.greenF() - preferred.greenF()) * t),
+        float(preferred.blueF() + (target.blueF() - preferred.blueF()) * t));
+  };
+  if (minimumContrast(target, background, surface) < ratio)
+    return target; // the best there is
+  double low = 0, high = 1;
+  for (int i = 0; i < 24; ++i) {
+    const double middle = (low + high) / 2;
+    (minimumContrast(mix(middle), background, surface) >= ratio ? high : low) =
+        middle;
+  }
+  // Rounding to 8-bit channels can land just under the ratio.
+  QColor result = mix(high);
+  for (double t = high; minimumContrast(result, background, surface) < ratio &&
+                        t < 1;
+       t = std::min(1.0, t + 0.01))
+    result = mix(t);
+  return result;
+}
+
 QHash<QString, QString> loadColorsToml(const QString &path) {
   QHash<QString, QString> values;
   QFile file(path);

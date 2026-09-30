@@ -15,6 +15,12 @@ card mostra só "Error".
 
 ## Esboço
 
+**Primeiro item implementado (2026-09-29)**, junto com o disco padrão de
+1 TiB esparso: um `io-error` aparece como pausa com o motivo ("o disco
+deste computador está cheio; libere espaço e retome"), e Resume continua a
+Machine. O aviso antes do Start e o redimensionar/compactar abaixo seguem
+como ideia.
+
 - Ao pausar por `io-error` (o `statusFromQMP` já distingue esse estado), o
   Core checa o espaço livre do sistema de arquivos do diretório de estado e
   explica: "o disco do computador encheu; libere espaço e retome".

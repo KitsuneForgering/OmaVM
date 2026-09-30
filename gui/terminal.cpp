@@ -59,6 +59,8 @@ TerminalSession::TerminalSession(QObject *parent) : QObject(parent) {
 TerminalSession::~TerminalSession() {
   if (m_notifier)
     m_notifier->setEnabled(false);
+  if (m_writeNotifier)
+    m_writeNotifier->setEnabled(false);
   if (m_masterFd >= 0)
     ::close(m_masterFd);
   if (m_childPid > 0) {
@@ -134,6 +136,12 @@ void TerminalSession::onReadyRead() {
 }
 
 void TerminalSession::reap() {
+  m_pendingInput.clear();
+  if (m_writeNotifier) {
+    m_writeNotifier->setEnabled(false);
+    m_writeNotifier->deleteLater();
+    m_writeNotifier = nullptr;
+  }
   if (m_notifier) {
     m_notifier->setEnabled(false);
     m_notifier->deleteLater();
@@ -163,9 +171,38 @@ void TerminalSession::reap() {
 void TerminalSession::write(const QByteArray &bytes) {
   if (m_masterFd < 0 || bytes.isEmpty())
     return;
-  const ssize_t written =
-      ::write(m_masterFd, bytes.constData(), static_cast<size_t>(bytes.size()));
-  (void)written;
+  m_pendingInput.append(bytes);
+  flushInput();
+}
+
+void TerminalSession::flushInput() {
+  while (m_masterFd >= 0 && !m_pendingInput.isEmpty()) {
+    const ssize_t written =
+        ::write(m_masterFd, m_pendingInput.constData(),
+                static_cast<size_t>(m_pendingInput.size()));
+    if (written > 0) {
+      m_pendingInput.remove(0, static_cast<qsizetype>(written));
+      continue;
+    }
+    if (written < 0 && errno == EINTR)
+      continue;
+    if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      // Full: wait until the program reads some.
+      if (!m_writeNotifier) {
+        m_writeNotifier =
+            new QSocketNotifier(m_masterFd, QSocketNotifier::Write, this);
+        connect(m_writeNotifier, &QSocketNotifier::activated, this,
+                &TerminalSession::flushInput);
+      }
+      m_writeNotifier->setEnabled(true);
+      return;
+    }
+    // The program is gone; reap() reports it.
+    m_pendingInput.clear();
+    break;
+  }
+  if (m_writeNotifier)
+    m_writeNotifier->setEnabled(false);
 }
 
 void TerminalSession::resize(int cols, int rows) {

@@ -6,6 +6,7 @@ import QtQuick.Layouts
 Dialog {
     id: dialog
     property var environment: ({})
+    readonly property bool busy: !!(backend.busyEnvironments && backend.busyEnvironments[environment.name])
     // True once backend.apps actually reflects this dialog's environment —
     // guards against a slower response for a previously open environment
     // landing after the user has switched to another one (docs/TODO.md P0).
@@ -21,7 +22,7 @@ Dialog {
 
     onOpened: {
         requested = false
-        if (!backend.busy) {
+        if (!dialog.busy) {
             requested = true
             backend.refreshApps(environment.name)
         }
@@ -30,7 +31,7 @@ Dialog {
     Connections {
         target: backend
         function onBusyChanged() {
-            if (!dialog.visible || backend.busy || dialog.requested)
+            if (!dialog.visible || dialog.busy || dialog.requested)
                 return
             dialog.requested = true
             backend.refreshApps(dialog.environment.name)
@@ -50,7 +51,7 @@ Dialog {
 
         RowLayout {
             Layout.fillWidth: true
-            visible: dialog.matches && backend.busy
+            visible: dialog.matches && dialog.busy
             spacing: 8
             BusyIndicator { implicitWidth: 18; implicitHeight: 18; running: true }
             Label { text: qsTr("Refreshing…"); color: backend.themeMuted; font.pixelSize: 12 }
@@ -147,7 +148,7 @@ Dialog {
                         // installed in the Box (docs/TODO.md P1).
                         text: modelData.exported ? qsTr("Remove from menu") : qsTr("Export")
                         highlighted: !modelData.exported
-                        enabled: !backend.busy
+                        enabled: !dialog.busy
                         onClicked: modelData.exported
                             ? backend.unexportApp(dialog.environment.name, modelData.id)
                             : backend.exportApp(dialog.environment.name, modelData.id)

@@ -38,7 +38,6 @@ ApplicationWindow {
             ToolButton {
                 icon.source: "qrc:/icons/add.svg"
                 icon.color: backend.themeForeground
-                enabled: !backend.busy
                 onClicked: createDialog.open()
                 ToolTip.text: qsTr("New Environment")
                 ToolTip.visible: hovered
@@ -48,7 +47,6 @@ ApplicationWindow {
                 id: refreshButton
                 icon.source: "qrc:/icons/refresh.svg"
                 icon.color: backend.themeForeground
-                enabled: !backend.busy
                 // Spins once on a manual click only — not on the silent
                 // background poll (Timer below), which never calls this
                 // handler — so clicking Refresh gets visible feedback
@@ -174,7 +172,8 @@ ApplicationWindow {
 
     BusyIndicator {
         anchors.centerIn: parent
-        running: backend.busy
+        // Loading the list; a card shows its own action.
+        running: backend.busy && backend.environments.length === 0
         opacity: running ? 1 : 0
         visible: opacity > 0
         Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
