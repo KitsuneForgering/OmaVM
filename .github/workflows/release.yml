@@ -1,0 +1,38 @@
+name: Release
+
+# Attaches the portable tarball OmaStore installs (omastore.toml) to the
+# GitHub release of every version tag, creating the release if needed.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  tarball:
+    runs-on: ubuntu-latest
+    # Built on Arch: omavm-gui links the system's Qt 6, and Omarchy follows
+    # Arch's. Ubuntu's older Qt would work too, but only by accident.
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm --needed base-devel git go qt6-base qt6-declarative glib2 libglvnd github-cli
+
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          go test ./...
+          make dist VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            build/dist/omavm-*-x86_64-linux.tar.gz \
+            build/dist/omavm-*-x86_64-linux.tar.gz.sha256

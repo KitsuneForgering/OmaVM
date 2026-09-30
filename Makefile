@@ -2,7 +2,7 @@ PREFIX ?= $(HOME)/.local
 
 QS_PLUGIN_DIR ?= $(HOME)/.config/omarchy/plugins/dev.omavm.bar
 
-.PHONY: build build-cli build-gui test vet fmt fmt-check check run run-gui clean install uninstall uninstall-environments install-quickshell-plugin uninstall-quickshell-plugin test-display test-terminal test-backend test-qml
+.PHONY: dist build build-cli build-gui test vet fmt fmt-check check run run-gui clean install uninstall uninstall-environments install-quickshell-plugin uninstall-quickshell-plugin test-display test-terminal test-backend test-qml
 
 build: build-cli build-gui
 
@@ -64,6 +64,30 @@ run-gui: build-cli build-gui
 
 clean:
 	rm -rf bin build
+
+# Portable release tarball, the asset OmaStore installs (omastore.toml,
+# .github/workflows/release.yml): bin/ holds both binaries side by side,
+# which is how each finds the other, and data/ sits next to it, where
+# internal/desktop looks for the color icons of a run outside /usr. The
+# CLI is static; the GUI uses the system's Qt 6.
+VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+DIST_NAME = omavm-$(VERSION)-x86_64-linux
+
+dist: build-gui
+	@test -n "$(VERSION)" || { echo "set VERSION=x.y.z"; exit 1; }
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/omavm ./cmd/omavm
+	rm -rf build/dist && mkdir -p build/dist/$(DIST_NAME)
+	install -Dm755 bin/omavm build/dist/$(DIST_NAME)/bin/omavm
+	install -Dm755 bin/omavm-gui build/dist/$(DIST_NAME)/bin/omavm-gui
+	install -Dm644 -t build/dist/$(DIST_NAME)/data/icons/colors data/icons/colors/*.svg
+	install -Dm644 data/icons/dev.omavm.app.svg build/dist/$(DIST_NAME)/data/icons/dev.omavm.app.svg
+	install -Dm644 data/dev.omavm.app.desktop build/dist/$(DIST_NAME)/data/dev.omavm.app.desktop
+	install -Dm644 -t build/dist/$(DIST_NAME) LICENSE README.md
+	@# Flat: bin/omavm-gui is the path omastore.toml names, with no
+	@# versioned top directory in front of it.
+	tar -C build/dist/$(DIST_NAME) -czf build/dist/$(DIST_NAME).tar.gz bin data LICENSE README.md
+	cd build/dist && sha256sum $(DIST_NAME).tar.gz > $(DIST_NAME).tar.gz.sha256
+	@echo "build/dist/$(DIST_NAME).tar.gz"
 
 # User-level install (no root): binaries on PATH, a .desktop entry so
 # omavm-gui shows up in the app launcher/taskbar with its own icon, icon
