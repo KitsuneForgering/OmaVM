@@ -115,6 +115,9 @@ Dialog {
                 implicitHeight: 44
                 objectName: "colorSwatch-none"
                 Accessible.name: qsTr("No color")
+                // One color among several: announced as a radio button, so
+                // it reads as checkable on every Qt version.
+                Accessible.role: Accessible.RadioButton
                 // The selection is only drawn as a thicker border, so the
                 // button itself is checkable: with a screen reader active,
                 // Qt announces the control's own checked state and ignores
@@ -144,6 +147,7 @@ Dialog {
                     implicitHeight: 44
                     objectName: "colorSwatch-" + modelData
                     Accessible.name: modelData
+                    Accessible.role: Accessible.RadioButton
                     checkable: true
                     checked: dialog.selectedColor === modelData
                     contentItem: Rectangle {

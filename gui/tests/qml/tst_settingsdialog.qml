@@ -84,10 +84,15 @@ Item {
             for (const swatch of [none, blue, red])
                 verify(swatch.width >= 44 && swatch.height >= 44,
                        swatch.objectName + " needs a 44×44 pointer target")
-            verify(blue.Accessible.checkable)
-            verify(blue.Accessible.checked, "blue is the selected color")
-            verify(!red.Accessible.checked)
-            verify(!none.Accessible.checked)
+            // As a screen reader gets it, not the QML attached property:
+            // with accessibility active Qt announces the control's own
+            // state, which older Qt (6.4) and newer disagree on otherwise.
+            const state = swatch => backend.accessibleState(swatch)
+            verify(state(blue).checkable)
+            verify(state(blue).checked, "blue is the selected color")
+            verify(!state(red).checked)
+            verify(!state(none).checked)
+            compare(state(blue).name, "blue")
             dialog.destroy()
         }
 

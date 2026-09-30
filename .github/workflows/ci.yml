@@ -21,7 +21,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qt6-base-dev qt6-declarative-dev qmake6 libglib2.0-dev libegl-dev \
             qml6-module-qtquick-controls qml6-module-qtquick-layouts \
-            qml6-module-qtquick-templates qml6-module-qttest qml6-module-qtquick-window
+            qml6-module-qtquick-templates qml6-module-qttest qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript qml6-module-qtquick-dialogs
 
       - name: gofmt
         run: |

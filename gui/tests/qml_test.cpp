@@ -43,6 +43,28 @@ public:
     return problems;
   }
 
+  // What a screen reader reads for item: its name and whether it is
+  // checkable and checked.
+  Q_INVOKABLE QVariantMap accessibleState(QQuickItem *item) const {
+    QAccessibleInterface *node = QAccessible::queryAccessibleInterface(item);
+    if (!node)
+      return {};
+    const QAccessible::State state = node->state();
+    return {{QStringLiteral("name"), node->text(QAccessible::Name)},
+            {QStringLiteral("checkable"), bool(state.checkable)},
+            {QStringLiteral("checked"), bool(state.checked)}};
+  }
+
+  static bool focusableWithin(QAccessibleInterface *node) {
+    if (node->state().focusable)
+      return true;
+    for (int i = 0; i < node->childCount(); ++i)
+      if (QAccessibleInterface *child = node->child(i))
+        if (focusableWithin(child))
+          return true;
+    return false;
+  }
+
   static void audit(QAccessibleInterface *node, const QString &path,
                     QStringList &problems) {
     const QAccessible::State state = node->state();
@@ -70,7 +92,10 @@ public:
       if (name.isEmpty() &&
           (state.focusable || role != QAccessible::EditableText))
         problems << QStringLiteral("no accessible name: %1").arg(here);
-      if (!state.disabled && !state.focusable && role != QAccessible::MenuItem)
+      // Focus may land on a part of a composite control (Qt 6.4 puts a
+      // SpinBox's focus on its text field and marks only that focusable).
+      if (!state.disabled && !focusableWithin(node) &&
+          role != QAccessible::MenuItem)
         problems << QStringLiteral("not reachable by keyboard: %1 \"%2\"")
                         .arg(here, name);
       break;
