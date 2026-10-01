@@ -74,7 +74,7 @@ func (s *Service) backendFor(kind EnvironmentKind) (Backend, error) {
 // validateEnvironmentName rejects names that would be unsafe once a
 // Backend turns them into part of a filesystem path. Machines created
 // before their directory was named by ID still live under their name
-// (internal/backend/qemu's key()), where ".." or "/" would let it escape
+// (internal/backend/machine/qemu's key()), where ".." or "/" would let it escape
 // its parent; the launcher and ~/OmaVM links use the name too. Otherwise
 // intentionally permissive: spaces, accents and most punctuation are
 // fine.
@@ -767,7 +767,7 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 	// defaults as if explicitly pinned on every single Configure call,
 	// even ones that only touch an unrelated field like Description.
 	// That's a real bug this project hit: it permanently disables Travel
-	// Mode's automatic CPU reduction (internal/backend/qemu/qemu.go's
+	// Mode's automatic CPU reduction (internal/backend/machine/qemu/qemu.go's
 	// Start only reduces CPUs when the raw setting is still 0) the first
 	// time anyone saves Settings for any reason (docs/TODO.md P2
 	// "salvar uma descrição não altera inadvertidamente a intenção de

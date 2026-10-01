@@ -29,7 +29,7 @@ Dialog {
     // the description) must never resend the *displayed* value as an
     // explicit --cpus/--memory-mib — that would silently pin it, which
     // disables Travel Mode's automatic reduction on battery
-    // (internal/backend/qemu/qemu.go's Start only reduces CPUs when the
+    // (internal/backend/machine/qemu/qemu.go's Start only reduces CPUs when the
     // raw, persisted setting is unset). Only actually touching a SpinBox
     // — SpinBox.onValueModified, which fires on user interaction and not
     // on the programmatic `.value = x` assignment in onOpened — marks it
@@ -339,7 +339,7 @@ Dialog {
         }
 
         // What works with the guest right now, checked on the guest side
-        // where OmaVM can (internal/backend/qemu/guestcaps.go), and the
+        // where OmaVM can (internal/backend/machine/qemu/guestcaps.go), and the
         // next step for the rest — in text, not only in a tooltip.
         Label {
             visible: dialog.machine && guestRepeater.count > 0

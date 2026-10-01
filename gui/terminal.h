@@ -36,7 +36,7 @@ struct TerminalCell {
 };
 
 // Owns a PTY and the child process attached to it (`omavm open <name>`,
-// unchanged — see internal/backend/distrobox), and turns the raw byte
+// unchanged — see internal/backend/box/distrobox), and turns the raw byte
 // stream coming back from that child into a grid of TerminalCell plus a
 // cursor position, via a small Ground/Escape/CSI/OSC state machine. See
 // gui/README-worthy comment in terminal.cpp for the exact escape-sequence

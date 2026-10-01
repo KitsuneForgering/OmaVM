@@ -19,9 +19,9 @@ import (
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/applog"
 	"github.com/KitsuneSemCalda/OmaVM/internal/backend/box"
-	"github.com/KitsuneSemCalda/OmaVM/internal/backend/container"
-	"github.com/KitsuneSemCalda/OmaVM/internal/backend/distrobox"
-	"github.com/KitsuneSemCalda/OmaVM/internal/backend/qemu"
+	"github.com/KitsuneSemCalda/OmaVM/internal/backend/box/container"
+	"github.com/KitsuneSemCalda/OmaVM/internal/backend/box/distrobox"
+	"github.com/KitsuneSemCalda/OmaVM/internal/backend/machine/qemu"
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
 	"github.com/KitsuneSemCalda/OmaVM/internal/desktop"
 )

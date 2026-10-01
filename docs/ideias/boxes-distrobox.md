@@ -8,7 +8,7 @@ argumentos de `create`/`enter`/`stop`/`rm`/`list`, mas vira um binário
 (passa a ser `distrobox export`). Apps e binários exportados por Boxes do
 v1 precisam que a Box seja recriada.
 
-Impacto na OmaVM: `internal/backend/distrobox/apps.go` executa
+Impacto na OmaVM: `internal/backend/box/distrobox/apps.go` executa
 `distrobox enter --name <box> -- distrobox-export --app <id>` (e
 `--delete`). O v1 instalado aqui (1.8.2.5) não tem subcomando `export` no
 host; o export roda dentro da Box. O anúncio do v2 não diz como o export é

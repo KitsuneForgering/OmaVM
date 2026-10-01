@@ -837,7 +837,7 @@ void Backend::open(const QString &name, const QString &kind) {
     // Relaunch this same omavm-gui binary in its embedded terminal mode
     // (gui/main.cpp's --terminal, gui/TerminalViewer.qml) — same pattern
     // as a Machine's Open spawning omavm-gui --display-fd
-    // (internal/backend/qemu/qemu.go), so a Box opens inside OmaVM's own
+    // (internal/backend/machine/qemu/qemu.go), so a Box opens inside OmaVM's own
     // window instead of whatever external terminal emulator the user has
     // configured.
     const auto flag = [](bool on) {
