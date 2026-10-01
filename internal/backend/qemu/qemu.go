@@ -299,9 +299,11 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		if known := startFailure(env, out); known != nil {
 			return known
 		}
-		if !canOpenRW(filepath.Join(devRoot, "kvm")) {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && !canOpenRW(filepath.Join(devRoot, "kvm")) {
 			// QEMU's own words ("Could not access KVM kernel module")
-			// don't say what to do about it.
+			// don't say what to do about it. Only when QEMU actually ran:
+			// a missing qemu-system-x86_64 already has its own message.
 			return core.Unsupportedf("this computer can't run Desktops yet: hardware virtualization (/dev/kvm) is missing or not accessible to your user. Enable virtualization in the firmware and add your user to the kvm group, then log in again (QEMU said: %s)", out)
 		}
 		return qemuErr("qemu-system-x86_64", err, out)

@@ -321,6 +321,10 @@ func TestBootMediaArguments(t *testing.T) {
 // raw "executable file not found in $PATH".
 func TestMissingBinaryDiagnostic(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // empty: neither binary resolves
+	// Like CI: no KVM either, which must not hide the missing binary.
+	saved := devRoot
+	devRoot = t.TempDir()
+	t.Cleanup(func() { devRoot = saved })
 
 	b := &Backend{stateDir: t.TempDir()}
 	env := core.Environment{Name: "guest", Kind: core.Machine}
