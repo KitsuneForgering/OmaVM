@@ -13,9 +13,33 @@
 class FakeBackend : public QQmlPropertyMap {
   Q_OBJECT
 
+signals:
+  void actionFinished(const QString &tag, bool ok, const QString &text);
+
 public:
   explicit FakeBackend(QObject *parent)
       : QQmlPropertyMap(this, parent) {}
+
+  Q_INVOKABLE void refreshHost() {}
+  Q_INVOKABLE void cloneEnvironment(const QString &name, const QString &newName) {
+    insert(QStringLiteral("lastCall"),
+           QVariantList{QStringLiteral("cloneEnvironment"), name, newName});
+  }
+  Q_INVOKABLE void refreshApps(const QString &) {}
+  Q_INVOKABLE void exportApp(const QString &name, const QString &id) {
+    insert(QStringLiteral("lastCall"),
+           QVariantList{QStringLiteral("exportApp"), name, id});
+  }
+  Q_INVOKABLE void unexportApp(const QString &name, const QString &id) {
+    insert(QStringLiteral("lastCall"),
+           QVariantList{QStringLiteral("unexportApp"), name, id});
+  }
+
+  // Lets a test finish an action the way the real Backend reports it.
+  Q_INVOKABLE void finishAction(const QString &tag, bool ok,
+                                const QString &text) {
+    emit actionFinished(tag, ok, text);
+  }
 
   Q_INVOKABLE void configure(const QString &name, const QString &description,
                              int cpus, bool cpusTouched, int memoryMiB,
@@ -24,13 +48,15 @@ public:
                              bool disconnectISO, const QString &color,
                              bool shareClipboard, bool travelMode, bool vulkan,
                              bool openInEmptyWorkspace, bool launcher,
-                             bool ssh, bool fullscreen) {
+                             bool ssh, bool fullscreen,
+                             const QString &clipboardDirection = QString()) {
     insert(QStringLiteral("lastCall"),
            QVariantList{QStringLiteral("configure"), name, description, cpus,
                         cpusTouched, memoryMiB, memoryTouched, machine,
                         sharedPath, sharedReadOnly, disconnectISO, color,
                         shareClipboard, travelMode, vulkan,
-                        openInEmptyWorkspace, launcher, ssh, fullscreen});
+                        openInEmptyWorkspace, launcher, ssh, fullscreen,
+                        clipboardDirection});
   }
   // Audits what a screen reader gets from the accessibility tree under
   // item: every visible control someone can act on needs a name, and
@@ -130,6 +156,8 @@ public slots:
     backend->insert(QStringLiteral("busy"), false);
     backend->insert(QStringLiteral("busyAction"), QString());
     backend->insert(QStringLiteral("busyEnvironments"), QVariantMap());
+    backend->insert(QStringLiteral("progress"), QVariantMap());
+    backend->insert(QStringLiteral("hostCapabilities"), QVariantMap());
     for (const char *color :
          {"themeBackground", "themeForeground", "themeAccent", "themeAccentText",
           "themeSelection",

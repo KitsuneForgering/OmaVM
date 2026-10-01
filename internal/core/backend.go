@@ -25,6 +25,18 @@ const (
 type Status struct {
 	State  State  `json:"state"`
 	Detail string `json:"detail,omitempty"`
+	// Ephemeral means this session's changes are thrown away when the
+	// environment shuts down (see EphemeralStarter).
+	Ephemeral bool `json:"ephemeral,omitempty"`
+	// Warning is something about to go wrong that the state doesn't show,
+	// such as the host's disk running out under a Machine.
+	Warning string `json:"warning,omitempty"`
+	// RestartNeeded means saved settings differ from what the running
+	// session got; they apply the next time it starts.
+	RestartNeeded bool `json:"restart_needed,omitempty"`
+	// TravelMode means the session runs with fewer CPUs than its setting
+	// because the host was on battery when it started.
+	TravelMode bool `json:"travel_mode,omitempty"`
 }
 
 // Backend executes the lifecycle of environments of one Kind on top of a
@@ -92,7 +104,30 @@ type IntegrationReporter interface {
 type IntegrationReport struct {
 	GuestAgent string `json:"guest_agent"`
 	Hint       string `json:"hint,omitempty"`
+	// Capabilities says, per host↔guest integration, whether it works,
+	// as far as OmaVM can check, and the next step when it doesn't.
+	Capabilities []GuestCapability `json:"capabilities,omitempty"`
 }
+
+// GuestCapability is one integration with the guest (clipboard, shared
+// folder). State is ready only after a real check of the guest side; a
+// setting being on is not proof that it works.
+type GuestCapability struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	State string `json:"state"`
+	// Hint is the concrete next step, or what "ready" means in use.
+	Hint string `json:"hint,omitempty"`
+}
+
+// GuestCapability states.
+const (
+	GuestReady          = "ready"                 // checked on the guest side
+	GuestNeedsComponent = "needs_guest_component" // something to install or do in the guest
+	GuestNeedsRestart   = "needs_restart"         // saved, applies on the next start
+	GuestNotVerified    = "not_verified"          // can't be checked right now
+	GuestOff            = "off"                   // turned off, or not set up
+)
 
 // SnapshotManager is an optional Backend capability for environments whose
 // engine supports point-in-time state capture natively (QEMU/qcow2 internal
@@ -153,6 +188,31 @@ type HostLinker interface {
 // no guest network). login "" means the host user's name.
 type RemoteShell interface {
 	SSH(ctx context.Context, env Environment, login string, command []string) error
+}
+
+// Upgrader is an optional Backend capability: update the software installed
+// in the environment with its own package manager (distrobox upgrade for
+// Boxes). A Machine updates from inside its own system instead.
+type Upgrader interface {
+	Upgrade(ctx context.Context, env Environment) error
+}
+
+// Cloner is an optional Backend capability: make clone a full, independent
+// copy of source (its disk or container), as source is now. Both stay
+// usable afterwards; nothing is shared between them. A backend refuses a
+// source that is running, whose state would be copied half-written.
+type Cloner interface {
+	Clone(ctx context.Context, source, clone Environment) error
+}
+
+// EphemeralStarter is an optional Backend capability: start a session
+// whose changes are discarded when it shuts down, leaving the environment
+// exactly as it was. Nothing is persisted in the domain: it is a property
+// of one session, reported back through Status.Ephemeral. Starting an
+// environment already running a normal session is ErrInvalidInput, so a
+// caller never believes changes will vanish when they won't.
+type EphemeralStarter interface {
+	StartEphemeral(ctx context.Context, env Environment) error
 }
 
 // Launcher publishes environments in the host's application launcher, so

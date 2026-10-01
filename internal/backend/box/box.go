@@ -124,3 +124,22 @@ func (b *Backend) UnexportApp(ctx context.Context, env core.Environment, id stri
 	}
 	return exporter.UnexportApp(ctx, env, id)
 }
+
+// Clone copies a Box through Distrobox's own --clone. Boxes on the legacy
+// direct-container engine can't: it never had a clone.
+func (b *Backend) Clone(ctx context.Context, source, clone core.Environment) error {
+	cloner, ok := b.forEnv(source).(core.Cloner)
+	if !ok {
+		return core.Unsupportedf("legacy container Boxes can't be cloned")
+	}
+	return cloner.Clone(ctx, source, clone)
+}
+
+// Upgrade updates a Box's packages through distrobox upgrade.
+func (b *Backend) Upgrade(ctx context.Context, env core.Environment) error {
+	upgrader, ok := b.forEnv(env).(core.Upgrader)
+	if !ok {
+		return core.Unsupportedf("legacy container Boxes can't be updated from OmaVM; update them from their terminal")
+	}
+	return upgrader.Upgrade(ctx, env)
+}

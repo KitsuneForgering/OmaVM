@@ -15,6 +15,9 @@ Dialog {
     // Going to a snapshot replaces the disk, which QEMU only does with
     // the Machine shut down.
     readonly property bool canGoTo: environment.status === "stopped"
+    // Running without keeping changes: a snapshot would land in the
+    // session's throwaway disk, so none is taken or deleted until shutdown.
+    readonly property bool ephemeral: !!environment.ephemeral && environment.status !== "stopped"
     property string createError: ""
     property bool creating: false
     title: qsTr("%1 Snapshots").arg(environment.name || qsTr("Environment"))
@@ -79,7 +82,7 @@ Dialog {
                 id: createButton
                 text: dialog.creating ? qsTr("Creating…") : qsTr("Create")
                 highlighted: true
-                enabled: !dialog.creating && !dialog.busy && newLabel.text.trim().length > 0
+                enabled: !dialog.creating && !dialog.busy && !dialog.ephemeral && newLabel.text.trim().length > 0
                 onClicked: {
                     dialog.createError = ""
                     dialog.creating = true
@@ -113,7 +116,9 @@ Dialog {
             Layout.fillWidth: true
             visible: !dialog.canGoTo
             objectName: "runningHint"
-            text: qsTr("While %1 is running, a snapshot saves its disk as if the power had been cut, without open windows or memory. Shut it down to go to a snapshot.").arg(dialog.environment.name || "")
+            text: dialog.ephemeral
+                ? qsTr("%1 is running without keeping changes, so snapshots can't be taken or deleted until it shuts down.").arg(dialog.environment.name || "")
+                : qsTr("While %1 is running, a snapshot saves its disk as if the power had been cut, without open windows or memory. Shut it down to go to a snapshot.").arg(dialog.environment.name || "")
             color: backend.themeMuted
             wrapMode: Text.Wrap
             font.pixelSize: 12
@@ -195,7 +200,7 @@ Dialog {
                     }
                     ToolButton {
                         text: qsTr("Delete")
-                        enabled: !dialog.busy
+                        enabled: !dialog.busy && !dialog.ephemeral
                         onClicked: {
                             confirmDeleteSnapshot.snapshotId = modelData.id
                             confirmDeleteSnapshot.snapshotLabel = modelData.label

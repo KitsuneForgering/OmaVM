@@ -4,6 +4,7 @@
 #include <QClipboard>
 #include <QDir>
 #include <QFontMetricsF>
+#include <QSettings>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -36,15 +37,19 @@ QRgb xterm256(int index) {
   return qRgb(steps[(i / 36) % 6], steps[(i / 6) % 6], steps[i % 6]);
 }
 
+// Font sizes in pixels; the default is what the terminal always used.
+constexpr int kDefaultFontSize = 15;
+constexpr int kMinFontSize = 8;
+constexpr int kMaxFontSize = 48;
+
 } // namespace
 
 TerminalView::TerminalView(QQuickItem *parent) : QQuickPaintedItem(parent) {
   m_font = QFont(QStringLiteral("monospace"));
   m_font.setStyleHint(QFont::Monospace);
-  m_font.setPixelSize(15);
-  const QFontMetricsF metrics(m_font);
-  m_cellWidth = metrics.horizontalAdvance(QLatin1Char('M'));
-  m_cellHeight = metrics.height();
+  setFontPixelSize(
+      QSettings().value(QStringLiteral("terminal/fontPixelSize"), kDefaultFontSize)
+          .toInt());
 
   loadPalette();
 
@@ -352,7 +357,67 @@ void TerminalView::paint(QPainter *painter) {
   }
 }
 
+void TerminalView::setFontPixelSize(int size) {
+  size = qBound(kMinFontSize, size, kMaxFontSize);
+  m_font.setPixelSize(size);
+  const QFontMetricsF metrics(m_font);
+  m_cellWidth = metrics.horizontalAdvance(QLatin1Char('M'));
+  m_cellHeight = metrics.height();
+  QSettings settings;
+  if (settings.value(QStringLiteral("terminal/fontPixelSize"), kDefaultFontSize)
+          .toInt() != size)
+    settings.setValue(QStringLiteral("terminal/fontPixelSize"), size);
+  if (width() > 0 && height() > 0)
+    updateGridSize();
+  update();
+}
+
+void TerminalView::scrollTo(int offset) {
+  m_scrollOffset = qBound(0, offset, int(m_session.scrollback().size()));
+  update();
+}
+
 void TerminalView::keyPressEvent(QKeyEvent *event) {
+  const int page = qMax(1, int(height() / m_cellHeight) - 1);
+  switch (TerminalSession::viewShortcut(event->key(), event->modifiers())) {
+  case TerminalSession::ViewShortcut::None:
+    break;
+  case TerminalSession::ViewShortcut::PageUp:
+  case TerminalSession::ViewShortcut::PageDown:
+  case TerminalSession::ViewShortcut::Top:
+  case TerminalSession::ViewShortcut::Bottom:
+    // Full-screen programs (vim, less) have no history here: the keys
+    // are theirs.
+    if (m_session.alternateScreen())
+      break;
+    switch (TerminalSession::viewShortcut(event->key(), event->modifiers())) {
+    case TerminalSession::ViewShortcut::PageUp:
+      scrollTo(m_scrollOffset + page);
+      break;
+    case TerminalSession::ViewShortcut::PageDown:
+      scrollTo(m_scrollOffset - page);
+      break;
+    case TerminalSession::ViewShortcut::Top:
+      scrollTo(int(m_session.scrollback().size()));
+      break;
+    default:
+      scrollTo(0);
+    }
+    event->accept();
+    return;
+  case TerminalSession::ViewShortcut::ZoomIn:
+    setFontPixelSize(m_font.pixelSize() + 1);
+    event->accept();
+    return;
+  case TerminalSession::ViewShortcut::ZoomOut:
+    setFontPixelSize(m_font.pixelSize() - 1);
+    event->accept();
+    return;
+  case TerminalSession::ViewShortcut::ZoomReset:
+    setFontPixelSize(kDefaultFontSize);
+    event->accept();
+    return;
+  }
   if (TerminalSession::isCopyShortcut(event->key(), event->modifiers())) {
     copySelection(QClipboard::Clipboard);
     event->accept();
@@ -381,6 +446,13 @@ void TerminalView::keyPressEvent(QKeyEvent *event) {
 }
 
 void TerminalView::wheelEvent(QWheelEvent *event) {
+  if (event->modifiers() & Qt::ControlModifier) {
+    const int notches = event->angleDelta().y() / 120;
+    if (notches != 0)
+      setFontPixelSize(m_font.pixelSize() + notches);
+    event->accept();
+    return;
+  }
   if (m_session.alternateScreen()) {
     event->ignore();
     return;

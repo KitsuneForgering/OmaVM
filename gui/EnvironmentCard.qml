@@ -11,6 +11,7 @@ Pane {
     signal settingsRequested(var environment)
     signal snapshotsRequested(var environment)
     signal appsRequested(var environment)
+    signal cloneRequested(var environment)
     // An action of this OmaVM window is running on this environment;
     // others stay usable meanwhile.
     readonly property bool busy: !!(backend.busyEnvironments && backend.busyEnvironments[environment.name])
@@ -24,6 +25,44 @@ Pane {
     // it still has to be stoppable from here.
     readonly property bool unresponsive: environment.status === "unknown"
     readonly property bool active: running || paused || transitioning || failed || unresponsive
+    // The system it runs, readable (UX Principle #5: name, distro, kind,
+    // status): a Box's image without registry, "-toolbox" or a "latest"
+    // tag, a Desktop's installation image without its path.
+    function systemName(env) {
+        const image = (env && env.image) || ""
+        if (!image)
+            return ""
+        if (env.kind === "machine") {
+            const file = image.split("/").pop()
+            return file.replace(/\.iso$/i, "")
+        }
+        const known = { fedora: "Fedora", ubuntu: "Ubuntu", debian: "Debian", archlinux: "Arch Linux",
+                        arch: "Arch Linux", alpine: "Alpine", opensuse: "openSUSE", centos: "CentOS",
+                        rockylinux: "Rocky Linux", almalinux: "AlmaLinux" }
+        let ref = image.split("@")[0]
+        let tag = ""
+        const colon = ref.lastIndexOf(":")
+        if (colon > ref.lastIndexOf("/")) {
+            tag = ref.slice(colon + 1)
+            ref = ref.slice(0, colon)
+        }
+        let repo = ref.split("/").pop().replace(/-toolbox$/, "")
+        repo = known[repo] || repo
+        return tag && tag !== "latest" ? repo + " " + tag : repo
+    }
+    readonly property bool machine: environment.kind === "machine"
+    // The primary action names what the person will see after the click
+    // (docs/TODO.md P1): a stopped Box's click opens its terminal, so it
+    // says Open; a stopped Desktop boots first, so Start — and both say
+    // the rest in the hint.
+    readonly property string primaryLabel: paused ? qsTr("Resume")
+                                         : stopped && machine ? qsTr("Start")
+                                         : qsTr("Open")
+    readonly property string primaryHint: paused ? qsTr("Continue %1 where it was paused").arg(environment.name)
+                                        : stopped && machine ? qsTr("Start %1 and show its screen").arg(environment.name)
+                                        : stopped ? qsTr("Start %1 and open its terminal").arg(environment.name)
+                                        : machine ? qsTr("Show the screen of %1").arg(environment.name)
+                                        : qsTr("Open a terminal in %1").arg(environment.name)
     readonly property color statusColor: failed || unresponsive ? backend.themeRed
                                         : running ? backend.themeGreen
                                         : paused || transitioning ? backend.themeAccentText
@@ -86,18 +125,31 @@ Pane {
                     color: card.environment.settings ? card.environment.settings.color || "transparent" : "transparent"
                 }
                 Label {
+                    id: nameLabel
+                    objectName: "nameLabel"
                     Layout.fillWidth: true
                     text: card.environment.name
                     font.pixelSize: 19
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
+                    // A long name cut short is still readable in full.
+                    HoverHandler { id: nameHover }
+                    ToolTip.text: card.environment.name
+                    ToolTip.visible: nameHover.hovered && nameLabel.truncated
+                    ToolTip.delay: 400
                 }
             }
             Label {
+                objectName: "kindLabel"
                 Layout.fillWidth: true
                 visible: card.width >= 430
-                text: card.environment.kind === "machine" ? qsTr("Desktop") : qsTr("Development Box")
+                text: {
+                    const kind = card.environment.kind === "machine" ? qsTr("Desktop") : qsTr("Development Box")
+                    const system = card.systemName(card.environment)
+                    return system ? kind + " · " + system : kind
+                }
                 color: backend.themeMuted
+                elide: Text.ElideRight
             }
             Label {
                 Layout.fillWidth: true
@@ -150,6 +202,56 @@ Pane {
                 color: card.statusColor
                 wrapMode: Text.WordWrap
             }
+            // Before it happens: the host's disk is nearly full, and the
+            // Machine would pause when it runs out.
+            Label {
+                objectName: "statusWarningLabel"
+                Layout.fillWidth: true
+                visible: !card.paused && !!card.environment.statusWarning
+                text: card.environment.statusWarning || ""
+                color: backend.themeRed
+                wrapMode: Text.WordWrap
+            }
+            // What the running session got differs from its settings: the
+            // saved ones wait for a restart, or Travel Mode trimmed CPUs.
+            Label {
+                objectName: "restartNeededLabel"
+                Layout.fillWidth: true
+                visible: card.active && !!card.environment.restartNeeded
+                text: qsTr("Restart to apply the saved settings")
+                color: backend.themeAccentText
+                wrapMode: Text.WordWrap
+            }
+            Label {
+                objectName: "travelModeLabel"
+                Layout.fillWidth: true
+                visible: card.active && !!card.environment.travelMode
+                text: qsTr("Travel Mode: started with fewer processors because this computer was on battery")
+                color: backend.themeMuted
+                wrapMode: Text.WordWrap
+            }
+            // The stage a long creation reported (which image layer is
+            // downloading): a real step, never an invented percentage.
+            Label {
+                objectName: "progressLabel"
+                readonly property string stage: (backend.progress && backend.progress[card.environment.name]) || ""
+                Layout.fillWidth: true
+                visible: stage !== ""
+                text: stage
+                color: backend.themeMuted
+                wrapMode: Text.WordWrap
+                Accessible.role: Accessible.StaticText
+                Accessible.name: stage
+            }
+            // Never hidden by width: it says what shutting down will lose.
+            Label {
+                objectName: "ephemeralLabel"
+                Layout.fillWidth: true
+                visible: card.active && !!card.environment.ephemeral
+                text: qsTr("Changes in this session are discarded when it shuts down")
+                color: backend.themeAccentText
+                wrapMode: Text.WordWrap
+            }
             Label {
                 Layout.fillWidth: true
                 visible: card.environment.kind === "machine" && card.width >= 520 && !!card.environment.guestAgent
@@ -169,13 +271,14 @@ Pane {
             // every card must offer (docs/TODO.md P1). Below 500px it shrinks
             // to an icon-only button instead of disappearing into the menu.
             readonly property bool compact: card.width < 500
-            readonly property string label: card.running || card.failed || card.unresponsive ? qsTr("Open") : card.paused ? qsTr("Resume") : qsTr("Start")
-            text: label
+            text: card.primaryLabel
             icon.source: "qrc:/icons/play.svg"
             display: compact ? AbstractButton.IconOnly : AbstractButton.TextOnly
-            Accessible.name: label
-            ToolTip.text: label
-            ToolTip.visible: compact && hovered
+            Accessible.name: card.primaryLabel
+            Accessible.description: card.primaryHint
+            ToolTip.text: card.primaryHint
+            ToolTip.visible: hovered
+            ToolTip.delay: 600
             highlighted: true
             enabled: !card.transitioning && !card.busy
             onClicked: card.paused ? backend.resume(card.environment.name)
@@ -192,10 +295,21 @@ Pane {
                 objectName: "actionsMenu"
                 y: parent.height
                 MenuItem {
-                    text: card.running || card.failed || card.unresponsive ? qsTr("Open") : card.paused ? qsTr("Resume") : qsTr("Start")
+                    text: card.primaryLabel
+                    Accessible.description: card.primaryHint
                     enabled: !card.transitioning && !card.busy
                     onTriggered: card.paused ? backend.resume(card.environment.name)
                                              : backend.open(card.environment.name, card.environment.kind)
+                }
+                MenuItem {
+                    objectName: "startEphemeralItem"
+                    // Try something (an installer, a reproduction) and get
+                    // the Desktop back exactly as it was at shutdown.
+                    text: qsTr("Start Without Keeping Changes")
+                    visible: card.environment.kind === "machine" && !card.active
+                    height: visible ? implicitHeight : 0
+                    enabled: !card.transitioning && !card.busy
+                    onTriggered: backend.openEphemeral(card.environment.name)
                 }
                 // A hidden MenuItem keeps its height in a Qt Quick Menu, so each
                 // kind-specific item collapses itself (see tst_environmentcard.qml).
@@ -212,6 +326,17 @@ Pane {
                 MenuSeparator {}
                 MenuItem { text: qsTr("Snapshots…"); visible: card.environment.kind === "machine"; height: visible ? implicitHeight : 0; onTriggered: card.snapshotsRequested(card.environment) }
                 MenuItem { text: qsTr("Applications…"); visible: card.environment.kind !== "machine"; height: visible ? implicitHeight : 0; onTriggered: card.appsRequested(card.environment) }
+                // Long (the package manager downloads updates); its lines
+                // show on the card as it goes.
+                MenuItem {
+                    objectName: "updateItem"
+                    text: qsTr("Update System")
+                    visible: card.environment.kind !== "machine"
+                    height: visible ? implicitHeight : 0
+                    enabled: !card.busy && !card.transitioning
+                    onTriggered: backend.updateEnvironment(card.environment.name)
+                }
+                MenuItem { text: qsTr("Clone…"); enabled: !card.busy && !card.transitioning; onTriggered: card.cloneRequested(card.environment) }
                 MenuItem { text: qsTr("Settings…"); onTriggered: card.settingsRequested(card.environment) }
                 MenuItem { text: qsTr("Delete…"); enabled: !card.busy; onTriggered: card.removeRequested(card.environment.name) }
             }

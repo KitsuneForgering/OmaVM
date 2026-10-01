@@ -1,4 +1,6 @@
 #include "backend.h"
+
+#include <memory>
 #include "colorstoml.h"
 
 #include <QClipboard>
@@ -13,6 +15,7 @@
 #include <QJsonObject>
 #include <QStandardPaths>
 
+#include <memory>
 #include <utility>
 
 namespace {
@@ -242,6 +245,7 @@ bool Backend::beginBusy(const QString &key, const QString &label) {
 
 void Backend::endBusy(const QString &key) {
   m_busy.remove(key);
+  m_progress.remove(key);
   emit busyChanged();
   if (m_quitRequested && m_busy.isEmpty())
     emit readyToQuit();
@@ -353,6 +357,16 @@ void Backend::refreshImpl(bool silent) {
                              status.value(QStringLiteral("state")));
               current.insert(QStringLiteral("statusDetail"),
                              status.value(QStringLiteral("detail")));
+              current.insert(
+                  QStringLiteral("restartNeeded"),
+                  status.value(QStringLiteral("restart_needed")).toBool());
+              current.insert(
+                  QStringLiteral("travelMode"),
+                  status.value(QStringLiteral("travel_mode")).toBool());
+              current.insert(QStringLiteral("statusWarning"),
+                             status.value(QStringLiteral("warning")));
+              current.insert(QStringLiteral("ephemeral"),
+                             status.value(QStringLiteral("ephemeral")).toBool());
               const QVariantMap integration =
                   current.take(QStringLiteral("integration")).toMap();
               if (!integration.isEmpty()) {
@@ -360,6 +374,8 @@ void Backend::refreshImpl(bool silent) {
                                integration.value(QStringLiteral("guest_agent")));
                 current.insert(QStringLiteral("integrationHint"),
                                integration.value(QStringLiteral("hint")));
+                current.insert(QStringLiteral("guestCapabilities"),
+                               integration.value(QStringLiteral("capabilities")));
               }
               // Keep the previous preview while the Machine keeps running:
               // recapturing it every poll made cards flash. The list is
@@ -450,6 +466,21 @@ void Backend::run(const QString &key, const QStringList &arguments,
     return;
   }
   auto *process = new QProcess(this);
+  // "progress: STAGE" lines arrive while the command runs; everything else
+  // on stdout is its result, shown when it finishes.
+  auto result = std::make_shared<QByteArray>();
+  connect(process, &QProcess::readyReadStandardOutput, this,
+          [this, process, key, result]() {
+            while (process->canReadLine()) {
+              const QByteArray line = process->readLine();
+              if (line.startsWith("progress: ")) {
+                m_progress.insert(key, QString::fromUtf8(line.mid(10)).trimmed());
+                emit busyChanged();
+              } else {
+                result->append(line);
+              }
+            }
+          });
   connect(process, &QProcess::errorOccurred, this,
           [this, process, tag, key](QProcess::ProcessError error) {
             if (error != QProcess::FailedToStart)
@@ -463,9 +494,10 @@ void Backend::run(const QString &key, const QStringList &arguments,
             process->deleteLater();
           });
   connect(process, &QProcess::finished, this,
-          [this, process, refreshAfter, tag, key](int code) {
+          [this, process, refreshAfter, tag, key, result](int code) {
             const QString output =
-                QString::fromUtf8(process->readAllStandardOutput()).trimmed();
+                QString::fromUtf8(*result + process->readAllStandardOutput())
+                    .trimmed();
             const QString errorText =
                 QString::fromUtf8(process->readAllStandardError()).trimmed();
             process->deleteLater();
@@ -507,6 +539,8 @@ void Backend::createEnvironment(const QString &name, const QString &image,
   // pin every new Machine's hardware from birth, permanently disabling
   // Travel Mode's automatic reduction on battery for it (same bug class
   // as Backend::configure, docs/TODO.md P2).
+  if (kind == QStringLiteral("box"))
+    arguments << QStringLiteral("--progress");
   if (kind == QStringLiteral("machine")) {
     if (cpusTouched)
       arguments << QStringLiteral("--cpus") << QString::number(cpus);
@@ -549,7 +583,7 @@ void Backend::configure(const QString &name, const QString &description,
                         bool disconnectISO, const QString &color,
                         bool shareClipboard, bool travelMode, bool vulkan,
                         bool openInEmptyWorkspace, bool launcher, bool ssh,
-                        bool fullscreen) {
+                        bool fullscreen, const QString &clipboardDirection) {
   QStringList arguments{QStringLiteral("settings"),      name,
                         QStringLiteral("--description"), description,
                         QStringLiteral("--color"),       color};
@@ -562,6 +596,8 @@ void Backend::configure(const QString &name, const QString &description,
   // the terminal (OSC 52) for a Box.
   arguments << (shareClipboard ? QStringLiteral("--share-clipboard=true")
                                : QStringLiteral("--share-clipboard=false"));
+  if (machine && !clipboardDirection.isEmpty())
+    arguments << QStringLiteral("--clipboard-direction") << clipboardDirection;
   arguments << (travelMode ? QStringLiteral("--travel-mode=true")
                            : QStringLiteral("--travel-mode=false"));
   if (machine) {
@@ -630,6 +666,61 @@ void Backend::runForApps(const QStringList &arguments, const QString &name,
         refreshApps(name);
       });
   process->start(cliPath(), arguments);
+}
+
+void Backend::reopenDisplay(const QString &name) const {
+  QProcess::startDetached(cliPath(), {QStringLiteral("open"), name});
+}
+
+void Backend::focusManagerWorkspace() const {
+  if (!hyprlandAvailable())
+    return;
+  hyprctlRepl(QStringLiteral(
+                  "local w = hl.get_windows({ class = 'dev.omavm.app' })\n"
+                  "if #w > 0 then\n"
+                  "  hl.dispatch(hl.dsp.focus({ workspace = w[1].workspace.id }))\n"
+                  "end\n"),
+              nullptr);
+}
+
+void Backend::showManager() const {
+  QProcess::startDetached(QCoreApplication::applicationFilePath(), {});
+}
+
+void Backend::cloneEnvironment(const QString &name, const QString &newName) {
+  // Keyed on the source: it is locked while it is copied, and its card
+  // shows the stages.
+  run(name, {QStringLiteral("clone"), name, newName, QStringLiteral("--progress")},
+      QStringLiteral("cloning %1").arg(name), QStringLiteral("clone"));
+}
+
+void Backend::updateEnvironment(const QString &name) {
+  run(name, {QStringLiteral("update"), name, QStringLiteral("--progress")},
+      QStringLiteral("updating %1").arg(name), QStringLiteral("update"));
+}
+
+void Backend::refreshHost() {
+  // Read-only and quick: no busy state, and a failure leaves the map as it
+  // was (the UI then simply says nothing).
+  auto *process = new QProcess(this);
+  connect(process, &QProcess::finished, this, [this, process](int code) {
+    const QByteArray output = process->readAllStandardOutput();
+    process->deleteLater();
+    if (code != 0)
+      return;
+    QVariantMap next;
+    for (const QJsonValue &value : QJsonDocument::fromJson(output).array()) {
+      const QVariantMap capability = value.toObject().toVariantMap();
+      next.insert(capability.value(QStringLiteral("id")).toString(),
+                  capability);
+    }
+    if (next != m_hostCapabilities) {
+      m_hostCapabilities = next;
+      emit hostCapabilitiesChanged();
+    }
+  });
+  connect(process, &QProcess::errorOccurred, process, &QObject::deleteLater);
+  process->start(cliPath(), {QStringLiteral("host"), QStringLiteral("--json")});
 }
 
 void Backend::refreshApps(const QString &name) {
@@ -728,6 +819,7 @@ void Backend::open(const QString &name, const QString &kind) {
   // its launcher entry or with `omavm open`.
   bool emptyWorkspace = true;
   bool shareClipboard = true;
+  QString color;
   for (const QVariant &item : m_environments) {
     const QVariantMap env = item.toMap();
     if (env.value(QStringLiteral("name")).toString() == name) {
@@ -737,6 +829,7 @@ void Backend::open(const QString &name, const QString &kind) {
           !settings.value(QStringLiteral("empty_workspace_disabled")).toBool();
       shareClipboard =
           !settings.value(QStringLiteral("clipboard_disabled")).toBool();
+      color = settings.value(QStringLiteral("color")).toString();
       break;
     }
   }
@@ -750,16 +843,39 @@ void Backend::open(const QString &name, const QString &kind) {
     const auto flag = [](bool on) {
       return on ? QStringLiteral("true") : QStringLiteral("false");
     };
-    QProcess::startDetached(
-        QCoreApplication::applicationFilePath(),
-        {QStringLiteral("--terminal"), name, QStringLiteral("--title"),
-         name + QStringLiteral(" — OmaVM"), QStringLiteral("--share-clipboard"),
-         flag(shareClipboard), QStringLiteral("--empty-workspace"),
-         flag(emptyWorkspace)});
+    QStringList arguments{QStringLiteral("--terminal"), name,
+                          QStringLiteral("--title"),
+                          name + QStringLiteral(" — OmaVM"),
+                          QStringLiteral("--share-clipboard"),
+                          flag(shareClipboard),
+                          QStringLiteral("--empty-workspace"),
+                          flag(emptyWorkspace)};
+    if (!color.isEmpty())
+      arguments << QStringLiteral("--color") << color;
+    QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                            arguments);
     return;
   }
   run(name, {QStringLiteral("open"), name}, QStringLiteral("opening %1").arg(name),
       QStringLiteral("open"));
+}
+
+void Backend::openEphemeral(const QString &name) {
+  const QString tag = QStringLiteral("start-ephemeral:") + name;
+  auto *connection = new QMetaObject::Connection;
+  *connection = connect(
+      this, &Backend::actionFinished, this,
+      [this, name, tag, connection](const QString &finished, bool ok,
+                                    const QString &) {
+        if (finished != tag)
+          return;
+        disconnect(*connection);
+        delete connection;
+        if (ok)
+          open(name, QStringLiteral("machine"));
+      });
+  run(name, {QStringLiteral("start"), name, QStringLiteral("--ephemeral")},
+      QStringLiteral("starting %1 without keeping changes").arg(name), tag);
 }
 
 void Backend::loadTheme() {

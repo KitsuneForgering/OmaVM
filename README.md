@@ -218,6 +218,18 @@ guest's login protects it. Turn it off per Machine with
 Machines expose the folder to the guest as the virtiofs tag `omavm-share`;
 inside a Linux guest, mount it with `mount -t virtiofs omavm-share /mnt/omavm-share`.
 
+The shared clipboard can be limited to one way (Settings, or
+`omavm settings NAME --clipboard-direction to-host|to-guest|both`): for
+example, a guest that may hand text to you but must never see what you
+copy. It applies the next time the Machine's window opens.
+
+A Machine's Settings ("Working with the guest") and `omavm integration NAME`
+say, for the clipboard and the shared folder, whether each one works, as
+checked on the guest side, or what is missing: `spice-vdagent` for the
+clipboard, the mount above for the folder (checked through
+`qemu-guest-agent`), or a restart. A setting being on is never reported as
+working by itself.
+
 `list` and `status` accept `--json` (in any position, e.g. both
 `omavm list --json` and `omavm status radic --json` work) for
 structured output aimed at agents, scripts, and the Quickshell bar
@@ -226,6 +238,28 @@ current state (and, for Machines, whether guest tools answer) in one
 call, asking the container engine once for all Boxes; the GUI refreshes
 with it. The JSON shapes are covered by golden files in
 `cmd/omavm/testdata`: changing them is a deliberate, visible diff.
+
+### Exit codes
+
+A failed command says what to do next through its exit code, so scripts
+and agents don't have to parse the message:
+
+| Code | Meaning | What the caller should do |
+|---|---|---|
+| 0 | success | — |
+| 1 | the system or a backend failed | look at the message; retrying may help |
+| 2 | invalid request (arguments, name, values out of range) | fix the request |
+| 3 | no environment by that name | create it, or check `omavm list` |
+| 4 | an environment by that name already exists | pick another name |
+| 5 | not available for this kind of environment or on this computer | don't retry |
+| 6 | another operation on that environment is running | wait and retry |
+
+`omavm exec` and `omavm ssh` exit with the code of the command they ran
+(`omavm exec box -- go test ./...` fails the way `go test` did); codes
+2–6 still mean omavm itself refused. With `--json`, a failure also prints
+`{"error": {"code": "not_found", "message": "…"}}` on stdout; `code` is one
+of `failed`, `invalid_input`, `not_found`, `already_exists`, `unsupported`,
+`busy`. The message stays on stderr as well.
 
 ## Machines
 
@@ -241,6 +275,29 @@ has; if your disk fills up, the Machine is paused (its card says why) and
 
 An installed Machine whose ISO was deleted or moved still starts, from its
 disk.
+
+`omavm run --ephemeral --image path/to/system.iso` goes further: it
+creates a new Desktop, runs it without keeping changes, shows its screen
+(`--no-open` for scripts and agents), and deletes it when it shuts down.
+Ctrl+C ends and deletes it at once. Nothing is added to the app launcher.
+
+**Clone…** (or `omavm clone NAME NEW_NAME`) makes a full, independent copy
+of a stopped environment: a Desktop's whole disk with its snapshots (it
+needs as much free space as that disk uses; on btrfs the copy shares space
+until one side changes), or a Box's system (its home folder is shared with
+your computer, not copied). A Box's **Update System** (or
+`omavm update NAME`) runs `distrobox upgrade`, showing the package
+manager's progress on its card.
+
+**Start Without Keeping Changes** (in the card's menu, or
+`omavm start NAME --ephemeral`) runs a session whose disk writes are thrown
+away when the Machine shuts down: try an installer, reproduce a bug on a
+clean system, or let an agent loose, and get the Machine back exactly as it
+was. The card says so while it runs. Restart keeps the session that way;
+snapshots can't be taken or deleted until it shuts down, because they
+would land in the throwaway disk. The session's writes are kept in a
+temporary file next to the Machine's disk, so a long session can fill it
+like any other write (the Machine then pauses and says why).
 
 Machines try the installed disk before the ISO, falling back to installation
 media while the disk is not bootable. After installation, enable **Installation
@@ -350,11 +407,27 @@ way.
 make run-gui
 ```
 
+Only one Experience Center runs per session: launching it again (from the
+launcher, or **Open OmaVM** in a viewer) brings the open one forward.
+
 Environments appear as cards (name, kind, image, status) with Start,
 Open, Stop and Delete actions — no backend/infrastructure detail is
 exposed. Creating one starts with a choice between **Desktop** (Machine) and
 **Development Box** (Box). Then select a local x86_64 installation ISO for a
 Machine, or a Linux distribution or custom container image for a Box.
+While a Box's image downloads, its card shows which layer it is on (the
+container engine reports layers, not bytes, so there is no percentage);
+`omavm create` shows the same stages in a terminal, and `--progress`
+prints them as `progress: STAGE` lines on stdout for programs.
+
+A running Machine's card says when saved settings (processors, memory,
+SSH, the shared folder, installation media) wait for a restart, and when
+Travel Mode started it with fewer processors because the computer was on
+battery; `omavm status` shows the same.
+
+A Machine's card warns when the disk holding OmaVM's state has less than
+4 GiB free (`omavm status` too): its disk grows as the guest writes, and
+the Machine pauses if the space runs out.
 
 Install the `omavm` CLI binary alongside `omavm-gui` (same directory or
 on `PATH`) so a Box's "Open" can attach an interactive shell. Opening a
@@ -365,7 +438,12 @@ parser covering cursor addressing, SGR colors including 256-color and
 truecolor, the alternate screen buffer used by vim/htop/less/tmux, and
 scrollback), not an external terminal emulator. It shares the same
 `dev.omavm.viewer` app id as the Machine display viewer below, so the same
-optional Hyprland window rule covers both.
+optional Hyprland window rule covers both. Like Alacritty, Shift+PageUp/
+PageDown/Home/End scroll back through the output, and Ctrl+=, Ctrl+- and
+Ctrl+0 (or Ctrl+wheel) change the font size, which is remembered. A Box
+with a color tag shows
+it as a thin strip along the top of its terminal, so you can tell which
+Box you're in, and that you aren't on the host.
 
 A running Machine's card shows a live screenshot of its display
 (captured via QEMU's QMP `screendump`, refreshed on every action or

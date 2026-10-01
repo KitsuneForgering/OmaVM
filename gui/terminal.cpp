@@ -1061,6 +1061,40 @@ QPair<int, int> TerminalSession::wordBounds(int line, int col) const {
   return {first, last};
 }
 
+TerminalSession::ViewShortcut
+TerminalSession::viewShortcut(int key, Qt::KeyboardModifiers modifiers) {
+  const Qt::KeyboardModifiers relevant =
+      modifiers & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier);
+  if (relevant == Qt::ShiftModifier) {
+    switch (key) {
+    case Qt::Key_PageUp:
+      return ViewShortcut::PageUp;
+    case Qt::Key_PageDown:
+      return ViewShortcut::PageDown;
+    case Qt::Key_Home:
+      return ViewShortcut::Top;
+    case Qt::Key_End:
+      return ViewShortcut::Bottom;
+    }
+  }
+  // Ctrl+Plus is typed as Ctrl+Shift+= on most layouts.
+  if (relevant == Qt::ControlModifier ||
+      relevant == (Qt::ControlModifier | Qt::ShiftModifier)) {
+    switch (key) {
+    case Qt::Key_Plus:
+    case Qt::Key_Equal:
+      return ViewShortcut::ZoomIn;
+    case Qt::Key_Minus:
+      return relevant == Qt::ControlModifier ? ViewShortcut::ZoomOut
+                                             : ViewShortcut::None;
+    case Qt::Key_0:
+      return relevant == Qt::ControlModifier ? ViewShortcut::ZoomReset
+                                             : ViewShortcut::None;
+    }
+  }
+  return ViewShortcut::None;
+}
+
 bool TerminalSession::isCopyShortcut(int key,
                                      Qt::KeyboardModifiers modifiers) {
   const Qt::KeyboardModifiers relevant =

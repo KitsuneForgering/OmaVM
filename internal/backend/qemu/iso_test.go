@@ -50,7 +50,7 @@ func TestStartAttachesTheInstallationMedia(t *testing.T) {
 // Center placed the window. The viewer now does it, told by Open.
 func TestViewerIsToldWhereAndHowToOpen(t *testing.T) {
 	args := strings.Join(viewerArgs(core.Environment{Name: "vm", Kind: core.Machine}), " ")
-	for _, want := range []string{"--empty-workspace true", "--fullscreen true", "--share-clipboard true", "--title vm — OmaVM"} {
+	for _, want := range []string{"--empty-workspace true", "--fullscreen true", "--share-clipboard true", "--title vm — OmaVM", "--environment vm"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("default viewer args %q lack %q", args, want)
 		}
@@ -74,5 +74,20 @@ func TestIOErrorReadsAsPausedWithTheReason(t *testing.T) {
 	}
 	if diskSize != 1<<40 {
 		t.Fatalf("Machines get a %d-byte disk, want 1 TiB", diskSize)
+	}
+}
+
+// The viewer enforces a one-way clipboard; it learns it from its arguments.
+func TestViewerArgsCarryTheClipboardDirection(t *testing.T) {
+	for setting, want := range map[core.EnvironmentSettings]string{
+		{}:                               "--share-clipboard true",
+		{ClipboardDisabled: true}:        "--share-clipboard false",
+		{ClipboardDirection: "to-host"}:  "--share-clipboard to-host",
+		{ClipboardDirection: "to-guest"}: "--share-clipboard to-guest",
+	} {
+		args := strings.Join(viewerArgs(core.Environment{Name: "vm", Kind: core.Machine, Settings: setting}), " ")
+		if !strings.Contains(args, want) {
+			t.Errorf("%+v: args %q lack %q", setting, args, want)
+		}
 	}
 }

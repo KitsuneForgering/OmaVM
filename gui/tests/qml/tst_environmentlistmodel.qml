@@ -46,6 +46,27 @@ Item {
             compare(card.environment.status, "running")
         }
 
+        // With 30 environments scrolled to the end, a poll that changes some
+        // statuses keeps the list where the person left it.
+        function test_pollKeepsTheScrollPositionWithThirtyEnvironments() {
+            const model = loader.item
+            const list = []
+            for (let i = 0; i < 30; i++)
+                list.push(env("env" + i, "stopped"))
+            model.sync(list)
+            compare(model.count, 30)
+            view.positionViewAtEnd()
+            tryVerify(() => view.contentY > 0)
+            const y = view.contentY
+            const last = view.itemAtIndex(29)
+            verify(last, "the last card is shown")
+            list[29] = env("env29", "running")
+            list[3] = env("env3", "running")
+            model.sync(list)
+            compare(view.contentY, y, "a poll moved the list")
+            compare(view.itemAtIndex(29), last, "the visible card was recreated")
+        }
+
         function test_insertRemoveAndOrder() {
             const model = loader.item
             model.sync([env("a", "stopped"), env("b", "stopped")])

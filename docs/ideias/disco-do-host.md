@@ -15,6 +15,8 @@ card mostra só "Error".
 
 ## Esboço
 
+**Aviso de pouco espaço implementado (2026-10-01)**: abaixo de 4 GiB livres, o card e `omavm status` avisam que a Machine pausa se o espaço acabar, antes do Start e com ela rodando. Não compara com o crescimento possível do qcow2: com 1 TiB esparso, isso avisaria sempre.
+
 **Primeiro item implementado (2026-09-29)**, junto com o disco padrão de
 1 TiB esparso: um `io-error` aparece como pausa com o motivo ("o disco
 deste computador está cheio; libere espaço e retome"), e Resume continua a

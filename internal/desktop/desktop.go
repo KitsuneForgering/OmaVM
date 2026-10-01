@@ -167,6 +167,9 @@ func (l *Launcher) entry(env core.Environment) []byte {
 		if env.Settings.EmptyWorkspaceDisabled {
 			exec = append(exec, "--empty-workspace", "false")
 		}
+		if env.Settings.Color != "" {
+			exec = append(exec, "--color", env.Settings.Color)
+		}
 	default:
 		// Without omavm-gui, a Box's shell still opens in the user's own
 		// terminal: `omavm open` on a Box is interactive.

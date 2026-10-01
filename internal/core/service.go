@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -440,6 +441,83 @@ func (s *Service) Create(ctx context.Context, env Environment) (Environment, err
 	return created, nil
 }
 
+// Update updates the software installed in a Box with its package
+// manager. The Box's lock is held throughout, like Start.
+func (s *Service) Update(ctx context.Context, name string) error {
+	env, backend, unlock, err := s.acquire(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	upgrader, ok := backend.(Upgrader)
+	if !ok {
+		return Unsupportedf("%s is a Desktop: update it from inside its own system", name)
+	}
+	if err := upgrader.Upgrade(ctx, env); err != nil {
+		return fmt.Errorf("update %s: %w", name, err)
+	}
+	return nil
+}
+
+// Clone makes newName a full copy of name, as it is now: same kind,
+// image and settings, and for a Machine its disk with every snapshot in
+// it. The source stays locked while it is copied, so nothing starts it
+// halfway through; the copy is registered like a creation (reserved
+// first, dropped again if the backend fails).
+func (s *Service) Clone(ctx context.Context, name, newName string) (Environment, error) {
+	newName = strings.TrimSpace(newName)
+	if err := validateEnvironmentName(newName); err != nil {
+		return Environment{}, err
+	}
+	source, backend, unlockSource, err := s.acquire(ctx, name)
+	if err != nil {
+		return Environment{}, err
+	}
+	defer unlockSource()
+	cloner, ok := backend.(Cloner)
+	if !ok {
+		return Environment{}, Unsupportedf("%s can't be cloned", name)
+	}
+	id, err := newID()
+	if err != nil {
+		return Environment{}, err
+	}
+	clone := Environment{
+		ID:        id,
+		Name:      newName,
+		Image:     source.Image,
+		Backend:   source.Backend,
+		Kind:      source.Kind,
+		Settings:  source.Settings,
+		Snapshots: append([]Snapshot(nil), source.Snapshots...),
+	}
+	unlockClone, err := s.store.LockEnvironment(ctx, id)
+	if err != nil {
+		return Environment{}, err
+	}
+	defer unlockClone()
+	if err := s.reserve(ctx, clone); err != nil {
+		return Environment{}, err
+	}
+	if err := cloner.Clone(ctx, source, clone); err != nil {
+		if dropErr := s.drop(ctx, id); dropErr != nil {
+			return Environment{}, fmt.Errorf("clone %s: %w (and %s could not be taken out of the registry: %v)", name, err, newName, dropErr)
+		}
+		return Environment{}, fmt.Errorf("clone %s: %w", name, err)
+	}
+	created, err := s.update(ctx, id, func(e *Environment) { e.Operation = "" })
+	if err != nil {
+		removeErr := backend.Remove(ctx, clone)
+		_ = s.drop(ctx, id)
+		if removeErr != nil {
+			return Environment{}, fmt.Errorf("save registry after cloning %s: %w (cleanup also failed, resource may be orphaned: %v)", name, err, removeErr)
+		}
+		return Environment{}, fmt.Errorf("save registry after cloning %s: %w", name, err)
+	}
+	s.syncLauncher(created)
+	return created, nil
+}
+
 // reserve adds env to the registry marked as being created, if its name
 // is free.
 func (s *Service) reserve(ctx context.Context, env Environment) error {
@@ -488,6 +566,24 @@ func (s *Service) Start(ctx context.Context, name string) error {
 	// Also publishes environments created before launcher entries
 	// existed, the first time they are used.
 	s.syncLauncher(env)
+	return nil
+}
+
+// StartEphemeral starts a session whose changes are discarded at shutdown.
+// The launcher entry isn't touched: it opens the environment normally.
+func (s *Service) StartEphemeral(ctx context.Context, name string) error {
+	env, backend, unlock, err := s.acquire(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	starter, ok := backend.(EphemeralStarter)
+	if !ok {
+		return Unsupportedf("%s can't start without keeping changes: only Desktops (Machines) can", name)
+	}
+	if err := starter.StartEphemeral(ctx, env); err != nil {
+		return fmt.Errorf("start %s: %w", name, err)
+	}
 	return nil
 }
 
@@ -753,6 +849,21 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 		// programs in its terminal copy to the host clipboard (OSC 52).
 		settings.ClipboardDisabled = !*patch.ShareClipboard
 	}
+	if patch.ClipboardDirection != nil {
+		switch direction := strings.TrimSpace(*patch.ClipboardDirection); direction {
+		case "", ClipboardBoth:
+			settings.ClipboardDirection = ""
+		case ClipboardToHost:
+			settings.ClipboardDirection = direction
+		case ClipboardToGuest:
+			if env.Kind != Machine {
+				return EnvironmentSettings{}, Unsupportedf("a Box's clipboard only goes to this computer (programs copying from its terminal); turn it off instead")
+			}
+			settings.ClipboardDirection = direction
+		default:
+			return EnvironmentSettings{}, Invalidf("clipboard direction must be one of: %s, %s, %s", ClipboardBoth, ClipboardToHost, ClipboardToGuest)
+		}
+	}
 	if patch.TravelMode != nil {
 		// Both Kinds: a Machine starts with fewer CPUs, a Box's container
 		// is limited in place.
@@ -874,7 +985,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, name, label string) (Snaps
 	limit := env.EffectiveSettings().SnapshotLimit
 	for limit > 0 && len(env.Snapshots) > limit {
 		oldest := env.Snapshots[0]
-		if err := manager.RemoveSnapshot(ctx, env, oldest.ID); err != nil {
+		if err := manager.RemoveSnapshot(ctx, env, oldest.ID); err != nil && !errors.Is(err, ErrSnapshotGone) {
 			// snap itself is saved; only the retention discard failed.
 			return snap, fmt.Errorf("created %s, but discarding the oldest snapshot for %s failed: %w", label, name, err)
 		}
@@ -961,8 +1072,11 @@ func (s *Service) RemoveSnapshot(ctx context.Context, name, id string) error {
 	if findSnapshot(env.Snapshots, id) == -1 {
 		return fmt.Errorf("%w: snapshot %s", ErrNotFound, id)
 	}
-	if err := manager.RemoveSnapshot(ctx, env, id); err != nil {
+	if err := manager.RemoveSnapshot(ctx, env, id); err != nil && !errors.Is(err, ErrSnapshotGone) {
 		return fmt.Errorf("remove snapshot on %s: %w", name, err)
+	} else if err != nil {
+		// Already gone from the disk: only the registry still lists it.
+		slog.Warn("snapshot was no longer in the disk; removed from the list", "environment", name, "snapshot", id, "error", err)
 	}
 	_, err = s.update(ctx, env.ID, func(e *Environment) { e.Snapshots = withoutSnapshot(e.Snapshots, id) })
 	return err

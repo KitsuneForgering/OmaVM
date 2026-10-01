@@ -19,6 +19,8 @@ Dialog {
     property bool machine: true
     property string errorText: ""
     property bool submitting: false
+    // Created and listed: the window offers to open it right away.
+    signal created(string name, string kind)
     property string nameError: ""
     property bool nameTouched: false
     // Same reasoning as SettingsDialog.qml's cpusTouched/memoryTouched:
@@ -89,7 +91,15 @@ Dialog {
     // fade — a small touch that makes the wizard read as a sequence
     // rather than a stack of unrelated screens.
     property int animatingFromStep: 0
-    onOpened: resetForm()
+    onOpened: {
+        resetForm()
+        backend.refreshHost()
+    }
+    // Said before anything is created: without hardware virtualization a
+    // Desktop can be created but won't start. Unknown (no answer from the
+    // CLI yet) says nothing.
+    readonly property var kvm: backend.hostCapabilities ? backend.hostCapabilities["kvm"] : undefined
+    readonly property bool kvmMissing: !!kvm && kvm.available === false
     onStepChanged: {
         const forward = step > animatingFromStep
         animatingFromStep = step
@@ -112,6 +122,7 @@ Dialog {
             if (ok) {
                 dialog.errorText = ""
                 dialog.close()
+                dialog.created(name.text.trim(), dialog.machine ? "machine" : "box")
             } else {
                 dialog.errorText = text
             }
@@ -169,7 +180,9 @@ Dialog {
                     Layout.fillWidth: true
                     // The card's text is drawn by its own contentItem.
                     Accessible.name: qsTr("Desktop")
-                    Accessible.description: qsTr("A complete system with its own kernel, from an installation ISO")
+                    Accessible.description: dialog.kvmMissing
+                        ? qsTr("A complete system with its own kernel, from an installation ISO. This computer can't start one yet: hardware virtualization isn't available.")
+                        : qsTr("A complete system with its own kernel, from an installation ISO")
                     checkable: true
                     checked: dialog.machine
                     padding: 16
@@ -211,6 +224,16 @@ Dialog {
                             horizontalAlignment: Text.AlignHCenter
                             font.pixelSize: 12
                             color: backend.themeMuted
+                        }
+                        Label {
+                            objectName: "kvmWarning"
+                            Layout.fillWidth: true
+                            visible: dialog.kvmMissing
+                            text: qsTr("This computer can't start Desktops yet: hardware virtualization isn't available to your user. %1.")
+                                  .arg(dialog.kvm && dialog.kvm.hint ? dialog.kvm.hint : qsTr("Enable virtualization in the firmware"))
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            color: backend.themeRed
                         }
                     }
                     onClicked: dialog.machine = true
@@ -329,6 +352,7 @@ Dialog {
                 }
                 TextField {
                     id: name
+                    objectName: "nameField"
                     Layout.fillWidth: true
                     Accessible.name: qsTr("Environment name")
                     placeholderText: qsTr("Environment name")

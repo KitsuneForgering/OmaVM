@@ -61,6 +61,7 @@ Dialog {
         selectedColor = settings.color || ""
         // Opt-out: absent/false in the JSON means "not disabled", i.e. on.
         shareClipboard.checked = !settings.clipboard_disabled
+        clipboardDirection.currentIndex = Math.max(0, ["both", "to-host", "to-guest"].indexOf(settings.clipboard_direction || "both"))
         travelMode.checked = !settings.travel_mode_disabled
         vulkan.checked = !settings.vulkan_disabled
         launcher.checked = !settings.launcher_disabled
@@ -270,8 +271,25 @@ Dialog {
                 : qsTr("Let programs in the Box copy to your clipboard")
             ToolTip.visible: hovered
             ToolTip.text: dialog.machine
-                ? qsTr("Requires spice-vdagent in the guest desktop. Restart the Machine to apply a change.")
+                ? qsTr("Requires spice-vdagent in the guest desktop. Reopen the Machine's window to apply a change.")
                 : qsTr("Programs like Neovim and tmux can copy text straight to the clipboard. They can never read it. Applies to terminals opened after saving.")
+        }
+        // One way only, when copying in one direction shouldn't happen
+        // (a guest that must not see what this computer copies, say).
+        ComboBox {
+            id: clipboardDirection
+            objectName: "clipboardDirection"
+            visible: dialog.machine && shareClipboard.checked
+            Layout.fillWidth: true
+            Layout.leftMargin: 32
+            Accessible.name: qsTr("Clipboard direction")
+            textRole: "text"
+            valueRole: "value"
+            model: [
+                { value: "both", text: qsTr("Both ways") },
+                { value: "to-host", text: qsTr("Only from the guest to this computer") },
+                { value: "to-guest", text: qsTr("Only from this computer to the guest") }
+            ]
         }
         CheckBox {
             id: travelMode
@@ -318,6 +336,51 @@ Dialog {
             text: qsTr("Open the display fullscreen")
             ToolTip.visible: hovered
             ToolTip.text: qsTr("Leave fullscreen with Hyprland's own fullscreen key. A window rule of your own for OmaVM's viewer takes precedence.")
+        }
+
+        // What works with the guest right now, checked on the guest side
+        // where OmaVM can (internal/backend/qemu/guestcaps.go), and the
+        // next step for the rest — in text, not only in a tooltip.
+        Label {
+            visible: dialog.machine && guestRepeater.count > 0
+            text: qsTr("Working with the guest")
+            font.pixelSize: 18
+            font.weight: Font.DemiBold
+        }
+        Repeater {
+            id: guestRepeater
+            model: dialog.machine ? (dialog.environment.guestCapabilities || []) : []
+            ColumnLayout {
+                id: capabilityRow
+                required property var modelData
+                objectName: "guestCapability-" + modelData.id
+                Layout.fillWidth: true
+                spacing: 2
+                Label {
+                    Layout.fillWidth: true
+                    text: capabilityRow.modelData.label + ": " + (
+                        capabilityRow.modelData.state === "ready" ? qsTr("working")
+                        : capabilityRow.modelData.state === "needs_guest_component" ? qsTr("needs a step in the guest")
+                        : capabilityRow.modelData.state === "needs_restart" ? qsTr("applies after a restart")
+                        : capabilityRow.modelData.state === "off" ? qsTr("off")
+                        : qsTr("not checked yet"))
+                    color: capabilityRow.modelData.state === "ready" ? backend.themeGreen : backend.themeForeground
+                    wrapMode: Text.Wrap
+                }
+                // Selectable: the mount command is meant to be copied.
+                TextEdit {
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: capabilityRow.modelData.hint || ""
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: Text.Wrap
+                    color: backend.themeMuted
+                    font.pixelSize: 12
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
+                }
+            }
         }
 
         Label {
@@ -404,7 +467,7 @@ Dialog {
                 onClicked: {
                     dialog.errorText = ""
                     dialog.submitting = true
-                    backend.configure(environment.name, description.text.trim(), cpus.value, dialog.cpusTouched, memory.value, dialog.memoryTouched, dialog.machine, sharedPath.text.trim(), sharedReadOnly.checked, disconnectISO.checked, dialog.selectedColor, shareClipboard.checked, travelMode.checked, vulkan.checked, openInEmptyWorkspace.checked, launcher.checked, ssh.checked, fullscreen.checked)
+                    backend.configure(environment.name, description.text.trim(), cpus.value, dialog.cpusTouched, memory.value, dialog.memoryTouched, dialog.machine, sharedPath.text.trim(), sharedReadOnly.checked, disconnectISO.checked, dialog.selectedColor, shareClipboard.checked, travelMode.checked, vulkan.checked, openInEmptyWorkspace.checked, launcher.checked, ssh.checked, fullscreen.checked, clipboardDirection.currentValue)
                 }
             }
         }

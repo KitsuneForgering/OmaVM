@@ -347,13 +347,13 @@ func TestMissingBinaryDiagnostic(t *testing.T) {
 // startFakeQEMU runs a stand-in for this Machine's QEMU: a long-lived
 // process with -pidfile <its pidfile> on its command line, recorded in
 // that pidfile, like the real one.
-func startFakeQEMU(t *testing.T, b *Backend, name string) *exec.Cmd {
+func startFakeQEMU(t *testing.T, b *Backend, name string, extra ...string) *exec.Cmd {
 	t.Helper()
 	if err := os.MkdirAll(b.dir(name), 0700); err != nil {
 		t.Fatal(err)
 	}
 	// "; :" keeps sh from exec'ing sleep, which would drop the arguments.
-	child := exec.Command("sh", "-c", "sleep 60; :", "qemu-system-x86_64", "-pidfile", b.pidPath(name))
+	child := exec.Command("sh", append([]string{"-c", "sleep 60; :", "qemu-system-x86_64", "-pidfile", b.pidPath(name)}, extra...)...)
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -402,5 +402,101 @@ func TestStalePidfileOfAnotherProcessIsNotRunning(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if err := stranger.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("Force Stop killed an unrelated process: %v", err)
+	}
+}
+
+// Without access to /dev/kvm, QEMU's error doesn't say what to do; the
+// failure says it, and is classified as unsupported on this computer.
+func TestStartWithoutKVMSaysHowToFixIt(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	script := "#!/bin/sh\necho 'Could not access KVM kernel module: No such file or directory' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "qemu-system-x86_64"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	saved := devRoot
+	devRoot = t.TempDir() // no kvm node
+	t.Cleanup(func() { devRoot = saved })
+	b := &Backend{stateDir: dir}
+	err := b.Start(context.Background(), core.Environment{Name: "guest", Kind: core.Machine})
+	if !errors.Is(err, core.ErrUnsupported) || !strings.Contains(err.Error(), "kvm group") {
+		t.Fatalf("expected an actionable KVM error, got %v", err)
+	}
+}
+
+// QEMU deletes its pidfile on any normal exit; one left behind means the
+// process was killed or crashed, and the stopped Machine says so instead
+// of looking like it was shut down.
+func TestSessionThatEndedWithoutShuttingDownIsReported(t *testing.T) {
+	b := &Backend{stateDir: t.TempDir()}
+	env := core.Environment{Name: "guest", Kind: core.Machine}
+	st, err := b.Status(context.Background(), env)
+	if err != nil || strings.Contains(st.Warning, "without shutting down") {
+		t.Fatalf("a Machine that was never started: %+v, %v", st, err)
+	}
+	if err := os.MkdirAll(b.dir(env.Name), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A pid no process has: the session's QEMU is gone.
+	if err := os.WriteFile(b.pidPath(env.Name), []byte("2147483646"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err = b.Status(context.Background(), env)
+	if err != nil || st.State != core.StateStopped || !strings.Contains(st.Warning, "ended without shutting down") || !strings.Contains(st.Warning, "coredumpctl") {
+		t.Fatalf("unexpected end not reported: %+v, %v", st, err)
+	}
+}
+
+func TestKnownStartFailuresSayWhatToDo(t *testing.T) {
+	env := core.Environment{Name: "guest", Kind: core.Machine}
+	locked := "qemu-system-x86_64: -drive file=/x/disk.qcow2,if=virtio,format=qcow2: Failed to get \"write\" lock\nIs another process using the image [/x/disk.qcow2]?"
+	if err := startFailure(env, locked); !errors.Is(err, core.ErrBusy) || !strings.Contains(err.Error(), "in use by another program") {
+		t.Fatalf("locked disk: %v", err)
+	}
+	memory := "qemu-system-x86_64: cannot set up guest memory 'pc.ram': Cannot allocate memory"
+	if err := startFailure(env, memory); !errors.Is(err, core.ErrUnsupported) || !strings.Contains(err.Error(), "lower its memory") {
+		t.Fatalf("memory: %v", err)
+	}
+	if err := startFailure(env, "qemu-system-x86_64: something else"); err != nil {
+		t.Fatalf("unknown output must stay as QEMU said it: %v", err)
+	}
+}
+
+// More memory than the host has is refused before QEMU runs, and an
+// installation image this user can't read doesn't stop the Machine from
+// starting from its disk.
+func TestStartChecksMemoryAndReadableMedia(t *testing.T) {
+	if _, ok := hostMemoryMiB(); !ok {
+		t.Skip("no /proc/meminfo")
+	}
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "args")
+	t.Setenv("OMAVM_TEST_ARGS", capture)
+	t.Setenv("PATH", dir)
+	if err := os.WriteFile(filepath.Join(dir, "qemu-system-x86_64"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OMAVM_TEST_ARGS\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b := &Backend{stateDir: dir}
+	env := core.Environment{Name: "guest", Kind: core.Machine, Settings: core.EnvironmentSettings{MemoryMiB: 1 << 30}}
+	if err := b.Start(context.Background(), env); !errors.Is(err, core.ErrInvalidInput) || !strings.Contains(err.Error(), "more than this computer has") {
+		t.Fatalf("expected a memory error, got %v", err)
+	}
+	if _, err := os.Stat(capture); err == nil {
+		t.Fatal("QEMU ran anyway")
+	}
+
+	if os.Geteuid() == 0 {
+		return // root reads anything
+	}
+	iso := filepath.Join(t.TempDir(), "x.iso")
+	if err := os.WriteFile(iso, nil, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	env = core.Environment{Name: "guest", Kind: core.Machine, Image: iso}
+	if err := b.Start(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(capture); strings.Contains(string(data), "-cdrom") {
+		t.Fatalf("an unreadable ISO was passed to QEMU: %s", data)
 	}
 }

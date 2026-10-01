@@ -1,6 +1,7 @@
 #include "backend.h"
 #include "terminalview.h"
 #include "displayview.h"
+#include "singleinstance.h"
 
 #include <QCommandLineParser>
 #include <QGuiApplication>
@@ -36,7 +37,8 @@ bool placeViewer(const QString &title, bool emptyWorkspace) {
 // Qt app to build and package instead of two. connectionFd is a socket
 // QEMU already accepted (the backend hands it over as an inherited fd).
 int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
-              bool shareClipboard, bool emptyWorkspace, bool fullscreen) {
+              const QString &envName, const QString &clipboardMode,
+              bool emptyWorkspace, bool fullscreen) {
   if (!placeViewer(title, emptyWorkspace))
     return 0;
   app.setApplicationName(QStringLiteral("dev.omavm.viewer"));
@@ -53,10 +55,21 @@ int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
       QStringLiteral("displayConnectionFd"), connectionFd);
   engine.rootContext()->setContextProperty(QStringLiteral("displayTitle"),
                                            title);
+  // Empty when launched by an older omavm: the viewer then can't offer
+  // to reconnect.
+  engine.rootContext()->setContextProperty(QStringLiteral("displayEnvName"),
+                                           envName);
   // The Machine's own Settings (opt-out, on by default) decide this —
   // not a per-window checkbox the user has to remember to re-check.
   engine.rootContext()->setContextProperty(
-      QStringLiteral("displayShareClipboard"), shareClipboard);
+      QStringLiteral("displayShareClipboard"),
+      clipboardMode != QStringLiteral("false"));
+  engine.rootContext()->setContextProperty(
+      QStringLiteral("displayClipboardDirection"),
+      clipboardMode == QStringLiteral("to-host") ||
+              clipboardMode == QStringLiteral("to-guest")
+          ? clipboardMode
+          : QString());
   // A personal window rule for the viewer (contrib/hypr/omavm-viewer.lua)
   // already makes it fullscreen: asking too would toggle it back off.
   engine.rootContext()->setContextProperty(
@@ -76,7 +89,7 @@ int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
 // (contrib/hypr/omavm-viewer.lua) covers both.
 int runTerminal(QGuiApplication &app, const QString &envName,
                 const QString &title, bool shareClipboard,
-                bool emptyWorkspace) {
+                bool emptyWorkspace, const QString &color) {
   if (!placeViewer(title, emptyWorkspace))
     return 0;
   app.setApplicationName(QStringLiteral("dev.omavm.viewer"));
@@ -95,6 +108,10 @@ int runTerminal(QGuiApplication &app, const QString &envName,
   // own opt-out setting.
   engine.rootContext()->setContextProperty(
       QStringLiteral("terminalShareClipboard"), shareClipboard);
+  // The environment's color tag, so the window says which Box it is — and
+  // that it isn't the host. Empty when the Box has none.
+  engine.rootContext()->setContextProperty(QStringLiteral("terminalColor"),
+                                           color);
   engine.load(QUrl(QStringLiteral("qrc:/TerminalViewer.qml")));
   if (engine.rootObjects().isEmpty())
     return -1;
@@ -122,9 +139,10 @@ int main(int argc, char *argv[]) {
       QStringLiteral("title"), QStringLiteral("OmaVM"));
   QCommandLineOption shareClipboardOption(
       QStringLiteral("share-clipboard"),
-      QStringLiteral("Whether to share the text clipboard with the guest, "
-                     "or let programs in a Box copy to it"),
-      QStringLiteral("bool"), QStringLiteral("true"));
+      QStringLiteral("Share the text clipboard with the guest (true, false, "
+                     "to-host or to-guest for one way only), or let programs "
+                     "in a Box copy to it"),
+      QStringLiteral("mode"), QStringLiteral("true"));
   parser.addOption(viewerOption);
   parser.addOption(terminalOption);
   parser.addOption(titleOption);
@@ -136,7 +154,18 @@ int main(int argc, char *argv[]) {
       QStringLiteral("fullscreen"),
       QStringLiteral("Open a Machine's display fullscreen"),
       QStringLiteral("bool"), QStringLiteral("true"));
+  QCommandLineOption environmentOption(
+      QStringLiteral("environment"),
+      QStringLiteral("The Machine shown by --display-fd, to reconnect to it"),
+      QStringLiteral("name"));
+  parser.addOption(environmentOption);
+  QCommandLineOption colorOption(
+      QStringLiteral("color"),
+      QStringLiteral("The environment's color tag, shown along the "
+                     "terminal's top edge"),
+      QStringLiteral("color"));
   parser.addOption(shareClipboardOption);
+  parser.addOption(colorOption);
   parser.addOption(emptyWorkspaceOption);
   parser.addOption(fullscreenOption);
   parser.process(app);
@@ -146,12 +175,23 @@ int main(int argc, char *argv[]) {
   };
   if (parser.isSet(viewerOption))
     return runViewer(app, parser.value(viewerOption).toInt(),
-                     parser.value(titleOption), on(shareClipboardOption),
-                     on(emptyWorkspaceOption), on(fullscreenOption));
+                     parser.value(titleOption),
+                     parser.value(environmentOption),
+                     parser.value(shareClipboardOption), on(emptyWorkspaceOption),
+                     on(fullscreenOption));
+  // A Box's terminal only copies to this computer (OSC 52).
   if (parser.isSet(terminalOption))
     return runTerminal(app, parser.value(terminalOption),
-                       parser.value(titleOption), on(shareClipboardOption),
-                       on(emptyWorkspaceOption));
+                       parser.value(titleOption),
+                       on(shareClipboardOption) &&
+                           parser.value(shareClipboardOption) !=
+                               QStringLiteral("to-guest"),
+                       on(emptyWorkspaceOption), parser.value(colorOption));
+
+  SingleInstance instance(SingleInstance::defaultSocketPath());
+  if (instance.notifyRunning())
+    return 0; // the running Experience Center comes forward instead
+  instance.listen();
 
   app.setApplicationName(QStringLiteral("dev.omavm.app"));
   app.setDesktopFileName(QStringLiteral("dev.omavm.app"));
@@ -170,5 +210,17 @@ int main(int argc, char *argv[]) {
   engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
   if (engine.rootObjects().isEmpty())
     return -1;
+  // Closing the window only hides it while an action finishes; a second
+  // launch shows it again.
+  QObject::connect(&instance, &SingleInstance::activated, &app, [&]() {
+    if (auto *window =
+            qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
+      window->show();
+      window->raise();
+      window->requestActivate();
+    }
+    backend.cancelQuit();
+    backend.focusManagerWorkspace();
+  });
   return app.exec();
 }

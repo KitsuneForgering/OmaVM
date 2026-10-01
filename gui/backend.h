@@ -18,6 +18,13 @@ class Backend final : public QObject {
   // Environment name -> what is running on it right now.
   Q_PROPERTY(
       QVariantMap busyEnvironments READ busyEnvironments NOTIFY busyChanged)
+  // Environment name -> the stage a long operation reported last
+  // (`create --progress`), such as which layer of an image is downloading.
+  Q_PROPERTY(QVariantMap progress READ progress NOTIFY busyChanged)
+  // `omavm host --json`, keyed by capability id ("kvm", ...): what this
+  // computer offers Desktops, so the UI can say it before creating one.
+  Q_PROPERTY(QVariantMap hostCapabilities READ hostCapabilities NOTIFY
+                 hostCapabilitiesChanged)
   Q_PROPERTY(QString listError READ listError NOTIFY listErrorChanged)
   Q_PROPERTY(QVariantList apps READ apps NOTIFY appsChanged)
   Q_PROPERTY(bool appsLoading READ appsLoading NOTIFY appsChanged)
@@ -45,6 +52,8 @@ public:
   bool busy() const { return !m_busy.isEmpty(); }
   QString busyAction() const;
   QVariantMap busyEnvironments() const;
+  QVariantMap progress() const { return m_progress; }
+  QVariantMap hostCapabilities() const { return m_hostCapabilities; }
   QString listError() const { return m_listError; }
   bool appsLoading() const { return m_appsLoading; }
   QString appsEnvironment() const { return m_appsEnvironment; }
@@ -65,6 +74,8 @@ public:
   // `omavm` mid-operation (a Restart cut between Stop and Start leaves the
   // Machine off). readyToQuit fires now if idle, else once the action ends.
   void requestQuit();
+  // The window was shown again before the last action finished.
+  void cancelQuit() { m_quitRequested = false; }
 
   Q_INVOKABLE void refresh();
   Q_INVOKABLE void poll();
@@ -74,6 +85,8 @@ public:
                                      bool memoryTouched);
   Q_INVOKABLE void start(const QString &name);
   Q_INVOKABLE void open(const QString &name, const QString &kind);
+  // Starts a Machine without keeping this session's changes, then opens it.
+  Q_INVOKABLE void openEphemeral(const QString &name);
   Q_INVOKABLE void stop(const QString &name);
   Q_INVOKABLE void restart(const QString &name);
   Q_INVOKABLE void pause(const QString &name);
@@ -86,12 +99,23 @@ public:
                              bool disconnectISO, const QString &color,
                              bool shareClipboard, bool travelMode, bool vulkan,
                              bool openInEmptyWorkspace, bool launcher,
-                             bool ssh, bool fullscreen);
+                             bool ssh, bool fullscreen,
+                             const QString &clipboardDirection = QString());
   Q_INVOKABLE void remove(const QString &name);
   Q_INVOKABLE void createSnapshot(const QString &name, const QString &label);
   Q_INVOKABLE void goToSnapshot(const QString &name, const QString &id);
   Q_INVOKABLE void removeSnapshot(const QString &name, const QString &id);
   Q_INVOKABLE void refreshApps(const QString &name);
+  Q_INVOKABLE void refreshHost();
+  Q_INVOKABLE void cloneEnvironment(const QString &name, const QString &newName);
+  Q_INVOKABLE void updateEnvironment(const QString &name);
+  // From a viewer: open the Machine again (a new display connection, in a
+  // new viewer), or bring up the Experience Center.
+  Q_INVOKABLE void reopenDisplay(const QString &name) const;
+  Q_INVOKABLE void showManager() const;
+  // Brings the Experience Center's workspace into view, for a second
+  // launch: Wayland doesn't let a window focus itself unasked.
+  Q_INVOKABLE void focusManagerWorkspace() const;
   Q_INVOKABLE void exportApp(const QString &name, const QString &id);
   Q_INVOKABLE void unexportApp(const QString &name, const QString &id);
   Q_INVOKABLE void copyToClipboard(const QString &text) const;
@@ -104,6 +128,7 @@ public:
   }
 
 signals:
+  void hostCapabilitiesChanged();
   void readyToQuit();
   void environmentsChanged();
   void appsChanged();
@@ -159,6 +184,8 @@ private:
   QFileSystemWatcher m_themeWatcher;
   // Key (environment name, "" for the list) -> action label.
   QMap<QString, QString> m_busy;
+  QVariantMap m_progress;
+  QVariantMap m_hostCapabilities;
   bool m_refreshPending = false;
   QString m_listError;
   bool m_appsLoading = false;

@@ -139,7 +139,8 @@ DisplayView::DisplayView(QQuickItem *parent) : QQuickItem(parent) {
           &DisplayView::connectionFailed);
   connect(&m_client, &DisplayClient::clipboardReceived, this,
           [this](const QString &text) {
-            if (!m_shareClipboard || !window() || !window()->isActive())
+            if (!m_shareClipboard || !window() || !window()->isActive() ||
+                m_clipboardDirection == QStringLiteral("to-guest"))
               return;
             QScopedValueRollback<bool> receiving(m_receivingClipboard, true);
             QGuiApplication::clipboard()->setText(text);
@@ -185,7 +186,8 @@ void DisplayView::setShareClipboard(bool enabled) {
 void DisplayView::syncClipboard() {
   const bool active = m_shareClipboard && window() && window()->isActive();
   m_client.setClipboardEnabled(active);
-  if (active && !m_receivingClipboard)
+  if (active && !m_receivingClipboard &&
+      m_clipboardDirection != QStringLiteral("to-host"))
     m_client.sendClipboard(QGuiApplication::clipboard()->text());
 }
 

@@ -9,7 +9,7 @@ Estes itens são hipóteses de evolução. Cada um exige um caso de uso demonstr
 - [ ] **Instalação mais assistida:** avaliar catálogo pequeno de imagens e download verificável, com origem, tamanho, licença e recuperação de falhas; manter ISO local como caminho completo.
 - [ ] **Blend Mode para Machines:** demonstrar um fluxo real de aplicação integrada antes de definir infraestrutura. A base de exportação das Boxes não comprova viabilidade para Machines; evitar duplicar indicadores de sistema do host.
 - [ ] **Transferência de arquivos e arrastar/soltar:** escolher uma combinação host/guest suportada, testar permissões e falhas e preferir capacidades existentes a um protocolo próprio.
-- [ ] **Clone e recuperação mais guiada:** validar demanda e capacidades do backend; explicar consumo de disco e dependências antes de oferecer modalidades de clone.
+- [ ] **Clone e recuperação mais guiada:** clone completo feito em 2026-10-01 (ver a triagem em `TODO.md`); falta o vinculado e a recuperação guiada. validar demanda e capacidades do backend; explicar consumo de disco e dependências antes de oferecer modalidades de clone.
 - [ ] **Organização de grandes listas:** validar necessidade de favoritos, grupos e reordenação; quando implementados, persistir o comportamento de verdade.
 - [ ] **Integrações adicionais:** avaliar áudio, dispositivos e múltiplos monitores por jornada concreta, deixando explícita a matriz de suporte. Não assumir paridade com o Parallels por adotar sua referência de UX.
 

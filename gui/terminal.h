@@ -90,6 +90,21 @@ public:
   // otherwise reach it as Ctrl+C.
   static bool isCopyShortcut(int key, Qt::KeyboardModifiers modifiers);
 
+  // Keys the window keeps for itself instead of the program, as Alacritty
+  // (Omarchy's terminal) does: Shift+PageUp/PageDown/Home/End scroll the
+  // history; Ctrl+Plus (or =), Ctrl+Minus and Ctrl+0 change the font size.
+  enum class ViewShortcut {
+    None,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset
+  };
+  static ViewShortcut viewShortcut(int key, Qt::KeyboardModifiers modifiers);
+
   // The scrollback followed by the visible screen, as one list of lines.
   int bufferLineCount() const;
   QVector<TerminalCell> bufferLine(int index) const;

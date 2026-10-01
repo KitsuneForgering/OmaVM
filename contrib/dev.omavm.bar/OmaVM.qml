@@ -93,18 +93,22 @@ BarWidget {
     tooltipText: "OmaVM — " + root.envCount + " environment" + (root.envCount === 1 ? "" : "s") + ", click to open"
     iconComponent: Component {
       Item {
+        // Same as the shell's own symbolic tray icons
+        // (/usr/share/omarchy/shell/plugins/bar/widgets/Tray.qml): a hidden
+        // image kept as a layer, so the effect has a texture to sample, and
+        // decoded at physical pixels for HiDPI.
         Image {
           id: glyphImage
           anchors.fill: parent
           source: Qt.resolvedUrl("icon.svg")
-          sourceSize.width: width * 2
-          sourceSize.height: height * 2
+          sourceSize.width: Math.round(Math.min(width, height) * Screen.devicePixelRatio)
+          sourceSize.height: Math.round(Math.min(width, height) * Screen.devicePixelRatio)
           fillMode: Image.PreserveAspectFit
           visible: false
-          asynchronous: true
+          layer.enabled: true
         }
         MultiEffect {
-          anchors.fill: parent
+          anchors.fill: glyphImage
           source: glyphImage
           colorization: 1
           colorizationColor: button.active && button.useActiveColor ? button.activeColor : button.foreground

@@ -26,7 +26,8 @@ Item {
             return {
                 cpusTouched: call[4], memoryTouched: call[6],
                 shareClipboard: call[12], travelMode: call[13], vulkan: call[14],
-                launcher: call[16], ssh: call[17], fullscreen: call[18]
+                launcher: call[16], ssh: call[17], fullscreen: call[18],
+                clipboardDirection: call[19]
             }
         }
 
@@ -104,6 +105,29 @@ Item {
             compare(saved.launcher, false)
             compare(saved.ssh, false)
             compare(saved.fullscreen, false)
+        }
+
+        // A one-way clipboard survives reopening Settings and saving.
+        function test_clipboardDirectionRoundTrips() {
+            compare(saveUntouched({ clipboard_direction: "to-host" }).clipboardDirection, "to-host")
+            compare(saveUntouched({ clipboard_direction: "to-guest" }).clipboardDirection, "to-guest")
+            compare(saveUntouched({}).clipboardDirection, "both")
+        }
+
+        // Each guest integration says its state and next step in text.
+        function test_guestCapabilitiesAreSpelledOut() {
+            const component = Qt.createComponent("qrc:/SettingsDialog.qml")
+            const d = component.createObject(root, { environment: { name: "vm", kind: "machine", settings: {},
+                guestCapabilities: [
+                    { id: "clipboard", label: "Clipboard", state: "needs_guest_component", hint: "Install spice-vdagent in the guest and sign in to its desktop" },
+                    { id: "shared_folder", label: "Shared folder", state: "ready", hint: "/home/me is at /mnt/omavm-share in the guest" }
+                ] } })
+            d.open()
+            tryVerify(() => d.opened)
+            const clipboard = findChild(d.contentItem, "guestCapability-clipboard")
+            verify(clipboard, "clipboard row")
+            verify(findChild(d.contentItem, "guestCapability-shared_folder"), "shared folder row")
+            d.destroy()
         }
     }
 }

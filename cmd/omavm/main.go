@@ -12,7 +12,10 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/KitsuneSemCalda/OmaVM/internal/applog"
 	"github.com/KitsuneSemCalda/OmaVM/internal/backend/box"
@@ -33,13 +36,21 @@ func main() {
 		defer closeLog()
 	}
 
-	if err := run(os.Args[1:]); err != nil {
+	args := os.Args[1:]
+	if err := run(args); err != nil {
 		slog.Error("command failed", "error", err)
 		fmt.Fprintln(os.Stderr, "omavm:", err)
+		cmd := ""
+		if len(args) > 0 {
+			cmd = args[0]
+		}
+		if wantsJSON(args) {
+			writeJSONError(os.Stdout, err)
+		}
 		if os.Getenv("OMAVM_NOTIFY_ERRORS") == "1" {
 			notifyError(err)
 		}
-		os.Exit(1)
+		os.Exit(exitCodeFor(cmd, err))
 	}
 }
 
@@ -57,7 +68,7 @@ func notifyError(err error) {
 func run(args []string) error {
 	if len(args) == 0 {
 		printUsage()
-		return errors.New("no command given")
+		return usagef("no command given")
 	}
 
 	qemuBackend, err := qemu.New()
@@ -98,6 +109,10 @@ func run(args []string) error {
 	case "create":
 		return cmdCreate(ctx, svc, rest)
 	case "start":
+		rest, ephemeral := extractBoolFlag(rest, "ephemeral")
+		if ephemeral {
+			return cmdSimple(ctx, rest, "start", svc.StartEphemeral)
+		}
 		return cmdSimple(ctx, rest, "start", svc.Start)
 	case "open":
 		return cmdSimple(ctx, rest, "open", svc.Open)
@@ -129,6 +144,13 @@ func run(args []string) error {
 		return cmdExec(ctx, svc, rest)
 	case "ssh":
 		return cmdSSH(ctx, svc, rest)
+	case "clone":
+		return cmdClone(ctx, svc, rest)
+	case "run":
+		return cmdRun(ctx, svc, rest)
+	case "update", "upgrade":
+		rest, progress := extractBoolFlag(rest, "progress")
+		return cmdSimple(withProgress(ctx, progress), rest, "update", svc.Update)
 	case "rm", "remove":
 		return cmdSimple(ctx, rest, "remove", svc.Remove)
 	case "list", "ls":
@@ -138,7 +160,7 @@ func run(args []string) error {
 		return nil
 	default:
 		printUsage()
-		return fmt.Errorf("unknown command %q", cmd)
+		return usagef("unknown command %q", cmd)
 	}
 }
 
@@ -149,11 +171,14 @@ func cmdCreate(ctx context.Context, svc *core.Service, args []string) error {
 	image := fs.String("image", "", "distro image (Box) or boot ISO path (Machine)")
 	cpus := fs.Int("cpus", 0, "virtual CPUs (Machines only, defaults to 2)")
 	memory := fs.Int("memory-mib", 0, "memory in MiB (Machines only, defaults to 2048)")
+	progress := fs.Bool("progress", false, `print each stage of a long creation on stdout as "progress: STAGE"`)
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError{err}
 	}
+	// Stages of a long creation (a Box's image download).
+	ctx = withProgress(ctx, *progress)
 	if *name == "" {
-		return errors.New("create: --name is required")
+		return usagef("create: --name is required")
 	}
 	kind, err := core.ParseEnvironmentKind(*kindStr)
 	if err != nil {
@@ -176,9 +201,74 @@ func cmdCreate(ctx context.Context, svc *core.Service, args []string) error {
 	return nil
 }
 
+// cmdRun: omavm run --ephemeral --image ISO [--name NAME] [--cpus N]
+// [--memory-mib N] [--no-open]. Waits for the Machine to shut down, then
+// deletes it; Ctrl+C ends it at once.
+func cmdRun(ctx context.Context, svc *core.Service, args []string) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	ephemeral := fs.Bool("ephemeral", false, "delete the environment when it shuts down (required)")
+	image := fs.String("image", "", "installation ISO to boot (Desktops)")
+	name := fs.String("name", "", "name while it runs (default: ephemeral-XXXXXX)")
+	cpus := fs.Int("cpus", 0, "virtual CPUs (defaults to 2)")
+	memory := fs.Int("memory-mib", 0, "memory in MiB (defaults to 2048)")
+	noOpen := fs.Bool("no-open", false, "don't open its display (for scripts and agents)")
+	if err := fs.Parse(args); err != nil {
+		return usageError{err}
+	}
+	if !*ephemeral {
+		return usagef("run: only --ephemeral is supported: omavm run --ephemeral --image path/to/system.iso")
+	}
+	if fs.NArg() != 0 {
+		return usagef("run: unexpected arguments %q", fs.Args())
+	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	env := core.Environment{Name: *name, Kind: core.Machine, Image: *image,
+		Settings: core.EnvironmentSettings{CPUs: *cpus, MemoryMiB: *memory}}
+	fmt.Fprintln(os.Stderr, "omavm: running without keeping anything; it is deleted when it shuts down (Ctrl+C ends it now)")
+	created, err := svc.RunEphemeral(ctx, env, !*noOpen, time.Second)
+	if errors.Is(err, context.Canceled) {
+		fmt.Printf("ended and deleted %s\n", created.Name)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s shut down and was deleted\n", created.Name)
+	return nil
+}
+
+// cmdClone: omavm clone NAME NEW_NAME [--progress]
+func cmdClone(ctx context.Context, svc *core.Service, args []string) error {
+	args, progress := extractBoolFlag(args, "progress")
+	if len(args) != 2 {
+		return usagef("clone: usage: omavm clone <name> <new-name>")
+	}
+	ctx = withProgress(ctx, progress)
+	clone, err := svc.Clone(ctx, args[0], args[1])
+	if err != nil {
+		return err
+	}
+	fmt.Printf("cloned %s as %s\n", args[0], clone.Name)
+	return nil
+}
+
+// withProgress reports the stages of a long operation: on stdout as
+// "progress: STAGE" for a program that asked (the GUI), on a terminal for
+// a person. Never on a piped stderr, which callers read as the error text.
+func withProgress(ctx context.Context, toStdout bool) context.Context {
+	if toStdout {
+		return core.WithProgress(ctx, func(stage string) { fmt.Println("progress:", stage) })
+	}
+	if info, err := os.Stderr.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+		return core.WithProgress(ctx, func(stage string) { fmt.Fprintf(os.Stderr, "omavm: %s…\n", stage) })
+	}
+	return ctx
+}
+
 func cmdSimple(ctx context.Context, args []string, verb string, fn func(context.Context, string) error) error {
 	if len(args) != 1 {
-		return fmt.Errorf("%s: expected exactly one environment name", verb)
+		return usagef("%s: expected exactly one environment name", verb)
 	}
 	return fn(ctx, args[0])
 }
@@ -190,7 +280,7 @@ func cmdStatus(ctx context.Context, svc *core.Service, args []string) error {
 	// would silently swallow a trailing --json instead of honoring it.
 	args, jsonOut := extractBoolFlag(args, "json")
 	if len(args) != 1 {
-		return errors.New("status: expected exactly one environment name")
+		return usagef("status: expected exactly one environment name")
 	}
 
 	status, err := svc.Status(ctx, args[0])
@@ -205,12 +295,24 @@ func cmdStatus(ctx context.Context, svc *core.Service, args []string) error {
 	} else {
 		fmt.Println(status.State)
 	}
+	if status.Ephemeral {
+		fmt.Println("changes in this session are discarded when it shuts down")
+	}
+	if status.Warning != "" {
+		fmt.Println("warning:", status.Warning)
+	}
+	if status.TravelMode {
+		fmt.Println("travel mode: started with fewer CPUs because this computer was on battery")
+	}
+	if status.RestartNeeded {
+		fmt.Println("restart to apply the saved settings")
+	}
 	return nil
 }
 
 func cmdPreview(ctx context.Context, svc *core.Service, args []string) error {
 	if len(args) != 1 {
-		return errors.New("preview: expected exactly one environment name")
+		return usagef("preview: expected exactly one environment name")
 	}
 	path, err := svc.Preview(ctx, args[0])
 	if err != nil {
@@ -222,7 +324,7 @@ func cmdPreview(ctx context.Context, svc *core.Service, args []string) error {
 
 func cmdSnapshot(ctx context.Context, svc *core.Service, args []string) error {
 	if len(args) == 0 {
-		return errors.New("snapshot: expected a subcommand (create, list, go-to, remove)")
+		return usagef("snapshot: expected a subcommand (create, list, go-to, remove)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -235,7 +337,7 @@ func cmdSnapshot(ctx context.Context, svc *core.Service, args []string) error {
 			return fmt.Errorf("snapshot create: %w", err)
 		}
 		if len(rest) != 1 {
-			return errors.New("snapshot create: expected exactly one environment name")
+			return usagef("snapshot create: expected exactly one environment name")
 		}
 		snap, err := svc.CreateSnapshot(ctx, rest[0], label)
 		if err != nil {
@@ -246,7 +348,7 @@ func cmdSnapshot(ctx context.Context, svc *core.Service, args []string) error {
 	case "list":
 		rest, jsonOut := extractBoolFlag(rest, "json")
 		if len(rest) != 1 {
-			return errors.New("snapshot list: expected exactly one environment name")
+			return usagef("snapshot list: expected exactly one environment name")
 		}
 		snapshots, err := svc.ListSnapshots(ctx, rest[0])
 		if err != nil {
@@ -268,16 +370,16 @@ func cmdSnapshot(ctx context.Context, svc *core.Service, args []string) error {
 		return nil
 	case "go-to":
 		if len(rest) != 2 {
-			return errors.New("snapshot go-to: usage: omavm snapshot go-to <name> <id>")
+			return usagef("snapshot go-to: usage: omavm snapshot go-to <name> <id>")
 		}
 		return svc.GoToSnapshot(ctx, rest[0], rest[1])
 	case "remove", "rm":
 		if len(rest) != 2 {
-			return errors.New("snapshot remove: usage: omavm snapshot remove <name> <id>")
+			return usagef("snapshot remove: usage: omavm snapshot remove <name> <id>")
 		}
 		return svc.RemoveSnapshot(ctx, rest[0], rest[1])
 	default:
-		return fmt.Errorf("snapshot: unknown subcommand %q", sub)
+		return usagef("snapshot: unknown subcommand %q", sub)
 	}
 }
 
@@ -292,12 +394,12 @@ func cmdApps(ctx context.Context, svc *core.Service, args []string) error {
 		return fmt.Errorf("apps: %w", err)
 	}
 	if len(args) != 1 {
-		return errors.New("apps: expected exactly one environment name")
+		return usagef("apps: expected exactly one environment name")
 	}
 	name := args[0]
 
 	if exportID != "" && unexportID != "" {
-		return errors.New("apps: choose only one of --export or --unexport")
+		return usagef("apps: choose only one of --export or --unexport")
 	}
 	if exportID != "" {
 		return svc.ExportApp(ctx, name, exportID)
@@ -333,7 +435,7 @@ func cmdApps(ctx context.Context, svc *core.Service, args []string) error {
 func cmdIntegration(ctx context.Context, svc *core.Service, args []string) error {
 	args, jsonOut := extractBoolFlag(args, "json")
 	if len(args) != 1 {
-		return errors.New("integration: expected exactly one environment name")
+		return usagef("integration: expected exactly one environment name")
 	}
 	report, err := svc.Integration(ctx, args[0])
 	if err != nil {
@@ -347,13 +449,19 @@ func cmdIntegration(ctx context.Context, svc *core.Service, args []string) error
 		fmt.Printf(" (%s)", report.Hint)
 	}
 	fmt.Println()
+	for _, c := range report.Capabilities {
+		fmt.Printf("%s: %s\n", strings.ToLower(c.Label), strings.ReplaceAll(c.State, "_", " "))
+		if c.Hint != "" {
+			fmt.Printf("  %s\n", c.Hint)
+		}
+	}
 	return nil
 }
 
 func cmdHost(ctx context.Context, svc *core.Service, args []string) error {
 	args, jsonOut := extractBoolFlag(args, "json")
 	if len(args) != 0 {
-		return errors.New("host: takes no arguments")
+		return usagef("host: takes no arguments")
 	}
 	caps, err := svc.InspectHost(ctx)
 	if err != nil {
@@ -377,7 +485,7 @@ func cmdHost(ctx context.Context, svc *core.Service, args []string) error {
 
 func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	if len(args) == 0 {
-		return errors.New("settings: expected an environment name")
+		return usagef("settings: expected an environment name")
 	}
 	name := args[0]
 	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
@@ -391,6 +499,7 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	snapshotLimit := fs.Int("snapshot-limit", 0, "max snapshots to keep, oldest discarded first (1-100)")
 	color := fs.String("color", "", "tag color: "+strings.Join(core.EnvironmentColors, ", "))
 	shareClipboard := fs.Bool("share-clipboard", false, "share the text clipboard with a Machine's guest, or let programs in a Box's terminal copy to it (on by default)")
+	clipboardDirection := fs.String("clipboard-direction", "", "limit the shared clipboard to one way: both, to-host or to-guest (Machines only)")
 	travelMode := fs.Bool("travel-mode", false, "use half the CPUs automatically while the host is on battery (on by default)")
 	vulkan := fs.Bool("vulkan", false, "Vulkan acceleration when the host supports it (Machines only, on by default)")
 	ssh := fs.Bool("ssh", false, "reach the Machine with omavm ssh/exec over a local channel any program on this computer can use, Boxes included (Machines only, on by default)")
@@ -399,10 +508,10 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	fullscreen := fs.Bool("fullscreen", false, "open the Machine's display fullscreen (Machines only, on by default)")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args[1:]); err != nil {
-		return err
+		return usageError{err}
 	}
 	if fs.NArg() != 0 {
-		return errors.New("settings: unexpected positional arguments")
+		return usagef("settings: unexpected positional arguments")
 	}
 	patch := core.SettingsPatch{}
 	changed := false
@@ -429,6 +538,9 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 			changed = true
 		case "share-clipboard":
 			patch.ShareClipboard = shareClipboard
+			changed = true
+		case "clipboard-direction":
+			patch.ClipboardDirection = clipboardDirection
 			changed = true
 		case "vulkan":
 			patch.Vulkan = vulkan
@@ -463,7 +575,7 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 		}
 	})
 	if modeFlags > 1 {
-		return errors.New("settings: choose only one of --shared-read-only or --shared-writable")
+		return usagef("settings: choose only one of --shared-read-only or --shared-writable")
 	}
 	var settings core.EnvironmentSettings
 	var err error
@@ -488,7 +600,16 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 		fmt.Printf("open the display fullscreen: %t\n", !settings.FullscreenDisabled)
 		fmt.Printf("ssh (reachable by any program on this computer, Boxes included): %t\n", !settings.SSHDisabled)
 	}
-	fmt.Printf("share clipboard: %t\n", !settings.ClipboardDisabled)
+	switch {
+	case settings.ClipboardDisabled:
+		fmt.Println("share clipboard: false")
+	case settings.ClipboardDirection == core.ClipboardToHost:
+		fmt.Println("share clipboard: only from the environment to this computer")
+	case settings.ClipboardDirection == core.ClipboardToGuest:
+		fmt.Println("share clipboard: only from this computer to the environment")
+	default:
+		fmt.Println("share clipboard: true (both ways)")
+	}
 	fmt.Printf("travel mode (reduce CPUs on battery): %t\n", !settings.TravelModeDisabled)
 	fmt.Printf("show in the app launcher: %t\n", !settings.LauncherDisabled)
 	if settings.SharedPath != "" {
@@ -507,7 +628,7 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 
 func cmdExec(ctx context.Context, svc *core.Service, args []string) error {
 	if len(args) < 2 {
-		return errors.New("exec: usage: omavm exec <name> -- <command> [args...]")
+		return usagef("exec: usage: omavm exec <name> -- <command> [args...]")
 	}
 	name := args[0]
 	rest := args[1:]
@@ -515,7 +636,7 @@ func cmdExec(ctx context.Context, svc *core.Service, args []string) error {
 		rest = rest[1:]
 	}
 	if len(rest) == 0 {
-		return errors.New("exec: no command given")
+		return usagef("exec: no command given")
 	}
 	return svc.Exec(ctx, name, rest)
 }
@@ -537,15 +658,15 @@ func cmdSSH(ctx context.Context, svc *core.Service, args []string) error {
 		name, args = args[0], args[1:]
 	}
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError{err}
 	}
 	if name == "" && fs.NArg() == 1 {
 		name = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		return errors.New("ssh: usage: omavm ssh <name> [--user LOGIN] [-- command...]")
+		return usagef("ssh: usage: omavm ssh <name> [--user LOGIN] [-- command...]")
 	}
 	if name == "" {
-		return errors.New("ssh: expected a Machine name")
+		return usagef("ssh: expected a Machine name")
 	}
 	return svc.SSH(ctx, name, *login, command)
 }
@@ -630,7 +751,7 @@ func extractValueFlag(args []string, name string) ([]string, string, error) {
 		}
 		if a == prefix {
 			if i+1 >= len(args) {
-				return nil, "", fmt.Errorf("%s requires a value", prefix)
+				return nil, "", usagef("%s requires a value", prefix)
 			}
 			value = args[i+1]
 			i++
@@ -667,8 +788,10 @@ func printUsage() {
 
 commands:
   create --name NAME --kind box|machine --image IMAGE     create an environment (a Box needs a
-                                                           container image, a Machine an ISO)
-  start NAME                                              start an environment
+    [--progress]                                           container image, a Machine an ISO);
+                                                           --progress prints "progress: STAGE" lines
+  start NAME [--ephemeral]                                start an environment; --ephemeral (Machines
+                                                           only) discards this session's changes at shutdown
   open NAME                                                start (if needed) and attach
   stop NAME                                                stop an environment
   restart NAME                                             restart a Machine
@@ -680,6 +803,7 @@ commands:
   host [--json]                                            show what this computer offers Machines
   settings NAME [--description TEXT] [--cpus N] [--color C] view or change settings
     [--share-clipboard=BOOL] [--travel-mode=BOOL]           (on by default)
+    [--clipboard-direction both|to-host|to-guest]          one-way clipboard (Machines)
     [--vulkan=BOOL] [--ssh=BOOL] [--fullscreen=BOOL]       (Machines only, on by default)
     [--launcher=BOOL]                                      list in the app launcher (on by default)
     [--open-in-empty-workspace=BOOL]                       open in an empty workspace (on by default)
@@ -694,6 +818,15 @@ commands:
   exec NAME -- CMD [ARGS...]                               run a command inside a Box, or a Machine over SSH
   ssh NAME [--user LOGIN] [-- CMD...]                      open a shell in a Machine (guest needs systemd 256+
                                                            and sshd; any program here can reach it, Boxes too)
+  run --ephemeral --image ISO [--name NAME] [--no-open]    run a new Desktop that is deleted when it shuts
+    [--cpus N] [--memory-mib N]                            down (Ctrl+C ends and deletes it at once)
+  clone NAME NEW_NAME [--progress]                         copy a stopped environment: its disk with its
+                                                           snapshots, or its container (needs that much space)
+  update NAME [--progress]                                 update a Box's installed software (distrobox upgrade)
   rm NAME                                                  remove an environment
-  list [--status] [--json]                                 list known environments, with their state`)
+  list [--status] [--json]                                 list known environments, with their state
+
+exit codes: 0 ok, 1 failure, 2 invalid request, 3 not found, 4 name taken,
+5 unsupported here, 6 busy; exec and ssh return their command's code.
+With --json, failures also print {"error": {"code", "message"}} on stdout.`)
 }
