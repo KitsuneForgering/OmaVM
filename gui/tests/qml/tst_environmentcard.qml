@@ -110,10 +110,10 @@ Item {
         // A long name at the narrowest width is cut inside the card, never
         // pushing the open action out of it (docs/TODO.md P2).
         function test_longNameStaysInsideANarrowCard() {
-            const long = "Fedora de testes do projeto de compiladores com um nome bem comprido"
+            const longName = "Fedora de testes do projeto de compiladores com um nome bem comprido"
             loader.setSource("qrc:/EnvironmentCard.qml", {
                 width: 320,
-                environment: { name: long, kind: "box", status: "stopped", settings: { color: "green" } }
+                environment: { name: longName, kind: "box", status: "stopped", settings: { color: "green" } }
             })
             tryVerify(() => loader.status === Loader.Ready)
             const card = loader.item
