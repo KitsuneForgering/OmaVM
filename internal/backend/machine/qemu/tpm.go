@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/KitsuneSemCalda/OmaVM/internal/core"
+	"github.com/KitsuneForgering/OmaVM/internal/core"
 )
 
 // A UEFI Machine gets a TPM 2.0 from swtpm, one process per Machine like

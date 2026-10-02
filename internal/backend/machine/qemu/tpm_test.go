@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/KitsuneSemCalda/OmaVM/internal/core"
+	"github.com/KitsuneForgering/OmaVM/internal/core"
 )
 
 // fakeSwtpm stands in for swtpm: it records its arguments, creates the

@@ -12,7 +12,7 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/KitsuneSemCalda/OmaVM/internal/core"
+	"github.com/KitsuneForgering/OmaVM/internal/core"
 )
 
 // firmwareDirs hold QEMU's firmware descriptors (docs/interop/firmware.json
