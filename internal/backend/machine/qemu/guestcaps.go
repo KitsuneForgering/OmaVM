@@ -8,7 +8,11 @@ import (
 	"github.com/KitsuneSemCalda/OmaVM/internal/core"
 )
 
-const mountHint = "In a Linux guest: sudo mkdir -p /mnt/omavm-share && sudo mount -t virtiofs omavm-share /mnt/omavm-share"
+// prepareHint names the action that does a guest step for the person.
+const prepareHint = "Prepare the Guest (omavm prepare) does it through the guest agent"
+
+// mountHint is the same mount Prepare the Guest sets up, kept across boots.
+const mountHint = "In a Linux guest: " + manualMount
 
 // guestChecks is what could be checked on a running Machine's guest side;
 // nil pointers mean the check couldn't run.
@@ -32,7 +36,7 @@ func guestCapabilities(env core.Environment, checks *guestChecks) []core.GuestCa
 	case *checks.clipboardOpen:
 		clipboard.State, clipboard.Hint = core.GuestReady, "Text copies both ways while its window is active"
 	default:
-		clipboard.State, clipboard.Hint = core.GuestNeedsComponent, "Install spice-vdagent in the guest and sign in to its desktop"
+		clipboard.State, clipboard.Hint = core.GuestNeedsComponent, "Install spice-vdagent in the guest and sign in to its desktop. "+prepareHint
 	}
 
 	shared := core.GuestCapability{ID: "shared_folder", Label: "Shared folder"}
@@ -48,7 +52,7 @@ func guestCapabilities(env core.Environment, checks *guestChecks) []core.GuestCa
 	case *checks.virtiofsMount != "":
 		shared.State, shared.Hint = core.GuestReady, fmt.Sprintf("%s is at %s in the guest", settings.SharedPath, *checks.virtiofsMount)
 	default:
-		shared.State, shared.Hint = core.GuestNeedsComponent, mountHint
+		shared.State, shared.Hint = core.GuestNeedsComponent, prepareHint+". "+mountHint
 	}
 	return []core.GuestCapability{clipboard, shared}
 }

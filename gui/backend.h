@@ -109,6 +109,9 @@ public:
   Q_INVOKABLE void refreshHost();
   Q_INVOKABLE void cloneEnvironment(const QString &name, const QString &newName);
   Q_INVOKABLE void updateEnvironment(const QString &name);
+  // Sets up a running Machine's guest; its steps come back as JSON in
+  // actionFinished("prepare", ...), for the Settings dialog to show.
+  Q_INVOKABLE void prepareGuest(const QString &name);
   // From a viewer: open the Machine again (a new display connection, in a
   // new viewer), or bring up the Experience Center.
   Q_INVOKABLE void reopenDisplay(const QString &name) const;
@@ -152,7 +155,7 @@ private:
   QString busyMessage(const QString &key) const;
   void run(const QString &key, const QStringList &arguments,
            const QString &label, const QString &tag = QString(),
-           bool refreshAfter = true);
+           bool refreshAfter = true, bool toastOutput = true);
   void refreshSoon();
   void listLoaded();
   void runForApps(const QStringList &arguments, const QString &name,

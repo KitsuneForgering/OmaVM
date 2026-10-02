@@ -132,6 +132,8 @@ func run(args []string) error {
 		return cmdHost(ctx, svc, rest)
 	case "integration":
 		return cmdIntegration(ctx, svc, rest)
+	case "prepare":
+		return cmdPrepare(ctx, svc, rest)
 	case "settings", "configure":
 		return cmdSettings(ctx, svc, rest)
 	case "preview":
@@ -453,6 +455,28 @@ func cmdIntegration(ctx context.Context, svc *core.Service, args []string) error
 		fmt.Printf("%s: %s\n", strings.ToLower(c.Label), strings.ReplaceAll(c.State, "_", " "))
 		if c.Hint != "" {
 			fmt.Printf("  %s\n", c.Hint)
+		}
+	}
+	return nil
+}
+
+func cmdPrepare(ctx context.Context, svc *core.Service, args []string) error {
+	args, jsonOut := extractBoolFlag(args, "json")
+	args, progress := extractBoolFlag(args, "progress")
+	if len(args) != 1 {
+		return usagef("prepare: expected exactly one environment name")
+	}
+	steps, err := svc.PrepareGuest(withProgress(ctx, progress), args[0])
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(steps)
+	}
+	for _, step := range steps {
+		fmt.Printf("%s: %s\n", strings.ToLower(step.Label), step.Result)
+		if step.Detail != "" {
+			fmt.Printf("  %s\n", step.Detail)
 		}
 	}
 	return nil
@@ -800,6 +824,9 @@ commands:
   force-stop NAME                                          immediately stop a Machine
   status NAME [--json]                                     show environment status
   integration NAME [--json]                                check Machine guest tools
+  prepare NAME [--json] [--progress]                       set up a running Machine's guest through its guest
+                                                           agent: installs the clipboard agent, mounts the shared
+                                                           folder, checks sound and resolution (changes the guest)
   host [--json]                                            show what this computer offers Machines
   settings NAME [--description TEXT] [--cpus N] [--color C] view or change settings
     [--share-clipboard=BOOL] [--travel-mode=BOOL]           (on by default)

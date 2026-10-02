@@ -100,6 +100,18 @@ applications to your Omarchy launcher. Machines offer configurable shared
 folders and bidirectional text clipboard sharing; clipboard sharing is on by
 default and can be disabled per Machine, but requires guest support.
 
+**Prepare the Guest** (in a running Machine's Settings, or
+`omavm prepare NAME`) does that guest support for you in a Linux guest,
+through the QEMU guest agent: it installs `spice-vdagent` with the guest's
+package manager and mounts the shared folder at `/mnt/omavm-share` (added
+to `/etc/fstab`, so it mounts again at every boot), then checks sound and
+resolution. It changes the guest system as root, so it runs only when you
+ask. Two limits: the guest needs `qemu-guest-agent` running first (OmaVM
+says the command to install it), and on Fedora, RHEL and other SELinux
+systems the agent may read the system but not change it, so for those
+steps it shows the exact command to run in the guest instead. The
+clipboard connects after you sign in to the guest's desktop again.
+
 Every environment also appears in your app launcher, with an icon in its
 color tag, so it opens like any installed app (Settings → "Show in the app
 launcher" turns that off). In a Box's terminal, select text with the mouse

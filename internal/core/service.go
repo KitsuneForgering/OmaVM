@@ -715,6 +715,22 @@ func (s *Service) Integration(ctx context.Context, name string) (IntegrationRepo
 	return reporter.Integration(ctx, env)
 }
 
+// PrepareGuest sets up the guest side of a Machine's integrations. Like
+// Exec, it takes no lock: it acts inside a running guest and can take
+// minutes (installing packages), and holding the environment's lock that
+// long would block a Stop.
+func (s *Service) PrepareGuest(ctx context.Context, name string) ([]PreparationStep, error) {
+	env, backend, err := s.resolve(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	preparer, ok := backend.(GuestPreparer)
+	if !ok {
+		return nil, Unsupportedf("%s is a Box: it already shares your home folder, clipboard and display with this computer", name)
+	}
+	return preparer.PrepareGuest(ctx, env)
+}
+
 // InspectHost reports host capabilities from every backend that offers
 // them, Machine first.
 func (s *Service) InspectHost(ctx context.Context) ([]HostCapability, error) {

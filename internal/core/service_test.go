@@ -1065,3 +1065,37 @@ func TestFullscreenIsOnByDefaultAndMachineOnly(t *testing.T) {
 		t.Fatalf("fullscreen on a Box = %v, want ErrUnsupported", err)
 	}
 }
+
+type preparingBackend struct {
+	*fakeBackend
+	prepared []string
+}
+
+func (b *preparingBackend) PrepareGuest(ctx context.Context, env core.Environment) ([]core.PreparationStep, error) {
+	b.prepared = append(b.prepared, env.Name)
+	return []core.PreparationStep{{ID: "clipboard", Label: "Clipboard", Result: core.StepDone}}, nil
+}
+
+// A Machine's guest is prepared by its backend; a Box shares the host
+// already and says so instead of pretending to prepare anything.
+func TestPrepareGuest(t *testing.T) {
+	ctx := context.Background()
+	machine := &preparingBackend{fakeBackend: newFakeBackend("fake-machine")}
+	svc := core.NewService(&memStore{}, newFakeBackend("fake-box"), machine)
+	if _, err := svc.Create(ctx, core.Environment{Name: "desktop", Image: testISO(t), Kind: core.Machine}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, core.Environment{Name: "dev", Image: "fedora", Kind: core.Box}); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := svc.PrepareGuest(ctx, "desktop")
+	if err != nil || len(steps) != 1 || len(machine.prepared) != 1 {
+		t.Fatalf("steps=%v err=%v prepared=%v", steps, err, machine.prepared)
+	}
+	if _, err := svc.PrepareGuest(ctx, "dev"); !errors.Is(err, core.ErrUnsupported) {
+		t.Errorf("a Box: %v", err)
+	}
+	if _, err := svc.PrepareGuest(ctx, "nope"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("unknown: %v", err)
+	}
+}

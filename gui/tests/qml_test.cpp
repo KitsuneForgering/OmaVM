@@ -30,6 +30,10 @@ public:
     insert(QStringLiteral("lastCall"),
            QVariantList{QStringLiteral("exportApp"), name, id});
   }
+  Q_INVOKABLE void prepareGuest(const QString &name) {
+    insert(QStringLiteral("lastCall"),
+           QVariantList{QStringLiteral("prepareGuest"), name});
+  }
   Q_INVOKABLE void unexportApp(const QString &name, const QString &id) {
     insert(QStringLiteral("lastCall"),
            QVariantList{QStringLiteral("unexportApp"), name, id});

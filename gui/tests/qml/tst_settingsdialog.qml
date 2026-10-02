@@ -129,5 +129,45 @@ Item {
             verify(findChild(d.contentItem, "guestCapability-shared_folder"), "shared folder row")
             d.destroy()
         }
+
+        // Preparing the guest is offered only for a running Machine, and
+        // each step comes back in words, a manual one with its command.
+        function test_prepareTheGuest() {
+            const component = Qt.createComponent("qrc:/SettingsDialog.qml")
+            const stopped = component.createObject(root, { environment: { name: "vm", kind: "machine", status: "stopped", settings: {} } })
+            stopped.open()
+            tryVerify(() => stopped.opened)
+            verify(!findChild(stopped.contentItem, "prepareButton").visible, "nothing to prepare while it is stopped")
+            stopped.destroy()
+            const box = component.createObject(root, { environment: { name: "dev", kind: "box", status: "running", settings: {} } })
+            box.open()
+            tryVerify(() => box.opened)
+            verify(!findChild(box.contentItem, "prepareButton").visible, "a Box has nothing to prepare")
+            box.destroy()
+
+            backend.lastCall = []
+            const d = component.createObject(root, { environment: { name: "vm", kind: "machine", status: "running", settings: {} } })
+            d.open()
+            tryVerify(() => d.opened)
+            const button = findChild(d.contentItem, "prepareButton")
+            verify(button.visible && button.enabled)
+            button.clicked()
+            compare(backend.lastCall[0], "prepareGuest")
+            compare(backend.lastCall[1], "vm")
+            verify(!button.enabled, "one preparation at a time")
+            backend.finishAction("prepare", true, JSON.stringify([
+                { id: "clipboard", label: "Clipboard", result: "manual", detail: "In the guest, run: sudo dnf install spice-vdagent" },
+                { id: "shared_folder", label: "Shared folder", result: "done", detail: "/home/me is at /mnt/omavm-share in the guest" }
+            ]))
+            verify(button.enabled)
+            tryVerify(() => findItem(d.contentItem, "prepareStep-clipboard") !== null)
+            verify(findItem(d.contentItem, "prepareStep-shared_folder"))
+
+            button.clicked()
+            backend.finishAction("prepare", false, "vm has no guest agent answering. Install and start qemu-guest-agent")
+            compare(findChild(d.contentItem, "prepareError").text, "vm has no guest agent answering. Install and start qemu-guest-agent")
+            verify(findItem(d.contentItem, "prepareStep-clipboard") === null, "old steps are cleared")
+            d.destroy()
+        }
     }
 }

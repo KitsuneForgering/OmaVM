@@ -14,6 +14,10 @@ Dialog {
     property string selectedColor: ""
     property string errorText: ""
     property bool submitting: false
+    // Preparing the guest (omavm prepare): its steps, or why it couldn't run.
+    property bool preparing: false
+    property var prepareSteps: []
+    property string prepareError: ""
     // `environment` (and its `.settings`) comes from `backend.environments`,
     // which is populated straight from `omavm list --json` — the *raw*,
     // persisted settings (internal/core/service.go's List, unlike
@@ -70,11 +74,29 @@ Dialog {
         fullscreen.checked = !settings.fullscreen_disabled
         errorText = ""
         submitting = false
+        preparing = false
+        prepareSteps = []
+        prepareError = ""
     }
 
     Connections {
         target: backend
         function onActionFinished(tag, ok, text) {
+            if (tag === "prepare") {
+                if (!dialog.preparing) return
+                dialog.preparing = false
+                if (!ok) {
+                    dialog.prepareError = text
+                    return
+                }
+                try {
+                    dialog.prepareSteps = JSON.parse(text)
+                    dialog.prepareError = ""
+                } catch (e) {
+                    dialog.prepareError = text
+                }
+                return
+            }
             if (tag !== "configure") return
             dialog.submitting = false
             if (ok) {
@@ -372,6 +394,78 @@ Dialog {
                     Layout.fillWidth: true
                     visible: text !== ""
                     text: capabilityRow.modelData.hint || ""
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: Text.Wrap
+                    color: backend.themeMuted
+                    font.pixelSize: 12
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
+                }
+            }
+        }
+
+        // Does in the guest what the rows above ask for, through its guest
+        // agent: it changes the guest system, so only when asked, and it
+        // says so before.
+        Label {
+            visible: prepareButton.visible
+            Layout.fillWidth: true
+            text: qsTr("Installs the clipboard agent and mounts the shared folder inside the guest, through its guest agent, and checks sound and resolution.")
+            wrapMode: Text.Wrap
+            color: backend.themeMuted
+            font.pixelSize: 12
+        }
+        Button {
+            id: prepareButton
+            objectName: "prepareButton"
+            visible: dialog.machine && dialog.environment.status === "running"
+            enabled: !dialog.preparing && !(backend.busyEnvironments || {})[dialog.environment.name]
+            text: dialog.preparing
+                  ? ((backend.progress || {})[dialog.environment.name] || qsTr("Preparing…"))
+                  : qsTr("Prepare the Guest")
+            Accessible.name: qsTr("Prepare the guest")
+            onClicked: {
+                dialog.preparing = true
+                dialog.prepareSteps = []
+                dialog.prepareError = ""
+                backend.prepareGuest(dialog.environment.name)
+            }
+        }
+        Label {
+            objectName: "prepareError"
+            visible: text !== ""
+            Layout.fillWidth: true
+            text: dialog.prepareError
+            wrapMode: Text.Wrap
+            color: backend.themeRed
+        }
+        Repeater {
+            model: dialog.prepareSteps
+            ColumnLayout {
+                id: stepRow
+                required property var modelData
+                objectName: "prepareStep-" + modelData.id
+                Layout.fillWidth: true
+                spacing: 2
+                Label {
+                    Layout.fillWidth: true
+                    text: stepRow.modelData.label + ": " + (
+                        stepRow.modelData.result === "done" ? qsTr("set up")
+                        : stepRow.modelData.result === "ready" ? qsTr("working")
+                        : stepRow.modelData.result === "manual" ? qsTr("one step left for you")
+                        : stepRow.modelData.result === "skipped" ? qsTr("skipped")
+                        : qsTr("failed"))
+                    color: stepRow.modelData.result === "failed" ? backend.themeRed
+                           : (stepRow.modelData.result === "done" || stepRow.modelData.result === "ready") ? backend.themeGreen
+                           : backend.themeForeground
+                    wrapMode: Text.Wrap
+                }
+                // Selectable: a manual step is a command to copy.
+                TextEdit {
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: stepRow.modelData.detail || ""
                     readOnly: true
                     selectByMouse: true
                     wrapMode: Text.Wrap

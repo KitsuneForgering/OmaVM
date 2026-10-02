@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -93,10 +94,19 @@ func qgaExecute(conn net.Conn, dec *json.Decoder, command string, timeout time.D
 
 // qgaQuery runs an agent command and returns its result.
 func qgaQuery(conn net.Conn, dec *json.Decoder, command string, timeout time.Duration) (json.RawMessage, error) {
+	return qgaCall(conn, dec, command, nil, timeout)
+}
+
+// qgaCall runs an agent command with arguments (none when nil).
+func qgaCall(conn net.Conn, dec *json.Decoder, command string, arguments any, timeout time.Duration) (json.RawMessage, error) {
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
 	}
-	if err := json.NewEncoder(conn).Encode(map[string]string{"execute": command}); err != nil {
+	request := map[string]any{"execute": command}
+	if arguments != nil {
+		request["arguments"] = arguments
+	}
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
 		return nil, fmt.Errorf("%s: %w", command, err)
 	}
 	var reply struct {
@@ -113,8 +123,16 @@ func qgaQuery(conn net.Conn, dec *json.Decoder, command string, timeout time.Dur
 }
 
 // virtiofsMountpoint asks the guest agent where a virtiofs filesystem is
-// mounted in the guest, "" when none is.
+// mounted in the guest, "" when none is. guest-get-fsinfo only lists
+// filesystems backed by a disk, so it never shows virtiofs (verified with
+// qemu-ga on Arch: the share mounted and readable, fsinfo listing only
+// /efi and /): the guest's /proc/mounts says. fsinfo stays as the answer
+// for an agent that won't run commands.
 func virtiofsMountpoint(ctx context.Context, socketPath string) (string, error) {
+	code, out, err := guestExec(ctx, socketPath, `awk '$3 == "virtiofs" { print $2; exit }' /proc/mounts`, checkTimeout)
+	if err == nil && code == 0 {
+		return strings.TrimSpace(out), nil
+	}
 	conn, dec, err := qgaDial(ctx, socketPath)
 	if err != nil {
 		return "", err

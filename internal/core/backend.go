@@ -129,6 +129,33 @@ const (
 	GuestOff            = "off"                   // turned off, or not set up
 )
 
+// GuestPreparer is an optional Backend capability that sets up the guest
+// side of the integrations (the clipboard agent, the shared folder)
+// through an agent already running in the guest, and checks what it can't
+// set up. It changes the guest system, so it runs only when asked, never
+// on its own.
+type GuestPreparer interface {
+	PrepareGuest(ctx context.Context, env Environment) ([]PreparationStep, error)
+}
+
+// PreparationStep is what preparing the guest did for one integration.
+type PreparationStep struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Result string `json:"result"`
+	// Detail says what was done, what is still needed, or why it failed.
+	Detail string `json:"detail,omitempty"`
+}
+
+// PreparationStep results.
+const (
+	StepDone    = "done"    // set up now
+	StepReady   = "ready"   // already worked, nothing to do
+	StepManual  = "manual"  // needs something only the person can do
+	StepSkipped = "skipped" // turned off, or not set up in Settings
+	StepFailed  = "failed"
+)
+
 // SnapshotManager is an optional Backend capability for environments whose
 // engine supports point-in-time state capture natively (QEMU/qcow2 internal
 // snapshots for Machines). The Core owns the meaningful Label and the

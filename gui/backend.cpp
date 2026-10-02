@@ -459,7 +459,7 @@ void Backend::capturePreview(int index, int generation) {
 
 void Backend::run(const QString &key, const QStringList &arguments,
                   const QString &label, const QString &tag,
-                  bool refreshAfter) {
+                  bool refreshAfter, bool toastOutput) {
   if (!beginBusy(key, label)) {
     if (!tag.isEmpty())
       emit actionFinished(tag, false, busyMessage(key));
@@ -494,7 +494,7 @@ void Backend::run(const QString &key, const QStringList &arguments,
             process->deleteLater();
           });
   connect(process, &QProcess::finished, this,
-          [this, process, refreshAfter, tag, key, result](int code) {
+          [this, process, refreshAfter, toastOutput, tag, key, result](int code) {
             const QString output =
                 QString::fromUtf8(*result + process->readAllStandardOutput())
                     .trimmed();
@@ -515,7 +515,7 @@ void Backend::run(const QString &key, const QStringList &arguments,
                 emit actionFinished(tag, false, text);
               return;
             }
-            if (!output.isEmpty())
+            if (toastOutput && !output.isEmpty())
               emit message(output, false);
             if (!tag.isEmpty())
               emit actionFinished(tag, true, output);
@@ -697,6 +697,14 @@ void Backend::cloneEnvironment(const QString &name, const QString &newName) {
 void Backend::updateEnvironment(const QString &name) {
   run(name, {QStringLiteral("update"), name, QStringLiteral("--progress")},
       QStringLiteral("updating %1").arg(name), QStringLiteral("update"));
+}
+
+void Backend::prepareGuest(const QString &name) {
+  run(name,
+      {QStringLiteral("prepare"), name, QStringLiteral("--json"),
+       QStringLiteral("--progress")},
+      QStringLiteral("preparing %1").arg(name), QStringLiteral("prepare"),
+      true, false);
 }
 
 void Backend::refreshHost() {
