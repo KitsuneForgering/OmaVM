@@ -984,7 +984,7 @@ const lowSpace = 4 << 30
 // when there is still time to free space. It can't promise anything: the
 // guest can write more than what is free now at any moment.
 func lowSpaceWarning(dir string) string {
-	free, ok := freeSpace(dir)
+	free, ok := FreeSpace(dir)
 	if !ok {
 		return ""
 	}
@@ -998,7 +998,10 @@ func spaceWarning(free uint64) string {
 	return fmt.Sprintf("only %s free on this computer: the Machine pauses if it runs out", formatSize(free))
 }
 
-func freeSpace(dir string) (uint64, bool) {
+// FreeSpace is the host's free space under dir. A variable so tests
+// outside this package fix it, like power.SupplyDir: the CLI's JSON
+// contract must not change with how full the test machine's disk is.
+var FreeSpace = func(dir string) (uint64, bool) {
 	// A Machine's directory may not exist yet; its disk lands in the
 	// state directory above it.
 	for ; dir != "/" && dir != "."; dir = filepath.Dir(dir) {
@@ -1165,7 +1168,7 @@ func (b *Backend) Clone(ctx context.Context, source, clone core.Environment) err
 	if st, ok := info.Sys().(*syscall.Stat_t); ok {
 		used = uint64(st.Blocks) * 512
 	}
-	if free, ok := freeSpace(b.stateDir); ok && free < used+cloneMargin {
+	if free, ok := FreeSpace(b.stateDir); ok && free < used+cloneMargin {
 		return core.Unsupportedf("not enough space to copy %s: its disk uses %s and this computer has %s free", source.Name, formatSize(used), formatSize(free))
 	}
 	if err := os.MkdirAll(b.dir(dst), 0o755); err != nil {

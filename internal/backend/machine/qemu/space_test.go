@@ -27,7 +27,7 @@ func TestSpaceWarning(t *testing.T) {
 // A Machine whose directory doesn't exist yet is measured on the disk
 // that will hold it, and a stopped Machine still reports its state.
 func TestFreeSpaceOfAMissingDirectory(t *testing.T) {
-	if _, ok := freeSpace(filepath.Join(t.TempDir(), "machines", "x")); !ok {
+	if _, ok := FreeSpace(filepath.Join(t.TempDir(), "machines", "x")); !ok {
 		t.Fatal("free space not measured on the parent directory")
 	}
 	b := &Backend{stateDir: t.TempDir()}

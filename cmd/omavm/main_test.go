@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/KitsuneSemCalda/OmaVM/internal/backend/machine/qemu"
 )
 
 func TestReadOnlyCommands(t *testing.T) {
@@ -117,6 +119,11 @@ func withTestRegistry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("DBX_CONTAINER_MANAGER", "")
+	// Plenty of space, whatever the test machine has: otherwise a full
+	// /tmp adds a low-space warning to every Machine's status.
+	saved := qemu.FreeSpace
+	qemu.FreeSpace = func(string) (uint64, bool) { return 1 << 40, true }
+	t.Cleanup(func() { qemu.FreeSpace = saved })
 }
 
 // Regression: --shared-writable=false made the shared folder writable,
