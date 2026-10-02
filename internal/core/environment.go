@@ -134,8 +134,13 @@ type EnvironmentSettings struct {
 	// here, never a per-session UI checkbox the user has to remember to
 	// re-enable. For a Machine, the clipboard is shared with the guest;
 	// for a Box, programs in its terminal may copy to it (OSC 52).
-	ClipboardDisabled  bool `json:"clipboard_disabled,omitempty"`
-	TravelModeDisabled bool `json:"travel_mode_disabled,omitempty"`
+	ClipboardDisabled bool `json:"clipboard_disabled,omitempty"`
+	// ClipboardDirection limits a shared clipboard to one way: "" (both,
+	// the default), ClipboardToHost or ClipboardToGuest. A Box only has
+	// the way to the host (OSC 52); pasting into its terminal is always a
+	// deliberate keystroke.
+	ClipboardDirection string `json:"clipboard_direction,omitempty"`
+	TravelModeDisabled bool   `json:"travel_mode_disabled,omitempty"`
 	// VulkanDisabled turns off Vulkan acceleration for a Machine, which is
 	// otherwise on whenever the host supports it. Same inverted storage as
 	// the two above.
@@ -199,10 +204,43 @@ type SettingsPatch struct {
 	SnapshotLimit        *int
 	Color                *string
 	ShareClipboard       *bool
+	ClipboardDirection   *string
 	TravelMode           *bool
 	Vulkan               *bool
 	Launcher             *bool
 	SSH                  *bool
 	OpenInEmptyWorkspace *bool
 	Fullscreen           *bool
+}
+
+// Clipboard directions (EnvironmentSettings.ClipboardDirection).
+const (
+	ClipboardBoth    = "both"
+	ClipboardToHost  = "to-host"
+	ClipboardToGuest = "to-guest"
+)
+
+// ClipboardToHost reports whether text copied in the environment may
+// reach this computer's clipboard.
+func (s EnvironmentSettings) ClipboardToHost() bool {
+	return !s.ClipboardDisabled && s.ClipboardDirection != ClipboardToGuest
+}
+
+// ClipboardToGuest reports whether text copied on this computer may reach
+// the environment's clipboard (Machines only).
+func (s EnvironmentSettings) ClipboardToGuest() bool {
+	return !s.ClipboardDisabled && s.ClipboardDirection != ClipboardToHost
+}
+
+// ClipboardMode is the clipboard setting as one word: "false" (off),
+// "true" (both ways), ClipboardToHost or ClipboardToGuest — the value of
+// omavm-gui's --share-clipboard.
+func (s EnvironmentSettings) ClipboardMode() string {
+	switch {
+	case s.ClipboardDisabled:
+		return "false"
+	case s.ClipboardDirection == ClipboardToHost || s.ClipboardDirection == ClipboardToGuest:
+		return s.ClipboardDirection
+	}
+	return "true"
 }

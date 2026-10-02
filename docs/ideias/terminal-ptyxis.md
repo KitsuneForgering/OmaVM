@@ -34,6 +34,8 @@ decisão antes de implementar.
 
 ## 2. Cor do ambiente na janela
 
+**Feito (2026-10-01)**: uma faixa de 4 px no alto do terminal, na cor do ambiente, quando ele tem uma. Vem por `--color` do Open da GUI e da entrada do launcher.
+
 O Ptyxis muda a cor da barra conforme a sessão (container, root). A OmaVM
 já tem cor por ambiente (Color tags). Mostrar essa cor no terminal (uma
 faixa fina ou o fundo da barra de status) deixa claro em qual Box se está,

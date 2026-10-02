@@ -2,10 +2,14 @@
 package distrobox
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -59,6 +63,7 @@ func boxName(env core.Environment) string {
 }
 
 func (b *Backend) Create(ctx context.Context, env core.Environment) error {
+	b.pullImage(ctx, env.Image)
 	return b.run(ctx, "create", "--yes", "--name", boxName(env), "--image", env.Image)
 }
 
@@ -261,7 +266,43 @@ func (b *Backend) Exec(ctx context.Context, env core.Environment, args []string)
 }
 
 func (b *Backend) Remove(ctx context.Context, env core.Environment) error {
-	return b.run(ctx, "rm", "--force", boxName(env))
+	engine, image, known := containerImage(ctx, boxName(env))
+	if err := b.run(ctx, "rm", "--force", boxName(env)); err != nil {
+		return err
+	}
+	// A clone's container was made from a commit of its source
+	// (distrobox --clone tags it <source container>:<date>); nobody else
+	// knows that image, so it goes with the clone. Refused, harmlessly,
+	// while another clone still uses it. Pulled images are never touched.
+	if known && isCloneImage(image) {
+		if out, err := exec.CommandContext(ctx, engine, "image", "rm", image).CombinedOutput(); err != nil {
+			slog.Info("clone image kept", "box", env.Name, "image", image, "reason", strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+// containerImage finds which engine holds a container and the image it
+// was created from.
+func containerImage(ctx context.Context, name string) (engine, image string, ok bool) {
+	for _, candidate := range containerEngines() {
+		path, err := exec.LookPath(candidate)
+		if err != nil {
+			continue
+		}
+		out, err := exec.CommandContext(ctx, path, "container", "inspect", "--format", "{{.Config.Image}}", name).Output()
+		if err == nil {
+			return path, strings.TrimSpace(string(out)), true
+		}
+	}
+	return "", "", false
+}
+
+// isCloneImage recognizes the image distrobox --clone commits for a Box
+// OmaVM named: "omavm-…:<date>", local, with no registry in front.
+func isCloneImage(image string) bool {
+	repo := strings.TrimPrefix(image, "localhost/")
+	return strings.HasPrefix(repo, "omavm-") && !strings.Contains(repo, "/")
 }
 
 func (b *Backend) command(ctx context.Context, args ...string) (*exec.Cmd, error) {
@@ -297,6 +338,80 @@ func (b *Backend) runInteractive(ctx context.Context, args ...string) error {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("distrobox %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+// Clone makes clone a copy of source with Distrobox's --clone, which
+// commits the source container to an image and creates the new one from
+// it. Distrobox refuses a running source ("Cannot clone a running
+// container"); this says so first, in OmaVM's words.
+func (b *Backend) Clone(ctx context.Context, source, clone core.Environment) error {
+	status, found, err := b.find(ctx, source)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%w: %s", core.ErrNotFound, missingContainer(source))
+	}
+	if status.State != core.StateStopped {
+		return core.Invalidf("stop %s first: a running Box can't be copied (omavm stop %s)", source.Name, source.Name)
+	}
+	core.ReportProgress(ctx, "Copying %s", source.Name)
+	return b.run(ctx, "create", "--yes", "--clone", boxName(source), "--name", boxName(clone))
+}
+
+// Upgrade runs distrobox upgrade, which starts the Box if needed and has
+// its package manager update everything (dnf, apt, pacman, ...). Each line
+// it prints is reported as a stage: the package manager's own progress.
+func (b *Backend) Upgrade(ctx context.Context, env core.Environment) error {
+	if err := b.requireContainer(ctx, env); err != nil {
+		return err
+	}
+	core.ReportProgress(ctx, "Updating %s", env.Name)
+	return b.runReporting(ctx, "upgrade", boxName(env))
+}
+
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
+
+// runReporting runs a distrobox command, reporting each line of its output
+// as a progress stage; on failure, the error carries the last lines.
+func (b *Backend) runReporting(ctx context.Context, args ...string) error {
+	cmd, err := b.command(ctx, args...)
+	if err != nil {
+		return err
+	}
+	reader, writer := io.Pipe()
+	cmd.Stdout, cmd.Stderr = writer, writer
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("distrobox %s: %w", strings.Join(args, " "), err)
+	}
+	done := make(chan struct{})
+	var tail []string
+	go func() {
+		defer close(done)
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimSpace(ansiEscape.ReplaceAllString(scanner.Text(), ""))
+			if line == "" {
+				continue
+			}
+			tail = append(tail, line)
+			if len(tail) > 8 {
+				tail = tail[1:]
+			}
+			if len(line) > 120 {
+				line = line[:120] + "…"
+			}
+			core.ReportProgress(ctx, "%s", line)
+		}
+	}()
+	err = cmd.Wait()
+	writer.Close()
+	<-done
+	if err != nil {
+		return fmt.Errorf("distrobox %s: %w: %s", strings.Join(args, " "), err, strings.Join(tail, "\n"))
 	}
 	return nil
 }

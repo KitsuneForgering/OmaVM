@@ -19,6 +19,10 @@ class DisplayView : public QQuickItem {
                  connectionFdChanged)
   Q_PROPERTY(bool shareClipboard READ shareClipboard WRITE setShareClipboard
                  NOTIFY shareClipboardChanged)
+  // Limits a shared clipboard to one way: "" (both), "to-host" (only what
+  // the guest copies reaches this computer) or "to-guest".
+  Q_PROPERTY(QString clipboardDirection MEMBER m_clipboardDirection NOTIFY
+                 shareClipboardChanged)
 
 public:
   explicit DisplayView(QQuickItem *parent = nullptr);
@@ -68,6 +72,7 @@ private:
   DisplayClient m_client;
   int m_connectionFd = -1;
   bool m_shareClipboard = false;
+  QString m_clipboardDirection;
   bool m_receivingClipboard = false;
 
   // Latest dma-buf scanout, waiting to be imported on the render thread.

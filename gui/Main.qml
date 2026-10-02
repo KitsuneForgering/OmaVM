@@ -128,6 +128,10 @@ ApplicationWindow {
                     appsDialog.environment = environment
                     appsDialog.open()
                 }
+                onCloneRequested: environment => {
+                    cloneDialog.environment = environment
+                    cloneDialog.open()
+                }
             }
         }
     }
@@ -178,8 +182,44 @@ ApplicationWindow {
         visible: opacity > 0
         Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
     }
-    CreateDialog { id: createDialog }
+    CreateDialog {
+        id: createDialog
+        onCreated: (name, kind) => {
+            firstUse.environmentName = name
+            firstUse.environmentKind = kind
+            firstUse.open()
+        }
+    }
+    // Creation leads to first use (docs/TODO.md P1): the terminal or the
+    // installer is one click away, and "Later" leaves the new card ready.
+    // backend.open refuses a second click while the first is running, so
+    // this never starts a second copy.
+    Dialog {
+        id: firstUse
+        objectName: "firstUseDialog"
+        property string environmentName
+        property string environmentKind
+        readonly property bool machine: environmentKind === "machine"
+        title: qsTr("“%1” is ready").arg(environmentName)
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 32, 420)
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        Component.onCompleted: {
+            standardButton(Dialog.Cancel).text = qsTr("Later")
+        }
+        onAboutToShow: standardButton(Dialog.Ok).text = machine ? qsTr("Start Installer") : qsTr("Open Terminal")
+        Overlay.modal: ThemeScrim {}
+        contentItem: Label {
+            text: firstUse.machine
+                ? qsTr("Start it now to boot the installation media. When the installation is done, shut it down and disconnect the media in Settings.")
+                : qsTr("Open its terminal now, or later from its card or the app launcher.")
+            wrapMode: Text.Wrap
+        }
+        onAccepted: backend.open(environmentName, environmentKind)
+    }
     SettingsDialog { id: settingsDialog }
+    CloneDialog { id: cloneDialog }
     SnapshotsDialog { id: snapshotsDialog }
     AppsDialog { id: appsDialog }
     Dialog {

@@ -1,4 +1,5 @@
 #include "../backend.h"
+#include "../singleinstance.h"
 #include "../colorstoml.h"
 
 #include <QFile>
@@ -24,6 +25,8 @@ private slots:
   void boxTerminalIsTaggedAsTerminal();
   void onlyActiveViewerRulesCount();
   void actionsOnDifferentEnvironmentsRunTogether();
+  void creationReportsProgressStages();
+  void secondLaunchActivatesTheFirst();
   void everyThemeTextMeetsAAA();
 };
 
@@ -132,6 +135,65 @@ void BackendRefreshTest::actionsOnDifferentEnvironmentsRunTogether() {
   // Both began before either ended.
   QVERIFY(lines.at(0).startsWith("begin") && lines.at(1).startsWith("begin"));
   QVERIFY(backend.busyEnvironments().isEmpty());
+}
+
+// A Box's image download used to show only "Creating…" for minutes. The
+// stages `create --progress` prints reach the card while it runs, and are
+// neither shown as the command's result nor left behind once it ends.
+void BackendRefreshTest::creationReportsProgressStages() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QString args = dir.filePath(QStringLiteral("args"));
+  QFile cli(dir.filePath(QStringLiteral("omavm")));
+  QVERIFY(cli.open(QIODevice::WriteOnly));
+  cli.write("#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  create) echo \"$@\" > \"$OMAVM_TEST_ARGS\";\n"
+            "          echo 'progress: Downloading fedora: layer 1'; sleep 0.5;\n"
+            "          echo 'created demo (box, backend=distrobox)' ;;\n"
+            "  list) printf '[]' ;;\n"
+            "esac\n");
+  cli.close();
+  QVERIFY(cli.setPermissions(QFile::ReadOwner | QFile::WriteOwner |
+                             QFile::ExeOwner));
+  qputenv("OMAVM_TEST_ARGS", args.toUtf8());
+  qputenv("PATH", dir.path().toUtf8() + ':' + qgetenv("PATH"));
+
+  Backend backend;
+  QSignalSpy finished(&backend, &Backend::actionFinished);
+  backend.createEnvironment(QStringLiteral("demo"), QStringLiteral("fedora"),
+                            QStringLiteral("box"), 2, false, 2048, false);
+  QTRY_COMPARE_WITH_TIMEOUT(
+      backend.progress().value(QStringLiteral("demo")).toString(),
+      QStringLiteral("Downloading fedora: layer 1"), 3000);
+  QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 5000);
+  QCOMPARE(finished.at(0).at(2).toString(),
+           QStringLiteral("created demo (box, backend=distrobox)"));
+  QVERIFY(backend.progress().isEmpty());
+  QFile recorded(args);
+  QVERIFY(recorded.open(QIODevice::ReadOnly));
+  QVERIFY(recorded.readAll().contains("--progress"));
+}
+
+// The launcher clicked twice, or "Open OmaVM" from a viewer, brings the
+// running Experience Center forward instead of opening a second one; a
+// socket file left by a crash doesn't block the next launch.
+void BackendRefreshTest::secondLaunchActivatesTheFirst() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QString path = dir.filePath(QStringLiteral("omavm-gui.sock"));
+
+  QFile stale(path);
+  QVERIFY(stale.open(QIODevice::WriteOnly));
+  stale.close();
+  SingleInstance first(path);
+  QVERIFY(!first.notifyRunning());
+  QVERIFY(first.listen());
+
+  QSignalSpy activated(&first, &SingleInstance::activated);
+  SingleInstance second(path);
+  QVERIFY(second.notifyRunning());
+  QTRY_COMPARE_WITH_TIMEOUT(activated.size(), 1, 2000);
 }
 
 // Regression: Omarchy's Super+C reached a Box's terminal as Ctrl+C

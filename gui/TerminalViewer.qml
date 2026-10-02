@@ -24,9 +24,22 @@ Window {
     // Box's terminal and a Machine's display fullscreen the same way on
     // the same dedicated workspace without a second rule to maintain.
 
+    // The Box's color tag along the top edge, as Ptyxis colors a container
+    // session: which Box this is, and a reminder it isn't the host.
+    Rectangle {
+        id: colorStrip
+        objectName: "colorStrip"
+        // Only the fixed palette names (core.EnvironmentColors) are drawn.
+        readonly property bool known: ["red", "orange", "yellow", "green", "blue", "purple", "gray"].indexOf(terminalColor) >= 0
+        anchors { left: parent.left; right: parent.right; top: parent.top }
+        height: known ? 4 : 0
+        visible: known
+        color: known ? terminalColor : "transparent"
+    }
+
     TerminalView {
         id: view
-        anchors.fill: parent
+        anchors { left: parent.left; right: parent.right; top: colorStrip.bottom; bottom: parent.bottom }
         focus: true
         envName: terminalEnvName
         shareClipboard: terminalShareClipboard

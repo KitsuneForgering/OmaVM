@@ -123,6 +123,24 @@ private slots:
 
   // Omarchy's universal copy sends Ctrl+Insert; Ctrl+Shift+C is the other
   // common chord. Plain Ctrl+C must still reach the program as SIGINT.
+  // The window keeps Alacritty's scrollback and font-size keys; everything
+  // else, Page Up alone and Ctrl+Shift+0 included, still reaches the program.
+  void viewShortcuts() {
+    using VS = TerminalSession::ViewShortcut;
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_PageUp, Qt::ShiftModifier), VS::PageUp);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_PageDown, Qt::ShiftModifier), VS::PageDown);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_Home, Qt::ShiftModifier), VS::Top);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_End, Qt::ShiftModifier), VS::Bottom);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_Equal, Qt::ControlModifier), VS::ZoomIn);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_Plus, Qt::ControlModifier | Qt::ShiftModifier), VS::ZoomIn);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_Minus, Qt::ControlModifier), VS::ZoomOut);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_0, Qt::ControlModifier), VS::ZoomReset);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_PageUp, Qt::NoModifier), VS::None);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_0, Qt::ControlModifier | Qt::ShiftModifier), VS::None);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_Minus, Qt::ControlModifier | Qt::ShiftModifier), VS::None);
+    QCOMPARE(TerminalSession::viewShortcut(Qt::Key_C, Qt::ControlModifier), VS::None);
+  }
+
   void copyShortcuts() {
     QVERIFY(TerminalSession::isCopyShortcut(Qt::Key_Insert, Qt::ControlModifier));
     QVERIFY(TerminalSession::isCopyShortcut(

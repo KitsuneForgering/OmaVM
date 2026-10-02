@@ -65,6 +65,10 @@ private:
 
   void updateGridSize();
   void loadPalette();
+  // Applies a font size in pixels (bounded), remembers it for the next
+  // terminal, and refits the grid to the window.
+  void setFontPixelSize(int size);
+  void scrollTo(int offset);
   QRgb resolveColor(const TerminalColor &color, bool foreground) const;
   QVector<TerminalCell> lineAt(int visibleRow) const;
   int visibleToBuffer(int visibleRow) const;

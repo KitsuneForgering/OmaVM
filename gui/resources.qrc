@@ -5,6 +5,7 @@
     <file alias="EnvironmentListModel.qml">EnvironmentListModel.qml</file>
     <file alias="CreateDialog.qml">CreateDialog.qml</file>
     <file alias="SettingsDialog.qml">SettingsDialog.qml</file>
+    <file alias="CloneDialog.qml">CloneDialog.qml</file>
     <file alias="SnapshotsDialog.qml">SnapshotsDialog.qml</file>
     <file alias="AppsDialog.qml">AppsDialog.qml</file>
     <file alias="ThemeScrim.qml">ThemeScrim.qml</file>

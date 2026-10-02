@@ -27,5 +27,47 @@ Item {
             compare(dialog.validateName("Ação"), "")
             dialog.destroy()
         }
+
+        // Creation leads to first use: the window learns which environment
+        // was created and of which kind, only when it succeeded.
+        function test_successfulCreationIsAnnounced() {
+            const component = Qt.createComponent("qrc:/CreateDialog.qml")
+            const dialog = component.createObject(root)
+            const spy = createTemporaryObject(signalSpyComponent, root, { target: dialog, signalName: "created" })
+            dialog.machine = false
+            findChild(dialog, "nameField").text = " dev "
+            backend.finishAction("create", false, "boom")
+            compare(spy.count, 0)
+            backend.finishAction("create", true, "")
+            compare(spy.count, 1)
+            compare(spy.signalArguments[0][0], "dev")
+            compare(spy.signalArguments[0][1], "box")
+            backend.finishAction("start", true, "")
+            compare(spy.count, 1)
+            dialog.destroy()
+        }
     }
+
+    TestCase {
+        name: "CreateDialogHost"
+        when: windowShown
+
+        // Without KVM a Desktop can be created but never starts: the
+        // choice says so before anything is created, with the fix.
+        function test_missingKVMIsSaidBeforeCreating() {
+            const component = Qt.createComponent("qrc:/CreateDialog.qml")
+            const dialog = component.createObject(root)
+            const warning = findChild(dialog, "kvmWarning")
+            verify(!dialog.kvmMissing, "unknown must say nothing")
+            backend.hostCapabilities = { kvm: { id: "kvm", available: false, hint: "Add your user to the kvm group" } }
+            verify(dialog.kvmMissing)
+            verify(warning.text.indexOf("Add your user to the kvm group") >= 0)
+            backend.hostCapabilities = { kvm: { id: "kvm", available: true } }
+            verify(!dialog.kvmMissing)
+            backend.hostCapabilities = {}
+            dialog.destroy()
+        }
+    }
+
+    Component { id: signalSpyComponent; SignalSpy {} }
 }

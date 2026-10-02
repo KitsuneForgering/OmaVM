@@ -36,7 +36,7 @@ struct TerminalCell {
 };
 
 // Owns a PTY and the child process attached to it (`omavm open <name>`,
-// unchanged — see internal/backend/distrobox), and turns the raw byte
+// unchanged — see internal/backend/box/distrobox), and turns the raw byte
 // stream coming back from that child into a grid of TerminalCell plus a
 // cursor position, via a small Ground/Escape/CSI/OSC state machine. See
 // gui/README-worthy comment in terminal.cpp for the exact escape-sequence
@@ -89,6 +89,21 @@ public:
   // terminals). Never forwarded to the program: Ctrl+Shift+C would
   // otherwise reach it as Ctrl+C.
   static bool isCopyShortcut(int key, Qt::KeyboardModifiers modifiers);
+
+  // Keys the window keeps for itself instead of the program, as Alacritty
+  // (Omarchy's terminal) does: Shift+PageUp/PageDown/Home/End scroll the
+  // history; Ctrl+Plus (or =), Ctrl+Minus and Ctrl+0 change the font size.
+  enum class ViewShortcut {
+    None,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset
+  };
+  static ViewShortcut viewShortcut(int key, Qt::KeyboardModifiers modifiers);
 
   // The scrollback followed by the visible screen, as one list of lines.
   int bufferLineCount() const;

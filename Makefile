@@ -100,6 +100,9 @@ install: build install-quickshell-plugin
 	install -Dm755 bin/omavm $(PREFIX)/bin/omavm
 	install -Dm755 bin/omavm-gui $(PREFIX)/bin/omavm-gui
 	install -Dm644 data/dev.omavm.app.desktop $(PREFIX)/share/applications/dev.omavm.app.desktop
+	@# The launcher may not have $(PREFIX)/bin on its PATH: point the
+	@# entry at the installed binary itself.
+	sed -i 's|^Exec=omavm-gui$$|Exec=$(PREFIX)/bin/omavm-gui|' $(PREFIX)/share/applications/dev.omavm.app.desktop
 	install -Dm644 data/icons/dev.omavm.app.svg $(PREFIX)/share/icons/hicolor/scalable/apps/dev.omavm.app.svg
 	@# One icon per environment color, for launcher entries and the file
 	@# manager (internal/desktop's ColorIcon).

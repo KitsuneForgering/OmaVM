@@ -15,6 +15,9 @@ var (
 	// ErrBusy means another operation on the environment (its creation
 	// or removal) is still running.
 	ErrBusy = errors.New("environment is busy")
+	// ErrSnapshotGone means a snapshot the registry lists is no longer in
+	// the environment's disk (deleted by hand, or the disk was replaced).
+	ErrSnapshotGone = errors.New("snapshot is no longer in the disk")
 )
 
 // Invalidf and Unsupportedf build errors that match ErrInvalidInput and

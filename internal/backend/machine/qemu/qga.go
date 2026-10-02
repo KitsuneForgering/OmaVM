@@ -87,23 +87,56 @@ func qgaSync(conn net.Conn) (*json.Decoder, error) {
 }
 
 func qgaExecute(conn net.Conn, dec *json.Decoder, command string, timeout time.Duration) error {
+	_, err := qgaQuery(conn, dec, command, timeout)
+	return err
+}
+
+// qgaQuery runs an agent command and returns its result.
+func qgaQuery(conn net.Conn, dec *json.Decoder, command string, timeout time.Duration) (json.RawMessage, error) {
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return err
+		return nil, err
 	}
 	if err := json.NewEncoder(conn).Encode(map[string]string{"execute": command}); err != nil {
-		return fmt.Errorf("%s: %w", command, err)
+		return nil, fmt.Errorf("%s: %w", command, err)
 	}
 	var reply struct {
 		Return json.RawMessage `json:"return"`
 		Error  any             `json:"error"`
 	}
 	if err := dec.Decode(&reply); err != nil {
-		return fmt.Errorf("%s: %w", command, err)
+		return nil, fmt.Errorf("%s: %w", command, err)
 	}
 	if reply.Error != nil {
-		return fmt.Errorf("%s: %v", command, reply.Error)
+		return nil, fmt.Errorf("%s: %v", command, reply.Error)
 	}
-	return nil
+	return reply.Return, nil
+}
+
+// virtiofsMountpoint asks the guest agent where a virtiofs filesystem is
+// mounted in the guest, "" when none is.
+func virtiofsMountpoint(ctx context.Context, socketPath string) (string, error) {
+	conn, dec, err := qgaDial(ctx, socketPath)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	raw, err := qgaQuery(conn, dec, "guest-get-fsinfo", 2*time.Second)
+	if err != nil {
+		return "", err
+	}
+	var filesystems []struct {
+		Mountpoint string `json:"mountpoint"`
+		Type       string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &filesystems); err != nil {
+		return "", fmt.Errorf("guest-get-fsinfo: %w", err)
+	}
+	for _, fs := range filesystems {
+		if fs.Type == "virtiofs" {
+			return fs.Mountpoint, nil
+		}
+	}
+	return "", nil
 }
 
 // fsFreezeTimeout bounds freezing (the guest flushes every filesystem

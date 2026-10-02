@@ -19,7 +19,7 @@ alcançar serviços do guest a partir do host.
 
 ## Esboço
 
-1. `internal/backend/qemu`: `-device vhost-vsock-pci,guest-cid=<N>`, com CID
+1. `internal/backend/machine/qemu`: `-device vhost-vsock-pci,guest-cid=<N>`, com CID
    único por Machine (≥ 3) persistido no domínio ou derivado com checagem de
    colisão. `/dev/vhost-vsock` precisa estar acessível: reportar em
    `omavm host`.

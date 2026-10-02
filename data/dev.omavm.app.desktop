@@ -6,6 +6,6 @@ Comment=Create, run and manage Boxes and Machines on Omarchy
 Exec=omavm-gui
 Icon=dev.omavm.app
 Terminal=false
-Categories=System;Emulator;Utility;
+Categories=System;Emulator;
 StartupWMClass=dev.omavm.app
 StartupNotify=true

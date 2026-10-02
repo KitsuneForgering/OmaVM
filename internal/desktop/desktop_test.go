@@ -162,6 +162,26 @@ func TestBoxEntryCarriesTheWorkspaceSetting(t *testing.T) {
 	}
 }
 
+// A Box opened from the launcher shows its color in the terminal, like one
+// opened from the Experience Center.
+func TestBoxEntryCarriesTheColor(t *testing.T) {
+	l := testLauncher(t)
+	env := core.Environment{ID: "abc", Name: "dev", Kind: core.Box, Settings: core.EnvironmentSettings{Color: "green"}}
+	if err := l.Publish(env); err != nil {
+		t.Fatal(err)
+	}
+	if entry := readEntry(t, l, env); !strings.Contains(entry, `"--color" "green"`) {
+		t.Fatalf("color not passed to the terminal:\n%s", entry)
+	}
+	env.Settings.Color = ""
+	if err := l.Publish(env); err != nil {
+		t.Fatal(err)
+	}
+	if entry := readEntry(t, l, env); strings.Contains(entry, "--color") {
+		t.Fatalf("a Box without a color got one:\n%s", entry)
+	}
+}
+
 // Regression: installed from the release tarball (OmaStore), OmaVM isn't
 // in the icon theme, so entries named a themed icon nothing provides.
 func TestEntryUsesTheBundledIconOutsideTheIconTheme(t *testing.T) {

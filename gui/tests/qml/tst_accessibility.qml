@@ -21,6 +21,7 @@ Item {
         function test_cards_data() {
             return [
                 { tag: "stopped box", kind: "box", status: "stopped" },
+                { tag: "stopped machine", kind: "machine", status: "stopped" },
                 { tag: "running machine", kind: "machine", status: "running" },
                 { tag: "paused machine", kind: "machine", status: "paused" },
                 { tag: "failed machine", kind: "machine", status: "error" },
