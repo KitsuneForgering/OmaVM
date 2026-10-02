@@ -166,3 +166,17 @@ func captureStdout(t *testing.T, fn func() error) []byte {
 	}
 	return out
 }
+
+// A release build reports the version it was stamped with, and version
+// answers before the store or a backend is set up.
+func TestVersion(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/nonexistent/omavm-version-test")
+	saved := version
+	version = "1.2.3"
+	t.Cleanup(func() { version = saved })
+	for _, arg := range []string{"version", "--version"} {
+		if out := string(captureStdout(t, func() error { return run([]string{arg}) })); out != "omavm 1.2.3\n" {
+			t.Errorf("%s printed %q", arg, out)
+		}
+	}
+}

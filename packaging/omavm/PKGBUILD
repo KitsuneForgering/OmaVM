@@ -20,7 +20,7 @@ sha256sums=('8420c9bc34008db0e27babeb0ff36a50742683107374d93b685be0855e15710e')
 
 build() {
   cd "OmaVM-$pkgver"
-  go build -ldflags="-s -w" -buildvcs=false -trimpath -o bin/omavm ./cmd/omavm
+  go build -ldflags="-s -w -X main.version=$pkgver" -buildvcs=false -trimpath -o bin/omavm ./cmd/omavm
   mkdir -p build/gui
   cd build/gui
   qmake6 ../../omavm-gui.pro

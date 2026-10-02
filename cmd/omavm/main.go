@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -65,10 +66,32 @@ func notifyError(err error) {
 	_ = exec.Command(path, "--app-name=OmaVM", "--icon=dev.omavm.app", "OmaVM", err.Error()).Run()
 }
 
+// version is set at release time (make dist, the PKGBUILD) with
+// -ldflags "-X main.version=x.y.z".
+var version string
+
+// versionString is version, or what the Go toolchain recorded (go install
+// ...@vX.Y.Z), or "dev" for a plain local build.
+func versionString() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return strings.TrimPrefix(info.Main.Version, "v")
+	}
+	return "dev"
+}
+
 func run(args []string) error {
 	if len(args) == 0 {
 		printUsage()
 		return usagef("no command given")
+	}
+	// Before any backend or store is set up: answers even on a host where
+	// those fail.
+	if args[0] == "version" || args[0] == "--version" {
+		fmt.Println("omavm", versionString())
+		return nil
 	}
 
 	qemuBackend, err := qemu.New()
@@ -825,6 +848,7 @@ commands:
   update NAME [--progress]                                 update a Box's installed software (distrobox upgrade)
   rm NAME                                                  remove an environment
   list [--status] [--json]                                 list known environments, with their state
+  version                                                  print this omavm's version
 
 exit codes: 0 ok, 1 failure, 2 invalid request, 3 not found, 4 name taken,
 5 unsupported here, 6 busy; exec and ssh return their command's code.
