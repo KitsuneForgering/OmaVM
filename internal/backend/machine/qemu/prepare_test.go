@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/KitsuneSemCalda/OmaVM/internal/core"
+	"github.com/KitsuneForgering/OmaVM/internal/core"
 )
 
 // fakeGuest is a running Linux guest as its agent and QEMU's QMP show it.

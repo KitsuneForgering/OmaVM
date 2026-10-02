@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KitsuneSemCalda/OmaVM/internal/backend/machine/qemu"
+	"github.com/KitsuneForgering/OmaVM/internal/backend/machine/qemu"
 )
 
 func TestReadOnlyCommands(t *testing.T) {

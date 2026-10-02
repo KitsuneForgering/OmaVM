@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KitsuneSemCalda/OmaVM/internal/core"
+	"github.com/KitsuneForgering/OmaVM/internal/core"
 )
 
 // Tests never see the host's OVMF or swtpm: each one that needs them sets

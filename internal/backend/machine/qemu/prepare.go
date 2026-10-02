@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KitsuneSemCalda/OmaVM/internal/core"
+	"github.com/KitsuneForgering/OmaVM/internal/core"
 )
 
 // Preparing a guest goes through qemu-guest-agent, which runs commands as
