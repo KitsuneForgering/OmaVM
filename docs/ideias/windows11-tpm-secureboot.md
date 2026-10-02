@@ -31,6 +31,14 @@ motivo pela UI.
 - O `swtpm` guarda estado sensível (chaves do BitLocker, por exemplo): o
   diretório precisa de permissões restritas e entrar no Remove e no Clone.
 
+## Estado (2026-10-01)
+
+Implementado como esboçado acima (ver CLAUDE.md, "UEFI, Secure Boot e
+TPM"). Diferenças do esboço: o firmware vem dos descritores do QEMU, não de
+caminhos fixos; sem `swtpm`, uma Machine cujo TPM ainda está vazio sobe sem
+TPM, e uma com estado no TPM recusa subir. Falta verificar com o `swtpm`
+real e uma instalação de Windows 11.
+
 ## Fontes
 
 - [The Future of GNOME Boxes – Felipe Borges](https://blogs.gnome.org/feborges/future-of-boxes/)

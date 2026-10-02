@@ -266,6 +266,8 @@ func (b *Backend) InspectHost(ctx context.Context) ([]core.HostCapability, error
 		kvm,
 		{ID: "graphics-opengl", Label: "3D acceleration (OpenGL)", Available: g.openGL, Detail: g.openGLDetail},
 		{ID: "graphics-vulkan", Label: "Vulkan acceleration", Available: g.vulkan, Detail: g.vulkanDetail},
+		firmwareCapability(),
+		tpmCapability(),
 		sshCapability(),
 		passthroughCapability(),
 	}, nil

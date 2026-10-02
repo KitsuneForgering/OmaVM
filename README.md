@@ -136,6 +136,7 @@ scope.
 | Boxes | `distrobox` + `podman` (preferred) or `docker` |
 | Machines | `qemu-img`/`qemu-system-x86_64` with `/dev/kvm` access |
 | Shared folders (Machines) | `virtiofsd` |
+| UEFI with Secure Boot and a TPM (Machines; Windows 11 needs both) | `edk2-ovmf`, `swtpm` |
 
 Opening a Machine's display needs nothing extra — the viewer is built
 into `omavm-gui`. See [Machines](#machines) below for what that gets you.
@@ -275,6 +276,17 @@ has; if your disk fills up, the Machine is paused (its card says why) and
 
 An installed Machine whose ISO was deleted or moved still starts, from its
 disk.
+
+New Machines boot with UEFI, with Secure Boot when the host's firmware
+supports it, and get a TPM 2.0, so Windows 11 installs without
+workarounds. This needs `edk2-ovmf` and `swtpm`; `omavm host` says
+whether both are there. Each Machine keeps its own UEFI variables and TPM
+state in its folder, private to your user, and a clone takes them along
+(BitLocker unseals its key from that TPM). Machines created before keep
+BIOS, since switching an installed system's firmware leaves it unable to
+boot. A session that keeps no changes keeps none to the UEFI variables or
+the TPM either. Snapshots cover the disk only, not the UEFI variables or
+the TPM.
 
 `omavm run --ephemeral --image path/to/system.iso` goes further: it
 creates a new Desktop, runs it without keeping changes, shows its screen

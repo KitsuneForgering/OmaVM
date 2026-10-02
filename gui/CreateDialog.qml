@@ -100,6 +100,16 @@ Dialog {
     // CLI yet) says nothing.
     readonly property var kvm: backend.hostCapabilities ? backend.hostCapabilities["kvm"] : undefined
     readonly property bool kvmMissing: !!kvm && kvm.available === false
+    // Desktops still work without OVMF or swtpm, but Windows 11 refuses to
+    // install without Secure Boot and a TPM: what to install, said quietly.
+    readonly property var windowsHints: {
+        const caps = backend.hostCapabilities || {}
+        return ["uefi", "tpm"].filter(id => caps[id] && caps[id].available === false && caps[id].hint)
+                              .map(id => caps[id].hint)
+    }
+    readonly property string windowsNote: windowsHints.length > 0
+        ? qsTr("Windows 11 won't install yet. %1.").arg(windowsHints.join(". "))
+        : ""
     onStepChanged: {
         const forward = step > animatingFromStep
         animatingFromStep = step
@@ -183,6 +193,7 @@ Dialog {
                     Accessible.description: dialog.kvmMissing
                         ? qsTr("A complete system with its own kernel, from an installation ISO. This computer can't start one yet: hardware virtualization isn't available.")
                         : qsTr("A complete system with its own kernel, from an installation ISO")
+                          + (dialog.windowsNote ? ". " + dialog.windowsNote : "")
                     checkable: true
                     checked: dialog.machine
                     padding: 16
@@ -234,6 +245,16 @@ Dialog {
                             wrapMode: Text.Wrap
                             horizontalAlignment: Text.AlignHCenter
                             color: backend.themeRed
+                        }
+                        Label {
+                            objectName: "windowsNote"
+                            Layout.fillWidth: true
+                            visible: !dialog.kvmMissing && dialog.windowsHints.length > 0
+                            text: dialog.windowsNote
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            font.pixelSize: 12
+                            color: backend.themeMuted
                         }
                     }
                     onClicked: dialog.machine = true

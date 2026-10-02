@@ -14,7 +14,7 @@ motivo para desligar.
 |---|---|---|
 | SSH e port forwarding via vsock | **SSH feito 2026-09-28**, ligado por padrão com o custo dito na tela; port forwarding não | [vsock-ssh.md](vsock-ssh.md) |
 | GPU por native context | Encaixa depois do Venus; hoje só AMD | [gpu-native-context.md](gpu-native-context.md) |
-| Windows 11 sem ajustes manuais (TPM + Secure Boot) | Encaixa, com cuidado: a OmaVM não é "exclusiva para Windows" | [windows11-tpm-secureboot.md](windows11-tpm-secureboot.md) |
+| Windows 11 sem ajustes manuais (TPM + Secure Boot) | **Feito 2026-10-01** para Machines novas; `swtpm` real e instalação do Windows não verificados | [windows11-tpm-secureboot.md](windows11-tpm-secureboot.md) |
 | Distrobox v2 e ações de Box (Clone, Atualizar, uso) | **Clone (Box e Machine) e Atualizar feitos 2026-10-01**; uso e Distrobox v2 não | [boxes-distrobox.md](boxes-distrobox.md) |
 | Próximos passos do display D-Bus | Encaixa: refina o viewer atual | [display-dbus.md](display-dbus.md) |
 | Ambientes no launcher do Omarchy (`.desktop` por ambiente) | **Feito 2026-09-28**, opt-out | [ambientes-no-launcher.md](ambientes-no-launcher.md) |

@@ -142,6 +142,12 @@ func (b *Backend) Create(ctx context.Context, env core.Environment) error {
 	if err != nil {
 		return qemuErr("qemu-img create", err, out)
 	}
+	// Only with a new disk: an existing Machine keeps the firmware its
+	// system was installed with.
+	if err := b.setUpFirmware(b.key(env)); err != nil {
+		_ = os.Remove(disk)
+		return err
+	}
 	return nil
 }
 
@@ -204,6 +210,10 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 	if total, ok := hostMemoryMiB(); ok && settings.MemoryMiB > total {
 		return core.Invalidf("%s is set to %d MiB of memory, more than this computer has (%d MiB); lower it in Settings", env.Name, settings.MemoryMiB, total)
 	}
+	firmware, err := b.firmwareArgs(b.key(env))
+	if err != nil {
+		return err
+	}
 	virtiofsRunning := false
 	if settings.SharedPath != "" {
 		if err := b.startVirtiofs(ctx, b.key(env), settings); err != nil {
@@ -212,7 +222,14 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		virtiofsRunning = true
 	}
 
-	args := []string{
+	tpm, err := b.startTPM(ctx, b.key(env), ephemeral)
+	if err != nil {
+		if virtiofsRunning {
+			_ = b.stopVirtiofs(b.key(env))
+		}
+		return err
+	}
+	args := append(firmware,
 		"-name", env.Name,
 		"-m", strconv.Itoa(settings.MemoryMiB),
 		"-smp", strconv.Itoa(settings.CPUs),
@@ -225,14 +242,15 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		"-device", "virtio-serial-pci",
 		"-chardev", "qemu-vdagent,id=clipboard,clipboard=on,mouse=off",
 		"-device", "virtserialport,chardev=clipboard,name=com.redhat.spice.0",
-		"-chardev", "socket,path=" + b.qgaPath(b.key(env)) + ",server=on,wait=off,id=qga0",
+		"-chardev", "socket,path="+b.qgaPath(b.key(env))+",server=on,wait=off,id=qga0",
 		"-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
 		"-audiodev", "pipewire,id=audio0",
 		"-device", "virtio-sound-pci,audiodev=audio0",
-		"-qmp", "unix:" + b.qmpPath(b.key(env)) + ",server,nowait",
+		"-qmp", "unix:"+b.qmpPath(b.key(env))+",server,nowait",
 		"-pidfile", b.pidPath(b.key(env)),
 		"-daemonize",
-	}
+	)
+	args = append(args, tpm...)
 	graphics := detectGraphics(ctx)
 	vulkan := graphics.vulkan && !settings.VulkanDisabled
 	slog.Info("graphics", "machine", env.Name, "opengl", graphics.openGL, "vulkan", vulkan, "detail", graphics.vulkanDetail)
@@ -296,6 +314,7 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		if virtiofsRunning {
 			_ = b.stopVirtiofs(b.key(env))
 		}
+		b.stopTPM(b.key(env))
 		if known := startFailure(env, out); known != nil {
 			return known
 		}
@@ -734,6 +753,7 @@ func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 	}
 	if !running {
 		_ = b.stopVirtiofs(b.key(env))
+		b.stopTPM(b.key(env))
 		return nil
 	}
 	wasPaused := false
@@ -756,6 +776,7 @@ func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 			}
 			if !running {
 				_ = b.stopVirtiofs(b.key(env))
+				b.stopTPM(b.key(env))
 				return nil
 			}
 			select {
@@ -835,6 +856,7 @@ func (b *Backend) ForceStop(ctx context.Context, env core.Environment) error {
 		return err
 	} else if !running {
 		_ = b.stopVirtiofs(b.key(env))
+		b.stopTPM(b.key(env))
 		return nil
 	}
 	if err := qmpCommand(b.qmpPath(b.key(env)), "quit"); err != nil {
@@ -856,8 +878,15 @@ func (b *Backend) ForceStop(ctx context.Context, env core.Environment) error {
 	// normal shutdown through the QMP socket QEMU had already closed.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if running, err := b.isRunning(b.key(env)); err != nil || !running {
+		running, err := b.isRunning(b.key(env))
+		if err != nil {
 			return err
+		}
+		if !running {
+			// swtpm exits with QEMU (--terminate); this drops what it
+			// leaves, a throwaway session's copy of the TPM included.
+			b.stopTPM(b.key(env))
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -1146,6 +1175,18 @@ func (b *Backend) Clone(ctx context.Context, source, clone core.Environment) err
 	if out, err := runOutput(ctx, "cp", "--reflink=auto", "--sparse=always", disk, b.diskPath(dst)); err != nil {
 		_ = os.RemoveAll(b.dir(dst))
 		return fmt.Errorf("copy the disk of %s: %w: %s", source.Name, err, out)
+	}
+	// The firmware, its variables (boot entries) and the TPM go with the
+	// disk: the system on it was installed against them, and BitLocker
+	// unseals its key from that TPM.
+	for _, path := range []func(string) string{b.firmwarePath, b.nvramPath, b.tpmStateDir} {
+		if _, err := os.Stat(path(src)); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if out, err := runOutput(ctx, "cp", "-a", path(src), path(dst)); err != nil {
+			_ = os.RemoveAll(b.dir(dst))
+			return fmt.Errorf("copy the firmware state of %s: %w: %s", source.Name, err, out)
+		}
 	}
 	return nil
 }

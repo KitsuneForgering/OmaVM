@@ -13,7 +13,9 @@ optdepends=('distrobox: integrated Development Box environments'
             'podman: preferred Distrobox container engine'
             'docker: alternative Distrobox container engine and legacy Boxes'
             'qemu-desktop: Machine environments with a graphical display (QEMU/KVM)'
-            'virtiofsd: share host folders with Machine guests')
+            'virtiofsd: share host folders with Machine guests'
+            'edk2-ovmf: UEFI and Secure Boot for new Machines'
+            'swtpm: a TPM 2.0 for Machines (Windows 11)')
 install=omavm.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('8420c9bc34008db0e27babeb0ff36a50742683107374d93b685be0855e15710e')

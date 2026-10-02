@@ -67,6 +67,33 @@ Item {
             backend.hostCapabilities = {}
             dialog.destroy()
         }
+
+        // Windows 11 needs Secure Boot and a TPM: what's missing is said,
+        // and nothing when the host has both or hasn't answered yet.
+        function test_windowsNeedsUEFIAndATPM() {
+            const component = Qt.createComponent("qrc:/CreateDialog.qml")
+            const dialog = component.createObject(root)
+            const note = findChild(dialog, "windowsNote")
+            dialog.open()
+            tryVerify(() => dialog.opened)
+            verify(!note.visible, "unknown must say nothing")
+            backend.hostCapabilities = { kvm: { available: true },
+                                         uefi: { available: true },
+                                         tpm: { available: false, hint: "Install swtpm" } }
+            verify(note.visible)
+            compare(note.text, "Windows 11 won't install yet. Install swtpm.")
+            backend.hostCapabilities = { kvm: { available: true },
+                                         uefi: { available: false, hint: "Install edk2-ovmf" },
+                                         tpm: { available: false, hint: "Install swtpm" } }
+            compare(note.text, "Windows 11 won't install yet. Install edk2-ovmf. Install swtpm.")
+            backend.hostCapabilities = { kvm: { available: true }, uefi: { available: true }, tpm: { available: true } }
+            verify(!note.visible)
+            // Without KVM nothing starts at all; that warning is enough.
+            backend.hostCapabilities = { kvm: { available: false }, tpm: { available: false, hint: "Install swtpm" } }
+            verify(!note.visible)
+            backend.hostCapabilities = {}
+            dialog.destroy()
+        }
     }
 
     Component { id: signalSpyComponent; SignalSpy {} }
