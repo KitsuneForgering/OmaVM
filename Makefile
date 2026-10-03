@@ -75,7 +75,7 @@ DIST_NAME = omavm-$(VERSION)-x86_64-linux
 
 dist: build-gui
 	@test -n "$(VERSION)" || { echo "set VERSION=x.y.z"; exit 1; }
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/omavm ./cmd/omavm
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o bin/omavm ./cmd/omavm
 	rm -rf build/dist && mkdir -p build/dist/$(DIST_NAME)
 	install -Dm755 bin/omavm build/dist/$(DIST_NAME)/bin/omavm
 	install -Dm755 bin/omavm-gui build/dist/$(DIST_NAME)/bin/omavm-gui

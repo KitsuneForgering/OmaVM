@@ -7,6 +7,9 @@
 #include <QUrl>
 #include <QtQuickTest>
 
+#include "../displayview.h"
+#include "../terminalview.h"
+
 // Stand-in for the C++ Backend context property: the properties the
 // components read, and the actions they call recorded in lastCall (name
 // followed by the arguments) instead of running the CLI.
@@ -148,6 +151,9 @@ public slots:
     QQuickStyle::setStyle(QStringLiteral("Material"));
     // Builds the accessibility tree a screen reader would see.
     QAccessible::setActive(true);
+    // Registered as gui/main.cpp does, for the viewers tst_compile.qml loads.
+    qmlRegisterType<DisplayView>("OmaVM", 1, 0, "DisplayView");
+    qmlRegisterType<TerminalView>("OmaVM", 1, 0, "TerminalView");
   }
 
   void qmlEngineAvailable(QQmlEngine *engine) {
