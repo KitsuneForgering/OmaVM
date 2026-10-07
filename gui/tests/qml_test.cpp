@@ -21,6 +21,12 @@ public:
       : QQmlPropertyMap(this, parent) {}
 
   Q_INVOKABLE void refreshHost() {}
+  Q_INVOKABLE void refreshImages() {}
+  Q_INVOKABLE void downloadImage(const QString &os, const QString &release,
+                                 const QString &edition) {
+    insert(QStringLiteral("lastCall"),
+           QVariantList{QStringLiteral("downloadImage"), os, release, edition});
+  }
   Q_INVOKABLE void cloneEnvironment(const QString &name, const QString &newName) {
     insert(QStringLiteral("lastCall"),
            QVariantList{QStringLiteral("cloneEnvironment"), name, newName});
@@ -163,6 +169,9 @@ public slots:
     backend->insert(QStringLiteral("busyEnvironments"), QVariantMap());
     backend->insert(QStringLiteral("progress"), QVariantMap());
     backend->insert(QStringLiteral("hostCapabilities"), QVariantMap());
+    backend->insert(QStringLiteral("downloadableImages"), QVariantList());
+    backend->insert(QStringLiteral("imagesLoading"), false);
+    backend->insert(QStringLiteral("imagesError"), QString());
     for (const char *color :
          {"themeBackground", "themeForeground", "themeAccent", "themeAccentText",
           "themeSelection",

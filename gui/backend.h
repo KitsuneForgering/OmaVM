@@ -30,6 +30,11 @@ class Backend final : public QObject {
   Q_PROPERTY(bool appsLoading READ appsLoading NOTIFY appsChanged)
   Q_PROPERTY(QString appsEnvironment READ appsEnvironment NOTIFY appsChanged)
   Q_PROPERTY(QString appsError READ appsError NOTIFY appsChanged)
+  // Systems to download for a new Desktop (omavm images --json, from
+  // quickget when installed).
+  Q_PROPERTY(QVariantList downloadableImages MEMBER m_downloadableImages NOTIFY imagesChanged)
+  Q_PROPERTY(bool imagesLoading MEMBER m_imagesLoading NOTIFY imagesChanged)
+  Q_PROPERTY(QString imagesError MEMBER m_imagesError NOTIFY imagesChanged)
   Q_PROPERTY(QString themeMode READ themeMode NOTIFY themeChanged)
   Q_PROPERTY(QString themeBackground READ themeBackground NOTIFY themeChanged)
   Q_PROPERTY(QString themeForeground READ themeForeground NOTIFY themeChanged)
@@ -111,6 +116,11 @@ public:
   Q_INVOKABLE void removeSnapshot(const QString &name, const QString &id);
   Q_INVOKABLE void refreshApps(const QString &name);
   Q_INVOKABLE void refreshHost();
+  Q_INVOKABLE void refreshImages();
+  // Downloads one; actionFinished("download", ok, path) when done, with
+  // its stages in progress["download"].
+  Q_INVOKABLE void downloadImage(const QString &os, const QString &release,
+                                 const QString &edition);
   Q_INVOKABLE void cloneEnvironment(const QString &name, const QString &newName);
   Q_INVOKABLE void updateEnvironment(const QString &name);
   // Sets up a running Machine's guest; its steps come back as JSON in
@@ -155,6 +165,7 @@ signals:
   // started an action (create, configure, a snapshot or app operation) can
   // tell its own request apart from any other action finishing, and keep
   // itself open with the user's input intact until its own tag reports ok.
+  void imagesChanged();
   void actionFinished(const QString &tag, bool ok, const QString &text);
 
 private:
@@ -196,6 +207,9 @@ private:
   // ("no surface"), and without this every 3 s poll re-ran the capture.
   QHash<QString, qint64> m_previewRetryAt;
   QVariantList m_apps;
+  QVariantList m_downloadableImages;
+  bool m_imagesLoading = false;
+  QString m_imagesError;
   QFileSystemWatcher m_themeWatcher;
   // Key (environment name, "" for the list) -> action label.
   QMap<QString, QString> m_busy;

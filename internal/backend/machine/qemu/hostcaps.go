@@ -270,5 +270,6 @@ func (b *Backend) InspectHost(ctx context.Context) ([]core.HostCapability, error
 		tpmCapability(),
 		sshCapability(),
 		passthroughCapability(),
+		quickgetCapability(),
 	}, nil
 }

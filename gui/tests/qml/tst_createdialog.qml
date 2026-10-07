@@ -77,6 +77,41 @@ Item {
             dialog.destroy()
         }
 
+        // With quickget installed, a Desktop's system can be downloaded;
+        // the ISO it produces fills the field. Without it, no button.
+        function test_systemCanBeDownloadedWithQuickget() {
+            const dialog = Qt.createComponent("qrc:/CreateDialog.qml").createObject(root)
+            dialog.open()
+            tryVerify(() => dialog.opened)
+            dialog.machine = true
+            dialog.step = 1
+            const button = findChild(dialog, "downloadSystemButton")
+            verify(!button.visible)
+            backend.hostCapabilities = { quickget: { available: true } }
+            verify(button.visible)
+            backend.downloadableImages = [
+                { name: "Fedora", os: "fedora", release: "41", edition: "Workstation" },
+                { name: "Ubuntu", os: "ubuntu", release: "24.04" }
+            ]
+            mouseClick(button)
+            const download = findChild(dialog, "downloadDialog") || dialog.children.find(c => c.objectName === "downloadDialog")
+            tryVerify(() => download && download.opened)
+            findChild(download, "imageSearch").text = "ubuntu"
+            compare(download.shown.length, 1)
+            download.chosen = download.shown[0]
+            backend.lastCall = []
+            mouseClick(findChild(download, "downloadButton"))
+            compare(backend.lastCall[0], "downloadImage")
+            compare(backend.lastCall[1], "ubuntu")
+            compare(backend.lastCall[2], "24.04")
+            backend.finishAction("download", true, "/home/u/OmaVM/Images/ubuntu-24.04.iso")
+            tryVerify(() => !download.opened)
+            compare(findChild(dialog, "imageField").text, "/home/u/OmaVM/Images/ubuntu-24.04.iso")
+            backend.hostCapabilities = {}
+            backend.downloadableImages = []
+            dialog.destroy()
+        }
+
         function test_missingBoxToolsAreShownBeforeCreating() {
             const component = Qt.createComponent("qrc:/CreateDialog.qml")
             const dialog = component.createObject(root)

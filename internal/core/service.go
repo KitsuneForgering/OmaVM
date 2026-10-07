@@ -733,6 +733,37 @@ func (s *Service) PrepareGuest(ctx context.Context, name string) ([]PreparationS
 
 // InspectHost reports host capabilities from every backend that offers
 // them, Machine first.
+// DownloadableImages lists systems a Desktop can be created from by
+// downloading them, when the host has a tool for it (ImageDownloader).
+func (s *Service) DownloadableImages(ctx context.Context) ([]DownloadableImage, error) {
+	downloader, err := s.imageDownloader()
+	if err != nil {
+		return nil, err
+	}
+	return downloader.DownloadableImages(ctx)
+}
+
+// DownloadImage downloads image and returns the path of its ISO, ready to
+// create a Desktop from. Long: it reports progress (WithProgress).
+func (s *Service) DownloadImage(ctx context.Context, image DownloadableImage) (string, error) {
+	if image.OS == "" || image.Release == "" {
+		return "", Invalidf("choose a system and a release to download")
+	}
+	downloader, err := s.imageDownloader()
+	if err != nil {
+		return "", err
+	}
+	return downloader.DownloadImage(ctx, image)
+}
+
+func (s *Service) imageDownloader() (ImageDownloader, error) {
+	downloader, ok := s.backends[Machine].(ImageDownloader)
+	if !ok {
+		return nil, Unsupportedf("downloading systems isn't available")
+	}
+	return downloader, nil
+}
+
 func (s *Service) InspectHost(ctx context.Context) ([]HostCapability, error) {
 	var all []HostCapability
 	for _, kind := range []EnvironmentKind{Machine, Box} {

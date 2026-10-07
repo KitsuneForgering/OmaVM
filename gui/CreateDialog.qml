@@ -385,6 +385,16 @@ Dialog {
                         text: qsTr("Choose ISO…")
                         onClicked: isoPicker.open()
                     }
+                    // Only with quickget installed (the person's choice of
+                    // tool): OmaVM itself keeps no catalog of systems.
+                    Button {
+                        objectName: "downloadSystemButton"
+                        visible: dialog.machine && !!backend.hostCapabilities
+                                 && !!backend.hostCapabilities["quickget"]
+                                 && backend.hostCapabilities["quickget"].available === true
+                        text: qsTr("Download…")
+                        onClicked: downloadDialog.open()
+                    }
                 }
                 Rectangle {
                     Layout.fillWidth: true
@@ -615,5 +625,11 @@ Dialog {
         title: qsTr("Choose a boot ISO")
         nameFilters: [qsTr("ISO images (*.iso)"), qsTr("All files (*)")]
         onAccepted: image.text = backend.localPath(selectedFile)
+    }
+    DownloadDialog {
+        id: downloadDialog
+        objectName: "downloadDialog"
+        parent: Overlay.overlay
+        onDownloaded: path => image.text = path
     }
 }

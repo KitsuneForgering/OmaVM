@@ -742,6 +742,46 @@ void Backend::refreshHost() {
   process->start(cliPath(), {QStringLiteral("host"), QStringLiteral("--json")});
 }
 
+void Backend::refreshImages() {
+  if (m_imagesLoading)
+    return;
+  m_imagesLoading = true;
+  m_imagesError.clear();
+  emit imagesChanged();
+  auto *process = new QProcess(this);
+  connect(process, &QProcess::finished, this, [this, process](int code) {
+    const QByteArray output = process->readAllStandardOutput();
+    const QString errorText =
+        QString::fromUtf8(process->readAllStandardError()).trimmed();
+    process->deleteLater();
+    m_imagesLoading = false;
+    if (code != 0) {
+      m_imagesError = errorText.isEmpty()
+                          ? QStringLiteral("Could not list systems to download")
+                          : errorText;
+    } else {
+      QVariantList next;
+      for (const QJsonValue &value : QJsonDocument::fromJson(output).array())
+        next.append(value.toObject().toVariantMap());
+      m_downloadableImages = next;
+    }
+    emit imagesChanged();
+  });
+  process->start(cliPath(), {QStringLiteral("images"), QStringLiteral("--json")});
+}
+
+void Backend::downloadImage(const QString &os, const QString &release,
+                            const QString &edition) {
+  QStringList arguments{QStringLiteral("images"), QStringLiteral("--download"),
+                        os, release};
+  if (!edition.isEmpty())
+    arguments << edition;
+  arguments << QStringLiteral("--progress");
+  run(QStringLiteral("download"), arguments,
+      QStringLiteral("downloading %1 %2").arg(os, release),
+      QStringLiteral("download"), false, false);
+}
+
 void Backend::refreshApps(const QString &name) {
   if (!beginBusy(name,
                  QStringLiteral("loading applications for %1").arg(name)))

@@ -255,6 +255,24 @@ type Launcher interface {
 	Withdraw(env Environment) error
 }
 
+// DownloadableImage is installation media a tool on the host knows how
+// to fetch (quickget). OmaVM keeps no catalog of its own: no URLs, no
+// checksums, no versions to maintain.
+type DownloadableImage struct {
+	Name    string `json:"name"`
+	OS      string `json:"os"`
+	Release string `json:"release"`
+	Edition string `json:"edition,omitempty"`
+}
+
+// ImageDownloader is an optional Backend capability: systems to download
+// as installation media for a new Environment, and the download itself,
+// which returns the local path of the image.
+type ImageDownloader interface {
+	DownloadableImages(ctx context.Context) ([]DownloadableImage, error)
+	DownloadImage(ctx context.Context, image DownloadableImage) (path string, err error)
+}
+
 // HostInspector is an optional Backend capability reporting what the host
 // can offer that Backend's Environments (hardware virtualization, graphics
 // acceleration, ...). It only reads the host and never changes it.

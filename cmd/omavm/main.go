@@ -130,6 +130,8 @@ func run(args []string) error {
 		return cmdStatus(ctx, svc, rest)
 	case "host":
 		return cmdHost(ctx, svc, rest)
+	case "images":
+		return cmdImages(ctx, svc, rest)
 	case "integration":
 		return cmdIntegration(ctx, svc, rest)
 	case "prepare":
@@ -513,6 +515,46 @@ func cmdHost(ctx context.Context, svc *core.Service, args []string) error {
 	return nil
 }
 
+// cmdImages lists systems that can be downloaded to create a Desktop from
+// (quickget, when installed), or downloads one and prints the ISO's path.
+func cmdImages(ctx context.Context, svc *core.Service, args []string) error {
+	args, jsonOut := extractBoolFlag(args, "json")
+	args, progress := extractBoolFlag(args, "progress")
+	args, download := extractBoolFlag(args, "download")
+	if download {
+		if len(args) < 2 || len(args) > 3 {
+			return usagef("images --download: usage: omavm images --download OS RELEASE [EDITION]")
+		}
+		image := core.DownloadableImage{OS: args[0], Release: args[1]}
+		if len(args) == 3 {
+			image.Edition = args[2]
+		}
+		path, err := svc.DownloadImage(withProgress(ctx, progress), image)
+		if err != nil {
+			return err
+		}
+		fmt.Println(path)
+		return nil
+	}
+	if len(args) != 0 {
+		return usagef("images: takes no arguments (use --download OS RELEASE [EDITION])")
+	}
+	images, err := svc.DownloadableImages(ctx)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		if images == nil {
+			images = []core.DownloadableImage{}
+		}
+		return json.NewEncoder(os.Stdout).Encode(images)
+	}
+	for _, img := range images {
+		fmt.Printf("%s %s %s\t(omavm images --download %s %s %s)\n", img.Name, img.Release, img.Edition, img.OS, img.Release, img.Edition)
+	}
+	return nil
+}
+
 func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	if len(args) == 0 {
 		return usagef("settings: expected an environment name")
@@ -845,6 +887,8 @@ commands:
                                                            agent: installs the clipboard agent, mounts the shared
                                                            folder, checks sound and resolution (changes the guest)
   host [--json]                                            check this computer for Boxes and Machines
+  images [--json]                                          systems to download for a Desktop (needs quickget)
+  images --download OS RELEASE [EDITION] [--progress]      download one to ~/OmaVM/Images; prints the ISO's path
   settings NAME [--description TEXT] [--cpus N] [--color C] view or change settings
     [--share-clipboard=BOOL] [--travel-mode=BOOL]           (on by default)
     [--clipboard-direction both|to-host|to-guest]          one-way clipboard (Machines)

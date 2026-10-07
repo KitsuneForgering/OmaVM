@@ -18,6 +18,7 @@ import (
 func TestMain(m *testing.M) {
 	firmwareDirs = nil
 	swtpmLookPath = func() (string, error) { return "", exec.ErrNotFound }
+	quickgetLookPath = func() (string, error) { return "", exec.ErrNotFound }
 	home, err := os.MkdirTemp("", "omavm-qemu-home")
 	if err != nil {
 		panic(err)
