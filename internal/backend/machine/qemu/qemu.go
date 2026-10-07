@@ -675,13 +675,6 @@ func (b *Backend) Preview(ctx context.Context, env core.Environment) (string, er
 // first -drive if=virtio.
 const bootDisk = "virtio0"
 
-// Snapshots are internal qcow2 snapshots of the disk. A stopped Machine's
-// disk is changed directly with qemu-img. A running one gets a disk-only
-// snapshot through QMP, as if the power had been cut at that moment: a
-// full savevm (memory included) is refused by devices every Machine has
-// (tested on QEMU 11.1: "State blocked by non-migratable device
-// virtio-sound", and "virgl is not yet migratable" with 3D acceleration),
-// so snapshots of a running Machine never worked before this.
 // networkArgs spells out the network QEMU gave every Machine by default:
 // "Shared", user-mode networking (rootless; the guest reaches the network
 // through the host and nothing reaches it). The model is the board's
@@ -701,6 +694,13 @@ func networkArgs(env core.Environment, q35 bool) []string {
 	return []string{"-nic", "user,model=" + model + ",mac=" + mac}
 }
 
+// Snapshots are internal qcow2 snapshots of the disk. A stopped Machine's
+// disk is changed directly with qemu-img. A running one gets a disk-only
+// snapshot through QMP, as if the power had been cut at that moment: a
+// full savevm (memory included) is refused by devices every Machine has
+// (tested on QEMU 11.1: "State blocked by non-migratable device
+// virtio-sound", and "virgl is not yet migratable" with 3D acceleration),
+// so snapshots of a running Machine never worked before this.
 func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (core.Snapshot, error) {
 	running, err := b.isRunning(b.key(env))
 	if err != nil {

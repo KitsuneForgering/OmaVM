@@ -30,6 +30,6 @@ motivo para desligar.
 | Logs no journal do systemd (protocolo nativo, sem dependência) | Encaixa: substitui a rotação própria pelo journald | [logs-no-journal.md](logs-no-journal.md) |
 | Acessibilidade: leitor de tela (Orca/AT-SPI) e navegação por teclado | Encaixa: revisão com testes em `make test-qml` | [acessibilidade.md](acessibilidade.md) |
 | Lista de ambientes como `QAbstractListModel` no C++ | Opcional: a correção em QML já resolve o bug; vale se crescer | [modelo-de-ambientes-em-cpp.md](modelo-de-ambientes-em-cpp.md) |
-| Catálogo de sistemas para baixar | Conflita com o non-goal "dezenas de distros pré-empacotadas" | [catalogo-de-imagens.md](catalogo-de-imagens.md) |
+| Catálogo de sistemas para baixar | **Feito 2026-10-07** via `quickget` opcional (sem catálogo próprio) | [catalogo-de-imagens.md](catalogo-de-imagens.md) |
 | Espaço em disco do host; redimensionar e compactar o disco | **Aviso de pouco espaço feito 2026-10-01**; redimensionar/compactar não | [disco-do-host.md](disco-do-host.md) |
 | Machine descartável (`-snapshot` do QEMU) | **Feito 2026-09-30** para Machines existentes (`start --ephemeral`, menu do card); `omavm run --ephemeral` feito 2026-10-01 | [machine-descartavel.md](machine-descartavel.md) |

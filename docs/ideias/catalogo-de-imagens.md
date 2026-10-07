@@ -11,6 +11,10 @@ O Quickemu (`quickget`) e o Quickgui buscam e baixam quase 1000 sistemas
 `CLAUDE.md`. Manter um catálogo próprio é manutenção sem fim (URLs,
 checksums, versões).
 
+## Feito (2026-10-07)
+
+Decisão do usuário: a variante abaixo foi implementada (`omavm images`, botão "Download…" na criação, só com `quickget` instalado). Ver `CLAUDE.md`.
+
 ## Variante compatível
 
 Se a necessidade aparecer, integrar o `quickget` como fonte opcional, em
