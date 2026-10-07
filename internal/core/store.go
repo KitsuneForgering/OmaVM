@@ -221,14 +221,20 @@ func (s *FileStore) Save(envs []Environment) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("write state file: %w", err)
 	}
-	// A hard link keeps the old registry reachable as .bak without a
-	// moment where the registry itself is missing (readers don't lock).
-	// Only a registry that still parses is kept: never replace a good
-	// backup with a damaged file.
+	// Create the replacement backup before touching the existing one. A
+	// failed link must leave the last good backup available for recovery.
 	backup := s.Path + ".bak"
 	if current, err := os.ReadFile(s.Path); err == nil && json.Valid(current) {
-		_ = os.Remove(backup)
-		_ = os.Link(s.Path, backup)
+		pending := backup + ".tmp"
+		if err := os.Remove(pending); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("prepare registry backup: %w", err)
+		}
+		if err := os.Link(s.Path, pending); err != nil {
+			return fmt.Errorf("create registry backup: %w", err)
+		}
+		if err := os.Rename(pending, backup); err != nil {
+			return fmt.Errorf("replace registry backup: %w", err)
+		}
 	}
 	if err := os.Rename(tmp, s.Path); err != nil {
 		return fmt.Errorf("commit state file: %w", err)

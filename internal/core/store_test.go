@@ -104,6 +104,34 @@ func TestSaveKeepsPreviousRegistryAsBackup(t *testing.T) {
 	}
 }
 
+func TestFailedBackupKeepsPreviousRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.json")
+	store := &core.FileStore{Path: path}
+	for _, name := range []string{"one", "two"} {
+		if err := store.Save([]core.Environment{{Name: name, Kind: core.Box}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending := path + ".bak.tmp"
+	if err := os.Mkdir(pending, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pending, "busy"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save([]core.Environment{{Name: "three", Kind: core.Box}}); err == nil {
+		t.Fatal("save should fail when its backup cannot be prepared")
+	}
+	for _, tt := range []struct{ path, want string }{
+		{path, "two"}, {path + ".bak", "one"},
+	} {
+		got, err := (&core.FileStore{Path: tt.path}).Load()
+		if err != nil || len(got) != 1 || got[0].Name != tt.want {
+			t.Errorf("%s = %+v, %v; want %s", tt.path, got, err, tt.want)
+		}
+	}
+}
+
 func TestDamagedRegistryPointsToTheBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "environments.json")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
