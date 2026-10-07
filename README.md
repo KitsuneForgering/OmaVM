@@ -48,7 +48,8 @@ for scripts and automation.
   packages in a Fedora, Ubuntu, Debian, Arch, or Alpine Box while working
   with files in your Omarchy home directory.
 - **Try a complete operating system.** Boot an installation ISO in a Machine
-  and use its desktop in an OmaVM window.
+  and use its desktop in an OmaVM window. With [quickget](https://github.com/quickemu-project/quickemu)
+  installed, OmaVM can download the ISO for you while you create it.
 - **Test boot and kernel changes.** Give Linux its own kernel and virtual disk
   in a Machine, with snapshots to return to an earlier disk state.
 - **Bring Box applications into your desktop.** Export graphical applications
@@ -67,7 +68,7 @@ Choose its kind according to what you need:
 | Runs | Linux userspace sharing the host kernel | An OS with its own kernel and boot process |
 | Created from | A Linux container image, such as `fedora:latest` | An x86_64 installation ISO |
 | Opens in | OmaVM's built-in terminal | OmaVM's built-in graphical viewer |
-| Host integration | Shared home directory and graphical applications through Distrobox | Configurable shared folder, audio, and text clipboard with guest support |
+| Host integration | Shared home directory and graphical applications through Distrobox | A shared folder (`~/OmaVM/Shared` by default), drag-and-drop into it, audio, and text clipboard with guest support |
 | Powered by | Distrobox with Podman or Docker | QEMU/KVM |
 
 A Box is closely integrated with your host: it shares the kernel and home
@@ -80,7 +81,10 @@ creates a Box.
 
 | Open your environment | Manage it | Connect it to Omarchy |
 |---|---|---|
-| Use a Box's built-in terminal or a Machine's graphical viewer. | Adjust settings, assign a color, and manage Machine snapshots. | Export Box apps to the launcher or configure a Machine's shared folder and clipboard. |
+| Use a Box's built-in terminal or a Machine's graphical viewer, with its own controls bar. | Adjust settings, assign a color tag in your theme's colors, and manage Machine snapshots. | Export Box apps to the launcher, drop files on an environment, and share the clipboard. |
+
+A running Machine's card shows a thumbnail of its screen, refreshed every 30
+seconds; a stopped one keeps the last frame it showed, dimmed.
 
 OmaVM coordinates Distrobox and QEMU/KVM behind these actions. Its product
 direction takes inspiration from Parallels Desktop: make creating and using
@@ -96,9 +100,15 @@ integrations are intended to be **on by default, with controls to turn each
 one off per environment** wherever supported.
 
 Today, Boxes share your home directory through Distrobox and can export
-applications to your Omarchy launcher. Machines offer configurable shared
-folders and bidirectional text clipboard sharing; clipboard sharing is on by
-default and can be disabled per Machine, but requires guest support.
+applications to your Omarchy launcher; dropping files on a Box's terminal
+types their paths (a file under your home folder has the same path inside
+the Box). Every Machine shares the
+folder `~/OmaVM/Shared` with its guest, and dropping files on a Machine's
+window copies them there (never over a file with the same name). The guest
+can read and write everything in that folder: choose another folder or turn
+sharing off per Machine in Settings (`--shared-folder=false`). Text
+clipboard sharing works both ways, is on by default and can be turned off
+per Machine, and needs guest support.
 
 **Prepare the Guest** (in a running Machine's Settings, or
 `omavm prepare NAME`) does that guest support for you in a Linux guest,
@@ -119,10 +129,9 @@ and copy with Ctrl+Shift+C or Super+C; programs like Neovim and tmux can copy
 to your clipboard too, but can never read it (Settings turns that off). A
 Machine's color also shows on its `~/OmaVM/<name>` link in Files.
 
-The full set of per-environment controls, file transfer, and bidirectional
-link/application opening is **planned**. A shared folder is not a file-transfer
-channel, and Box integration does not yet have independent off switches for
-every capability. See the [development roadmap](docs/TODO.md) for the remaining
+Opening links and applications in either direction, and file transfer
+that doesn't go through the shared folder, are **planned**. Box integration
+does not yet have independent off switches for every capability. See the [development roadmap](docs/TODO.md) for the remaining
 work and validation criteria.
 
 ## Status
@@ -134,8 +143,9 @@ restart, snapshots, shared folders, and text clipboard integration.
 
 Guest integration depends on the guest OS, drivers, and services; see
 [Machines](#machines) for requirements and behavior. Remote/cloud hosts,
-GPU passthrough, disposable environments, and seamless Machine application
-windows are outside the current feature set.
+GPU passthrough, disposable Boxes, and seamless Machine application windows
+are outside the current feature set (disposable Machines are available, see
+[Machines](#machines)).
 
 See [CLAUDE.md](CLAUDE.md) for the product model, architecture, and development
 scope.
@@ -147,8 +157,9 @@ scope.
 | Build | Go, Qt 6 Base/Declarative, `qmake6`, zlib development files |
 | Boxes | `distrobox` + `podman` (preferred) or `docker` |
 | Machines | `qemu-img`/`qemu-system-x86_64` with `/dev/kvm` access |
-| Shared folders (Machines) | `virtiofsd` |
+| Shared folders (Machines) | `virtiofsd` (comes with Arch's `qemu-desktop`) |
 | UEFI with Secure Boot and a TPM (Machines; Windows 11 needs both) | `edk2-ovmf`, `swtpm` |
+| Downloading a system while creating a Desktop (optional) | `quickget`, from the `quickemu` AUR package |
 
 Opening a Machine's display needs nothing extra — the viewer is built
 into `omavm-gui`. See [Machines](#machines) below for what that gets you.
@@ -165,8 +176,11 @@ make install    # omavm + omavm-gui on PATH, .desktop entry, no root needed
 Launch **OmaVM** from your app launcher or run `omavm-gui`:
 
 1. Choose **Development Box** for Linux tools, or **Desktop** for a complete OS.
-2. Select a distribution for a Box, or a local x86_64 installation ISO for a Machine.
-3. Name and create the environment, then select **Start** and **Open**.
+2. Select a distribution for a Box. For a Desktop, choose a local x86_64
+   installation ISO, or **Download…** one when quickget is installed.
+3. Keep the suggested name or type your own, review the summary, and create
+   it. A Windows 11 ISO starts with the 4 GB of memory its installer needs.
+4. Select **Start** (Desktop) or **Open** (Box) on its card.
 
 You can also run the GUI from the source tree with `make run-gui`.
 
@@ -179,8 +193,10 @@ omavm create --name radic --kind box --image fedora:latest
 omavm start radic
 omavm open radic
 
-# A Machine: install an OS from a local ISO.
+# A Machine: install an OS from a local ISO...
 omavm create --name kernels --kind machine --image /path/to/install.iso
+# ...or download one first (needs quickget); it prints the ISO's path.
+omavm images --download ubuntu 24.04
 omavm start kernels
 omavm open kernels
 ```
@@ -216,6 +232,8 @@ bin/omavm restart kernels
 bin/omavm integration kernels
 bin/omavm settings kernels --description "Kernel lab" --cpus 4 --memory-mib 4096
 bin/omavm settings kernels --shared-path "$HOME/Projects" --shared-read-only
+bin/omavm settings kernels --shared-folder=false   # stop sharing a folder
+bin/omavm images                            # systems quickget can download
 bin/omavm ssh kernels                       # a shell in the guest
 bin/omavm exec kernels -- uname -r          # one command, no prompts
 ```
@@ -228,8 +246,11 @@ and **any program on this computer can reach it, Boxes included**: only the
 guest's login protects it. Turn it off per Machine with
 `omavm settings NAME --ssh=false` (or in Settings), then restart the Machine.
 
-Machines expose the folder to the guest as the virtiofs tag `omavm-share`;
-inside a Linux guest, mount it with `mount -t virtiofs omavm-share /mnt/omavm-share`.
+Machines expose the shared folder (`~/OmaVM/Shared` unless you chose
+another) to the guest as the virtiofs tag `omavm-share`; **Prepare the
+Guest** mounts it in a Linux guest, or mount it yourself with
+`mount -t virtiofs omavm-share /mnt/omavm-share`. Without `virtiofsd`, a
+Machine still starts, without the default folder.
 
 The shared clipboard can be limited to one way (Settings, or
 `omavm settings NAME --clipboard-direction to-host|to-guest|both`): for
@@ -297,8 +318,9 @@ state in its folder, private to your user, and a clone takes them along
 (BitLocker unseals its key from that TPM). Machines created before keep
 BIOS, since switching an installed system's firmware leaves it unable to
 boot. A session that keeps no changes keeps none to the UEFI variables or
-the TPM either. Snapshots cover the disk only, not the UEFI variables or
-the TPM.
+the TPM either. A snapshot taken while the Machine is shut down keeps its
+UEFI variables and TPM state too, and going back to it restores them; one
+taken while it runs keeps the disk only, and says so in the Snapshots list.
 
 `omavm run --ephemeral --image path/to/system.iso` goes further: it
 creates a new Desktop, runs it without keeping changes, shows its screen
@@ -370,8 +392,13 @@ guest needs a recent Mesa with the Venus driver.
 Machines started by an OmaVM version from before the D-Bus display need a
 restart before they can be opened; `omavm open` says so.
 
-By default the viewer opens as an ordinary window wherever Hyprland
-would place it. Resizing that window requests a matching guest resolution
+Inside the viewer, point at the top edge of the screen (or press
+Ctrl+Alt+M) for the Machine's controls: **Ctrl+Alt+Del** (sent to the guest,
+since the host would take the real keys), **Take Snapshot**, **Full Screen**,
+**Open OmaVM** and **Shut Down**. Ctrl+Alt+Q closes the window and leaves
+the Machine running.
+
+When the viewer is a window rather than fullscreen, resizing it requests a matching guest resolution
 after a short delay. This requires a guest display driver and desktop that
 honor virtio GPU resize requests. During boot, or when the guest does not
 resize, the viewer preserves the image proportions with black margins and
@@ -469,10 +496,11 @@ with a color tag shows
 it as a thin strip along the top of its terminal, so you can tell which
 Box you're in, and that you aren't on the host.
 
-A running Machine's card shows a live screenshot of its display
-(captured via QEMU's QMP `screendump`, refreshed on every action or
-manual Refresh); a Box's card honestly says it has no display to
-preview instead of showing a placeholder that pretends otherwise. The
+A running Machine's card shows a screenshot of its display (captured
+through QEMU's QMP `screendump`, refreshed every 30 seconds); a stopped
+Machine keeps the last frame, saved when it shut down from OmaVM, dimmed. A
+Box's card says it has no display to preview instead of showing a
+placeholder that pretends otherwise. The
 window itself is responsive — the card grid adapts as it narrows instead
 of clipping.
 
