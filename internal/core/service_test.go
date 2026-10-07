@@ -118,12 +118,12 @@ func newFakeSnapshotBackend(name string) *fakeSnapshotBackend {
 	return &fakeSnapshotBackend{fakeBackend: newFakeBackend(name), snapshots: map[string]bool{}}
 }
 
-func (f *fakeSnapshotBackend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (bool, error) {
+func (f *fakeSnapshotBackend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (core.Snapshot, error) {
 	if f.createErr != nil {
-		return false, f.createErr
+		return core.Snapshot{}, f.createErr
 	}
 	f.snapshots[tag] = true
-	return f.crashConsistent, nil
+	return core.Snapshot{CrashConsistent: f.crashConsistent}, nil
 }
 
 func (f *fakeSnapshotBackend) GoToSnapshot(ctx context.Context, env core.Environment, tag string) error {

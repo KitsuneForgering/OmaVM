@@ -346,6 +346,12 @@ func cmdSnapshot(ctx context.Context, svc *core.Service, args []string) error {
 			return err
 		}
 		fmt.Printf("created snapshot %q (%s)\n", snap.Label, snap.ID)
+		if snap.CrashConsistent {
+			fmt.Println("  taken without guest tools: going to it is like restarting after a power cut")
+		}
+		if snap.WithoutFirmwareState {
+			fmt.Println("  taken while running: disk only; boot settings and TPM are kept only in snapshots of a stopped Machine")
+		}
 		return nil
 	case "list":
 		rest, jsonOut := extractBoolFlag(rest, "json")

@@ -112,6 +112,10 @@ type Snapshot struct {
 	// guest couldn't flush its disks first (no guest agent): going to it
 	// is like booting after a power cut.
 	CrashConsistent bool `json:"crash_consistent,omitempty"`
+	// WithoutFirmwareState marks a snapshot of a running Machine with UEFI
+	// variables or a TPM: only its disk was kept, so going to it keeps the
+	// boot entries and TPM keys it has at that moment.
+	WithoutFirmwareState bool `json:"without_firmware_state,omitempty"`
 }
 
 // defaultSnapshotLimit caps automatic snapshot history per Environment

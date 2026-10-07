@@ -183,6 +183,9 @@ Dialog {
                                   + (modelData.crash_consistent
                                      ? qsTr(" · taken while running without guest tools: going to it is like restarting after a power cut")
                                      : "")
+                                  + (modelData.without_firmware_state
+                                     ? qsTr(" · taken while running: keeps the disk only, so its boot settings and TPM stay as they are when you go to it")
+                                     : "")
                             color: backend.themeMuted
                             font.pixelSize: 12
                             wrapMode: Text.WordWrap

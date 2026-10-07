@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -243,4 +244,73 @@ func firmwareCapability() core.HostCapability {
 		c.Detail = "without Secure Boot (" + fw.Executable + "), which Windows 11 requires"
 	}
 	return c
+}
+
+// A snapshot of a stopped Machine's disk keeps, next to it, the UEFI
+// variables and TPM state the system was booted with: going back to it
+// must not leave boot entries, Secure Boot keys or BitLocker's sealed
+// key from another moment. A running Machine's are never copied (QEMU
+// and swtpm write them with no way to read them consistently), so those
+// snapshots stay disk-only for this state, as before.
+func (b *Backend) platformSnapshotDir(name, tag string) string {
+	return filepath.Join(b.dir(name), "snapshots", tag)
+}
+
+func (b *Backend) platformState(name string) []string {
+	return []string{b.nvramPath(name), b.tpmStateDir(name)}
+}
+
+// copyPlatform copies the parts of the platform state that exist into dir,
+// which it creates only when there is something to keep (BIOS Machines).
+func copyPlatform(ctx context.Context, parts []string, dir string) error {
+	for _, part := range parts {
+		if _, err := os.Stat(part); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		if out, err := runOutput(ctx, "cp", "-a", part, filepath.Join(dir, filepath.Base(part))); err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+	}
+	return nil
+}
+
+// restorePlatform puts a snapshot's platform state back on a stopped
+// Machine. Parts the snapshot doesn't have (a TPM first used after it)
+// are kept: deleting keys can't be undone. Each part is staged first and
+// swapped in by rename, so a failed copy leaves the current state alone.
+// ponytail: a crash between the two renames of a part leaves it as
+// <part>.old; recover that by hand if it ever shows up.
+func (b *Backend) restorePlatform(ctx context.Context, name, saved string) error {
+	staged := filepath.Join(b.dir(name), "restore.tmp")
+	_ = os.RemoveAll(staged)
+	defer os.RemoveAll(staged)
+	var parts []string
+	for _, part := range b.platformState(name) {
+		if _, err := os.Stat(filepath.Join(saved, filepath.Base(part))); err == nil {
+			parts = append(parts, filepath.Join(saved, filepath.Base(part)))
+		}
+	}
+	if err := copyPlatform(ctx, parts, staged); err != nil {
+		return err
+	}
+	for _, part := range b.platformState(name) {
+		from := filepath.Join(staged, filepath.Base(part))
+		if _, err := os.Stat(from); err != nil {
+			continue
+		}
+		old := part + ".old"
+		_ = os.RemoveAll(old)
+		if err := os.Rename(part, old); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Rename(from, part); err != nil {
+			_ = os.Rename(old, part)
+			return err
+		}
+		_ = os.RemoveAll(old)
+	}
+	return nil
 }

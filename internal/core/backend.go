@@ -164,10 +164,10 @@ const (
 // (e.g. Box today) makes Service.CreateSnapshot/GoToSnapshot/RemoveSnapshot
 // fail with ErrUnsupported rather than pretending to support it.
 type SnapshotManager interface {
-	// CreateSnapshot reports crashConsistent when the snapshot was taken
-	// of a running environment that couldn't be told to flush its disks
-	// first: going to it is like booting after a power cut.
-	CreateSnapshot(ctx context.Context, env Environment, tag string) (crashConsistent bool, err error)
+	// CreateSnapshot reports what the snapshot does and doesn't hold
+	// (CrashConsistent, WithoutFirmwareState); the Core fills in its ID,
+	// Label and CreatedAt.
+	CreateSnapshot(ctx context.Context, env Environment, tag string) (Snapshot, error)
 	GoToSnapshot(ctx context.Context, env Environment, tag string) error
 	RemoveSnapshot(ctx context.Context, env Environment, tag string) error
 }

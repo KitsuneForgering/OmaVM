@@ -650,20 +650,40 @@ const bootDisk = "virtio0"
 // (tested on QEMU 11.1: "State blocked by non-migratable device
 // virtio-sound", and "virgl is not yet migratable" with 3D acceleration),
 // so snapshots of a running Machine never worked before this.
-func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (bool, error) {
+func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (core.Snapshot, error) {
 	running, err := b.isRunning(b.key(env))
 	if err != nil {
-		return false, err
+		return core.Snapshot{}, err
 	}
 	if !running {
-		out, err := runQEMU(ctx, "qemu-img", "snapshot", "-c", tag, b.diskPath(b.key(env)))
-		if err != nil {
-			return false, qemuErr("qemu-img snapshot -c", err, out)
+		name := b.key(env)
+		saved := b.platformSnapshotDir(name, tag)
+		pending := saved + ".tmp"
+		_ = os.RemoveAll(pending)
+		if err := copyPlatform(ctx, b.platformState(name), pending); err != nil {
+			_ = os.RemoveAll(pending)
+			return core.Snapshot{}, fmt.Errorf("keep the firmware state with the snapshot: %w", err)
 		}
-		return false, nil
+		out, err := runQEMU(ctx, "qemu-img", "snapshot", "-c", tag, b.diskPath(name))
+		if err != nil {
+			_ = os.RemoveAll(pending)
+			return core.Snapshot{}, qemuErr("qemu-img snapshot -c", err, out)
+		}
+		if err := os.Rename(pending, saved); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return core.Snapshot{}, fmt.Errorf("keep the firmware state with the snapshot: %w", err)
+		}
+		return core.Snapshot{}, nil
 	}
 	if b.isEphemeral(b.key(env)) {
-		return false, errEphemeralSnapshot(env)
+		return core.Snapshot{}, errEphemeralSnapshot(env)
+	}
+	// UEFI variables and the TPM are only kept with a stopped Machine's
+	// snapshots (see platformSnapshotDir): say so on this one.
+	taken := core.Snapshot{}
+	for _, part := range b.platformState(b.key(env)) {
+		if _, err := os.Stat(part); err == nil {
+			taken.WithoutFirmwareState = true
+		}
 	}
 	// With the guest agent, the guest flushes and freezes its
 	// filesystems for the instant of the snapshot.
@@ -676,12 +696,14 @@ func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag 
 		// for a snapshot that exists (it would sit on the disk, unknown).
 		if errors.Is(err, errQMPNoReply) {
 			if names, qerr := qmpDiskSnapshots(b.qmpPath(b.key(env))); qerr == nil && names[tag] {
-				return thaw == nil, nil
+				taken.CrashConsistent = thaw == nil
+				return taken, nil
 			}
 		}
-		return false, fmt.Errorf("snapshot the disk: %w", err)
+		return core.Snapshot{}, fmt.Errorf("snapshot the disk: %w", err)
 	}
-	return thaw == nil, nil
+	taken.CrashConsistent = thaw == nil
+	return taken, nil
 }
 
 // errEphemeralSnapshot: during a session started without keeping changes,
@@ -691,7 +713,8 @@ func errEphemeralSnapshot(env core.Environment) error {
 	return core.Unsupportedf("%s is running without keeping changes, and a snapshot taken now would be discarded with them; shut it down to manage snapshots", env.Name)
 }
 
-// GoToSnapshot restores the disk to a snapshot. Only a stopped Machine:
+// GoToSnapshot restores the disk to a snapshot, and the firmware state
+// kept with it when it was taken stopped. Only a stopped Machine:
 // QEMU refuses to revert a disk-only snapshot under a running system
 // ("Revert to it offline using qemu-img"), and every snapshot here is
 // disk-only.
@@ -710,10 +733,25 @@ func (b *Backend) GoToSnapshot(ctx context.Context, env core.Environment, tag st
 		}
 		return qemuErr("qemu-img snapshot -a", err, out)
 	}
+	saved := b.platformSnapshotDir(b.key(env), tag)
+	if _, err := os.Stat(saved); err != nil {
+		return nil // taken running, or before this was kept: disk only
+	}
+	if err := b.restorePlatform(ctx, b.key(env), saved); err != nil {
+		return fmt.Errorf("the disk went back, but its firmware state didn't (go to the snapshot again): %w", err)
+	}
 	return nil
 }
 
 func (b *Backend) RemoveSnapshot(ctx context.Context, env core.Environment, tag string) error {
+	err := b.removeDiskSnapshot(ctx, env, tag)
+	if err == nil || errors.Is(err, core.ErrSnapshotGone) {
+		_ = os.RemoveAll(b.platformSnapshotDir(b.key(env), tag))
+	}
+	return err
+}
+
+func (b *Backend) removeDiskSnapshot(ctx context.Context, env core.Environment, tag string) error {
 	running, err := b.isRunning(b.key(env))
 	if err != nil {
 		return err
@@ -1182,7 +1220,9 @@ func (b *Backend) Clone(ctx context.Context, source, clone core.Environment) err
 	// The firmware, its variables (boot entries) and the TPM go with the
 	// disk: the system on it was installed against them, and BitLocker
 	// unseals its key from that TPM.
-	for _, path := range []func(string) string{b.firmwarePath, b.nvramPath, b.tpmStateDir} {
+	// So do the snapshots' copies of that state: the disk's snapshots came along.
+	snapshots := func(name string) string { return filepath.Join(b.dir(name), "snapshots") }
+	for _, path := range []func(string) string{b.firmwarePath, b.nvramPath, b.tpmStateDir, snapshots} {
 		if _, err := os.Stat(path(src)); errors.Is(err, os.ErrNotExist) {
 			continue
 		}

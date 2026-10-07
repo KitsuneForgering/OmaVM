@@ -80,7 +80,7 @@ func TestSnapshotOfRunningMachineFreezesTheGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if crash {
+	if crash.CrashConsistent {
 		t.Fatal("a snapshot taken with the guest frozen is not crash-consistent")
 	}
 	if got := []string{<-events, <-events}; got[0] != "guest-fsfreeze-freeze" || got[1] != "guest-fsfreeze-thaw" {
@@ -103,8 +103,8 @@ func TestSnapshotGoesOnWhenTheGuestCantFreeze(t *testing.T) {
 	recordQMP(t, b.qmpPath(env.Name))
 
 	crash, err := b.CreateSnapshot(context.Background(), env, "x")
-	if err != nil || !crash {
-		t.Fatalf("CreateSnapshot = %t, %v; want a crash-consistent snapshot", crash, err)
+	if err != nil || !crash.CrashConsistent {
+		t.Fatalf("CreateSnapshot = %t, %v; want a crash-consistent snapshot", crash.CrashConsistent, err)
 	}
 	if got := []string{<-events, <-events}; got[1] != "guest-fsfreeze-thaw" {
 		t.Fatalf("guest agent calls = %v; want a thaw after the failed freeze", got)

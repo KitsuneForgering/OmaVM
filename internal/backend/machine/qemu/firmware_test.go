@@ -298,3 +298,52 @@ func TestCloneOfABIOSMachineCopiesOnlyTheDisk(t *testing.T) {
 		}
 	}
 }
+
+func TestSnapshotOfAStoppedMachineKeepsItsFirmwareState(t *testing.T) {
+	useFirmware(t, map[string]string{"50-secure.json": secureDescriptor})
+	bin, _ := fakeQEMU(t, false)
+	fakeQEMUImg(t, bin)
+	t.Setenv("PATH", bin+":/usr/bin:/bin") // cp
+	b := &Backend{stateDir: t.TempDir()}
+	env := core.Environment{ID: "aaaaaaaaaaaaaaaa", Name: "win", Kind: core.Machine}
+	ctx := context.Background()
+	if err := b.Create(ctx, env); err != nil {
+		t.Fatal(err)
+	}
+	name := b.key(env)
+	keys := filepath.Join(b.tpmStateDir(name), "tpm2-00.permall")
+	write := func(nvram, tpm string) {
+		t.Helper()
+		if err := os.MkdirAll(b.tpmStateDir(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(b.nvramPath(name), []byte(nvram), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(keys, []byte(tpm), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("boot entries 1", "sealed 1")
+	if _, err := b.CreateSnapshot(ctx, env, "clean-1"); err != nil {
+		t.Fatal(err)
+	}
+	write("boot entries 2", "sealed 2")
+	if err := b.GoToSnapshot(ctx, env, "clean-1"); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{b.nvramPath(name): "boot entries 1", keys: "sealed 1"} {
+		if data, err := os.ReadFile(path); err != nil || string(data) != want {
+			t.Errorf("%s = %q %v, want %q", filepath.Base(path), data, err, want)
+		}
+	}
+	if info, err := os.Stat(b.tpmStateDir(name)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("the restored TPM directory must stay private: %v", err)
+	}
+	if err := b.RemoveSnapshot(ctx, env, "clean-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(b.platformSnapshotDir(name, "clean-1")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the snapshot's firmware state outlived it: %v", err)
+	}
+}

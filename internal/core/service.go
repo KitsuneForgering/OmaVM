@@ -984,11 +984,11 @@ func (s *Service) CreateSnapshot(ctx context.Context, name, label string) (Snaps
 	if err != nil {
 		return Snapshot{}, err
 	}
-	crashConsistent, err := manager.CreateSnapshot(ctx, env, tag)
+	snap, err := manager.CreateSnapshot(ctx, env, tag)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("create snapshot %s: %w", name, err)
 	}
-	snap := Snapshot{ID: tag, Label: label, CreatedAt: time.Now().UTC(), CrashConsistent: crashConsistent}
+	snap.ID, snap.Label, snap.CreatedAt = tag, label, time.Now().UTC()
 
 	// Recorded right after the backend confirms it, before retention: if
 	// a discard below fails, the registry must still know this snapshot,

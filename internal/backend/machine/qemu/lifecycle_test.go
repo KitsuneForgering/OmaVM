@@ -150,8 +150,11 @@ func TestSnapshotOfRunningMachineIsDiskOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !crash {
+	if !crash.CrashConsistent {
 		t.Fatal("without a guest agent the snapshot is crash-consistent and must say so")
+	}
+	if crash.WithoutFirmwareState {
+		t.Error("a BIOS Machine has no firmware state to leave out")
 	}
 	if err := b.RemoveSnapshot(context.Background(), env, "before-upgrade"); err != nil {
 		t.Fatal(err)
@@ -195,7 +198,7 @@ func TestSnapshotLifecycleOnStoppedMachine(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if crash, err := b.CreateSnapshot(ctx, env, "clean-install"); err != nil || crash {
+	if crash, err := b.CreateSnapshot(ctx, env, "clean-install"); err != nil || crash.CrashConsistent {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
 	out, err := runOutput(ctx, "qemu-img", "snapshot", "-l", b.diskPath(env.Name))
@@ -502,5 +505,24 @@ func TestStartChecksMemoryAndReadableMedia(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(capture); strings.Contains(string(data), "-cdrom") {
 		t.Fatalf("an unreadable ISO was passed to QEMU: %s", data)
+	}
+}
+
+// A running Machine's UEFI variables and TPM aren't copied with its
+// snapshot, and the snapshot says so.
+func TestSnapshotOfRunningUEFIMachineSaysItLeftTheFirmwareOut(t *testing.T) {
+	b := &Backend{stateDir: t.TempDir()}
+	env := core.Environment{Name: "guest", Kind: core.Machine}
+	startFakeQEMU(t, b, env.Name)
+	defer recordQMP(t, b.qmpPath(env.Name))()
+	if err := os.WriteFile(b.nvramPath(env.Name), []byte("boot entries"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := b.CreateSnapshot(context.Background(), env, "uefi")
+	if err != nil || !snap.WithoutFirmwareState {
+		t.Errorf("snapshot = %+v, %v; want it marked without firmware state", snap, err)
+	}
+	if _, err := os.Stat(b.platformSnapshotDir(env.Name, "uefi")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("copied a running Machine's firmware state: %v", err)
 	}
 }
