@@ -104,3 +104,19 @@ func TestPreviewOfAStoppedMachineIsItsLastFrame(t *testing.T) {
 	}
 }
 
+// Every Machine shares ~/OmaVM/Shared unless Settings choose another
+// folder or turn sharing off.
+func TestMachineSettingsResolveTheSharedFolder(t *testing.T) {
+	env := core.Environment{Kind: core.Machine}
+	if got := machineSettings(env).SharedPath; got != defaultSharedDir() || !strings.HasSuffix(got, "/OmaVM/Shared") {
+		t.Errorf("default shared folder = %q", got)
+	}
+	env.Settings.SharedPath = "/srv/work"
+	if got := machineSettings(env).SharedPath; got != "/srv/work" {
+		t.Errorf("chosen shared folder = %q", got)
+	}
+	env.Settings.SharedFolderDisabled = true
+	if got := machineSettings(env).SharedPath; got != "" {
+		t.Errorf("sharing turned off still shares %q", got)
+	}
+}

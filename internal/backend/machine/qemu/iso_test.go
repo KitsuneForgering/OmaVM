@@ -49,14 +49,14 @@ func TestStartAttachesTheInstallationMedia(t *testing.T) {
 // never went to an empty workspace nor fullscreen: only the Experience
 // Center placed the window. The viewer now does it, told by Open.
 func TestViewerIsToldWhereAndHowToOpen(t *testing.T) {
-	args := strings.Join(viewerArgs(core.Environment{Name: "vm", Kind: core.Machine}), " ")
+	args := strings.Join(viewerArgs(core.Environment{Name: "vm", Kind: core.Machine}, ""), " ")
 	for _, want := range []string{"--empty-workspace true", "--fullscreen true", "--share-clipboard true", "--title vm — OmaVM", "--environment vm"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("default viewer args %q lack %q", args, want)
 		}
 	}
 	off := core.Environment{Name: "vm", Kind: core.Machine, Settings: core.EnvironmentSettings{EmptyWorkspaceDisabled: true, FullscreenDisabled: true}}
-	args = strings.Join(viewerArgs(off), " ")
+	args = strings.Join(viewerArgs(off, ""), " ")
 	for _, want := range []string{"--empty-workspace false", "--fullscreen false"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("opted-out viewer args %q lack %q", args, want)
@@ -85,9 +85,21 @@ func TestViewerArgsCarryTheClipboardDirection(t *testing.T) {
 		{ClipboardDirection: "to-host"}:  "--share-clipboard to-host",
 		{ClipboardDirection: "to-guest"}: "--share-clipboard to-guest",
 	} {
-		args := strings.Join(viewerArgs(core.Environment{Name: "vm", Kind: core.Machine, Settings: setting}), " ")
+		args := strings.Join(viewerArgs(core.Environment{Name: "vm", Kind: core.Machine, Settings: setting}, ""), " ")
 		if !strings.Contains(args, want) {
 			t.Errorf("%+v: args %q lack %q", setting, args, want)
 		}
+	}
+}
+
+// The viewer learns the shared folder only when the session shares one,
+// so a drop never copies into a folder the guest can't see.
+func TestViewerGetsTheSessionsSharedFolder(t *testing.T) {
+	env := core.Environment{Name: "vm", Kind: core.Machine}
+	if args := strings.Join(viewerArgs(env, ""), " "); strings.Contains(args, "--shared-folder") {
+		t.Errorf("no share this session, but: %s", args)
+	}
+	if args := strings.Join(viewerArgs(env, "/home/u/OmaVM/Shared"), " "); !strings.Contains(args, "--shared-folder /home/u/OmaVM/Shared") {
+		t.Errorf("shared folder missing: %s", args)
 	}
 }

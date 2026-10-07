@@ -27,7 +27,7 @@ Item {
                 cpusTouched: call[4], memoryTouched: call[6],
                 shareClipboard: call[12], travelMode: call[13], vulkan: call[14],
                 launcher: call[16], ssh: call[17], fullscreen: call[18],
-                clipboardDirection: call[19]
+                clipboardDirection: call[19], sharedFolder: call[20]
             }
         }
 
@@ -62,6 +62,8 @@ Item {
             compare(saved.launcher, true)
             compare(saved.ssh, true)
             compare(saved.fullscreen, true)
+            compare(saved.sharedFolder, true)
+            compare(saveUntouched({ shared_folder_disabled: true }).sharedFolder, false)
         }
 
         // Repeater delegates live in the visual tree, not among QObject

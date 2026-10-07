@@ -36,6 +36,8 @@ func TestSessionAdjustments(t *testing.T) {
 		{"memory changed", func(e *core.Environment, _ *applied) { e.Settings.MemoryMiB = 4096 }, true, false},
 		{"ssh turned off", func(e *core.Environment, _ *applied) { e.Settings.SSHDisabled = true }, true, false},
 		{"folder shared", func(e *core.Environment, _ *applied) { e.Settings.SharedPath = "/home/x" }, true, false},
+		{"default folder unavailable this session", func(*core.Environment, *applied) {}, false, false},
+		{"sharing turned off", func(e *core.Environment, a *applied) { e.Settings.SharedFolderDisabled = true; a.virtiofs = true }, true, false},
 		{"iso to disconnect", func(e *core.Environment, _ *applied) { e.Settings.DisconnectISO = true }, true, false},
 		{"iso already gone", func(e *core.Environment, a *applied) { e.Settings.DisconnectISO = true; a.cdrom = false }, false, false},
 	}

@@ -103,7 +103,8 @@ public:
                              bool shareClipboard, bool travelMode, bool vulkan,
                              bool openInEmptyWorkspace, bool launcher,
                              bool ssh, bool fullscreen,
-                             const QString &clipboardDirection = QString());
+                             const QString &clipboardDirection = QString(),
+                             bool sharedFolder = true);
   Q_INVOKABLE void remove(const QString &name);
   Q_INVOKABLE void createSnapshot(const QString &name, const QString &label);
   Q_INVOKABLE void goToSnapshot(const QString &name, const QString &id);
@@ -125,6 +126,14 @@ public:
   Q_INVOKABLE void exportApp(const QString &name, const QString &id);
   Q_INVOKABLE void unexportApp(const QString &name, const QString &id);
   Q_INVOKABLE void copyToClipboard(const QString &text) const;
+  // Copies dropped files (local URLs) into folder without overwriting
+  // anything: a name already there gets " (2)". Each copy runs in the
+  // background; actionFinished("drop", ...) says how it went.
+  Q_INVOKABLE void copyIntoFolder(const QVariantList &urls,
+                                  const QString &folder);
+  // The path a copy of `source` takes in `folder`: its own name, or
+  // "name (2).ext", "name (3).ext"... when taken. Exposed for tests.
+  static QString freeDestination(const QString &folder, const QString &source);
   // Tags this process's window as a terminal for Omarchy's universal
   // copy/paste shortcuts (Box terminal mode).
   Q_INVOKABLE void markAsTerminalWindow() const;

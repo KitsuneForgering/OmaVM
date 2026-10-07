@@ -130,8 +130,13 @@ type EnvironmentSettings struct {
 	MemoryMiB      int    `json:"memory_mib,omitempty"`
 	SharedPath     string `json:"shared_path,omitempty"`
 	SharedReadOnly bool   `json:"shared_read_only,omitempty"`
-	SnapshotLimit  int    `json:"snapshot_limit,omitempty"`
-	Color          string `json:"color,omitempty"`
+	// SharedFolderDisabled turns off the Machine's shared folder, which is
+	// on by default: SharedPath when set, otherwise the Machine backend's
+	// own default folder (~/OmaVM/Shared). Stored inverted like the other
+	// opt-outs, so an older registry keeps sharing on.
+	SharedFolderDisabled bool   `json:"shared_folder_disabled,omitempty"`
+	SnapshotLimit        int    `json:"snapshot_limit,omitempty"`
+	Color                string `json:"color,omitempty"`
 	// ClipboardDisabled and TravelModeDisabled are stored inverted so the
 	// Go zero value (false) means "enabled" — both are opt-out behaviors:
 	// on by default, persisted per environment like every other setting
@@ -205,6 +210,7 @@ type SettingsPatch struct {
 	MemoryMiB            *int
 	SharedPath           *string
 	SharedReadOnly       *bool
+	SharedFolder         *bool
 	SnapshotLimit        *int
 	Color                *string
 	ShareClipboard       *bool

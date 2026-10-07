@@ -15,6 +15,14 @@ QString cellText(const TerminalSession &session, int row, int col) {
 class TerminalTest : public QObject {
   Q_OBJECT
 private slots:
+  // Dropped files become shell words: spaces and quotes survive.
+  void droppedFilesAreTypedAsQuotedPaths() {
+    QCOMPARE(TerminalSession::droppedPaths(
+                 {QStringLiteral("/home/u/My Notes.txt"),
+                  QStringLiteral("/home/u/it's.png")}),
+             QStringLiteral("'/home/u/My Notes.txt' '/home/u/it'\\''s.png' "));
+  }
+
   // The viewer closes itself only on a clean exit, so the exit code must
   // be real: a failure keeps `omavm open`'s error on screen.
   void finishedReportsTheExitCode() {

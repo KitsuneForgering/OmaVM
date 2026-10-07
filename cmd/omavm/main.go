@@ -522,7 +522,8 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	description := fs.String("description", "", "human-readable description")
 	cpus := fs.Int("cpus", 0, "virtual CPUs (Machines only)")
 	memory := fs.Int("memory-mib", 0, "memory in MiB (Machines only)")
-	sharedPath := fs.String("shared-path", "", "host directory to share (Machines only)")
+	sharedPath := fs.String("shared-path", "", "host directory to share instead of ~/OmaVM/Shared; empty goes back to it (Machines only)")
+	sharedFolder := fs.Bool("shared-folder", false, "share a folder with the guest, which can read and write it (Machines only, on by default)")
 	sharedReadOnly := fs.Bool("shared-read-only", false, "make the shared folder read-only")
 	sharedWritable := fs.Bool("shared-writable", false, "make the shared folder writable")
 	disconnectISO := fs.Bool("disconnect-iso", false, "disconnect installation media on next start (Machines only)")
@@ -593,6 +594,9 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 		case "shared-path":
 			patch.SharedPath = sharedPath
 			changed = true
+		case "shared-folder":
+			patch.SharedFolder = sharedFolder
+			changed = true
 		case "shared-read-only":
 			patch.SharedReadOnly = sharedReadOnly
 			modeFlags++
@@ -642,12 +646,19 @@ func cmdSettings(ctx context.Context, svc *core.Service, args []string) error {
 	}
 	fmt.Printf("travel mode (reduce CPUs on battery): %t\n", !settings.TravelModeDisabled)
 	fmt.Printf("show in the app launcher: %t\n", !settings.LauncherDisabled)
-	if settings.SharedPath != "" {
+	if settings.CPUs != 0 { // a Machine
 		mode := "writable"
 		if settings.SharedReadOnly {
 			mode = "read-only"
 		}
-		fmt.Printf("shared folder: %s (%s)\n", settings.SharedPath, mode)
+		switch {
+		case settings.SharedFolderDisabled:
+			fmt.Println("shared folder: off")
+		case settings.SharedPath != "":
+			fmt.Printf("shared folder: %s (%s)\n", settings.SharedPath, mode)
+		default:
+			fmt.Printf("shared folder: ~/OmaVM/Shared, the default (%s)\n", mode)
+		}
 	}
 	if settings.Color != "" {
 		fmt.Println("color:", settings.Color)
@@ -840,6 +851,8 @@ commands:
     [--vulkan=BOOL] [--ssh=BOOL] [--fullscreen=BOOL]       (Machines only, on by default)
     [--launcher=BOOL]                                      list in the app launcher (on by default)
     [--open-in-empty-workspace=BOOL]                       open in an empty workspace (on by default)
+    [--shared-folder=BOOL] [--shared-path DIR]             share ~/OmaVM/Shared, or DIR, with a Machine;
+                                                           the guest reads and writes it (on by default)
   preview NAME                                             capture a Machine screenshot
   snapshot create NAME --label TEXT                        capture the environment's current state
   snapshot list NAME [--json]                              list snapshots

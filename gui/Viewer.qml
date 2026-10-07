@@ -50,6 +50,36 @@ Window {
         }
     }
 
+    // Files dropped on the window are copied into the folder this session
+    // shares, as in Parallels; the guest finds them in its shared folder.
+    DropArea {
+        id: drop
+        objectName: "fileDrop"
+        anchors.fill: parent
+        enabled: displaySharedFolder !== ""
+        onEntered: drag => drag.accepted = drag.hasUrls
+        onDropped: drop => {
+            backend.copyIntoFolder(drop.urls, displaySharedFolder)
+            drop.accept(Qt.CopyAction)
+            view.forceActiveFocus()
+        }
+    }
+    Rectangle {
+        anchors.fill: parent
+        visible: drop.containsDrag
+        color: Qt.rgba(0, 0, 0, 0.55)
+        border.width: 3
+        border.color: backend.themeAccent
+        Label {
+            anchors.centerIn: parent
+            width: parent.width - 64
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            text: qsTr("Drop to copy into %1").arg(displaySharedFolder)
+            font.pixelSize: 20
+        }
+    }
+
     // The connection to the display ended (the guest shut down, QEMU went
     // away, the connection failed): say so and offer the ways back, since
     // in fullscreen there is no title bar to close or switch from.

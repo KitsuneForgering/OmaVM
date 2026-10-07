@@ -810,7 +810,7 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 			return EnvironmentSettings{}, Unsupportedf("CPU and memory settings only apply to Machines")
 		}
 	}
-	if patch.SharedPath != nil || patch.SharedReadOnly != nil {
+	if patch.SharedPath != nil || patch.SharedReadOnly != nil || patch.SharedFolder != nil {
 		if env.Kind != Machine {
 			return EnvironmentSettings{}, Unsupportedf("shared folders only apply to Machines")
 		}
@@ -834,6 +834,9 @@ func (s *Service) Configure(ctx context.Context, name string, patch SettingsPatc
 	}
 	if patch.SharedReadOnly != nil {
 		settings.SharedReadOnly = *patch.SharedReadOnly
+	}
+	if patch.SharedFolder != nil {
+		settings.SharedFolderDisabled = !*patch.SharedFolder
 	}
 	if patch.CPUs != nil {
 		if err := validateCPUs(*patch.CPUs); err != nil {

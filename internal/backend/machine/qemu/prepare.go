@@ -156,7 +156,7 @@ func (b *Backend) PrepareGuest(ctx context.Context, env core.Environment) ([]cor
 	}
 	guest.confined = agentConfined(ctx, b.qgaPath(key))
 
-	settings := env.EffectiveSettings()
+	settings := machineSettings(env)
 	channels, _ := guestChannels(b.qmpPath(key))
 	var steps []core.PreparationStep
 	add := func(step core.PreparationStep, err error) error {
@@ -296,7 +296,7 @@ func (b *Backend) prepareSharedFolder(ctx context.Context, env core.Environment,
 	step := core.PreparationStep{ID: "shared_folder", Label: "Shared folder"}
 	key := b.key(env)
 	if settings.SharedPath == "" {
-		step.Result, step.Detail = core.StepSkipped, "Choose a folder in Settings to share it"
+		step.Result, step.Detail = core.StepSkipped, "Turned off in Settings"
 		return step, nil
 	}
 	if a, ok := b.appliedConfig(key); !ok || !a.virtiofs {

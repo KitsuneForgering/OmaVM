@@ -2,6 +2,8 @@
 #include "colorstoml.h"
 
 #include <QClipboard>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QDir>
 #include <QFontMetricsF>
 #include <QSettings>
@@ -69,6 +71,7 @@ TerminalView::TerminalView(QQuickItem *parent) : QQuickPaintedItem(parent) {
               QGuiApplication::clipboard()->setText(text);
           });
   setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton);
+  setFlag(ItemAcceptsDrops);
   connect(&m_session, &TerminalSession::finished, this,
           &TerminalView::finished);
   connect(&m_session, &TerminalSession::errorOccurred, this,
@@ -443,6 +446,23 @@ void TerminalView::keyPressEvent(QKeyEvent *event) {
     update();
   }
   event->accept();
+}
+
+void TerminalView::dragEnterEvent(QDragEnterEvent *event) {
+  if (event->mimeData()->hasUrls())
+    event->acceptProposedAction();
+}
+
+void TerminalView::dropEvent(QDropEvent *event) {
+  QStringList paths;
+  for (const QUrl &url : event->mimeData()->urls())
+    if (url.isLocalFile())
+      paths << url.toLocalFile();
+  if (paths.isEmpty())
+    return;
+  m_session.write(m_session.pasteSequence(TerminalSession::droppedPaths(paths)));
+  event->acceptProposedAction();
+  forceActiveFocus();
 }
 
 void TerminalView::wheelEvent(QWheelEvent *event) {

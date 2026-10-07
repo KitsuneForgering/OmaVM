@@ -16,6 +16,7 @@ class BackendRefreshTest : public QObject {
   Q_OBJECT
 
 private slots:
+  void droppedFilesNeverOverwrite();
   void textColorsMeetEnhancedContrast();
   void themeChangeKeepsReadableText();
   void unchangedPollDoesNotFlash();
@@ -310,6 +311,35 @@ void BackendRefreshTest::themeChangeKeepsReadableText() {
   QTRY_COMPARE(backend.themeMode(), QStringLiteral("light"));
   QCOMPARE(backend.themeForeground(), QStringLiteral("#000000"));
   QCOMPARE(backend.themeMuted(), QStringLiteral("#000000"));
+}
+
+// A file dropped on a Machine's window is copied into the shared folder
+// next to anything already there, never over it.
+void BackendRefreshTest::droppedFilesNeverOverwrite() {
+  QTemporaryDir source, shared;
+  const auto write = [](const QString &path, const QByteArray &data) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(data) == data.size();
+  };
+  QVERIFY(write(source.filePath(QStringLiteral("notes.txt")), "new"));
+  QVERIFY(write(shared.filePath(QStringLiteral("notes.txt")), "old"));
+  QCOMPARE(Backend::freeDestination(shared.path(),
+                                    source.filePath(QStringLiteral("notes.txt"))),
+           shared.filePath(QStringLiteral("notes (2).txt")));
+
+  Backend backend;
+  QSignalSpy finished(&backend, &Backend::actionFinished);
+  backend.copyIntoFolder(
+      {QUrl::fromLocalFile(source.filePath(QStringLiteral("notes.txt")))},
+      shared.path());
+  QVERIFY(finished.wait(5000));
+  QCOMPARE(finished.at(0).at(0).toString(), QStringLiteral("drop"));
+  QVERIFY(finished.at(0).at(1).toBool());
+  QFile kept(shared.filePath(QStringLiteral("notes.txt")));
+  QFile copied(shared.filePath(QStringLiteral("notes (2).txt")));
+  QVERIFY(kept.open(QIODevice::ReadOnly) && copied.open(QIODevice::ReadOnly));
+  QCOMPARE(kept.readAll(), QByteArray("old"));
+  QCOMPARE(copied.readAll(), QByteArray("new"));
 }
 
 void BackendRefreshTest::unchangedPollDoesNotFlash() {

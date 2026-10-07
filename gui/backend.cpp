@@ -7,6 +7,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFileInfo>
 #include <QDirIterator>
 #include <QFile>
 #include <QGuiApplication>
@@ -590,7 +591,8 @@ void Backend::configure(const QString &name, const QString &description,
                         bool disconnectISO, const QString &color,
                         bool shareClipboard, bool travelMode, bool vulkan,
                         bool openInEmptyWorkspace, bool launcher, bool ssh,
-                        bool fullscreen, const QString &clipboardDirection) {
+                        bool fullscreen, const QString &clipboardDirection,
+                        bool sharedFolder) {
   QStringList arguments{QStringLiteral("settings"),      name,
                         QStringLiteral("--description"), description,
                         QStringLiteral("--color"),       color};
@@ -620,6 +622,8 @@ void Backend::configure(const QString &name, const QString &description,
       arguments << QStringLiteral("--cpus") << QString::number(cpus);
     if (memoryTouched)
       arguments << QStringLiteral("--memory-mib") << QString::number(memoryMiB);
+    arguments << (sharedFolder ? QStringLiteral("--shared-folder=true")
+                               : QStringLiteral("--shared-folder=false"));
     arguments << QStringLiteral("--shared-path") << sharedPath;
     arguments << (sharedReadOnly ? QStringLiteral("--shared-read-only")
                                  : QStringLiteral("--shared-writable"));
@@ -821,6 +825,47 @@ void Backend::markAsTerminalWindow() const {
       QStringLiteral("hyprctl"),
       {QStringLiteral("repl"),
        terminalTagScript(QCoreApplication::applicationPid())});
+}
+
+QString Backend::freeDestination(const QString &folder, const QString &source) {
+  const QFileInfo info(source);
+  const QString base = info.completeBaseName();
+  const QString suffix = info.suffix().isEmpty() || info.isDir()
+                             ? QString()
+                             : QStringLiteral(".") + info.suffix();
+  const QString stem = info.isDir() ? info.fileName() : base;
+  QString candidate = QDir(folder).filePath(stem + suffix);
+  for (int n = 2; QFileInfo::exists(candidate); ++n)
+    candidate = QDir(folder).filePath(
+        QStringLiteral("%1 (%2)%3").arg(stem).arg(n).arg(suffix));
+  return candidate;
+}
+
+void Backend::copyIntoFolder(const QVariantList &urls, const QString &folder) {
+  for (const QVariant &value : urls) {
+    const QUrl url = value.toUrl();
+    if (!url.isLocalFile())
+      continue;
+    const QString source = url.toLocalFile();
+    const QString destination = freeDestination(folder, source);
+    const QString name = QFileInfo(destination).fileName();
+    auto *copy = new QProcess(this);
+    connect(copy, &QProcess::finished, this,
+            [this, copy, name](int code, QProcess::ExitStatus status) {
+              const QString error =
+                  QString::fromUtf8(copy->readAllStandardError()).trimmed();
+              copy->deleteLater();
+              const bool ok = status == QProcess::NormalExit && code == 0;
+              emit actionFinished(
+                  QStringLiteral("drop"), ok,
+                  ok ? tr("Copied “%1” to the shared folder").arg(name)
+                     : tr("Couldn't copy “%1”: %2").arg(name, error));
+            });
+    // -r for folders; reflink makes a copy on the same Btrfs instant.
+    copy->start(QStringLiteral("cp"),
+                {QStringLiteral("-r"), QStringLiteral("--reflink=auto"),
+                 QStringLiteral("--"), source, destination});
+  }
 }
 
 void Backend::copyToClipboard(const QString &text) const {

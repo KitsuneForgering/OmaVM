@@ -1192,6 +1192,16 @@ QByteArray TerminalSession::keySequence(int key,
   return out;
 }
 
+QString TerminalSession::droppedPaths(const QStringList &paths) {
+  QString out;
+  for (const QString &path : paths) {
+    QString quoted = path;
+    quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    out += QLatin1Char('\'') + quoted + QStringLiteral("' ");
+  }
+  return out;
+}
+
 bool TerminalSession::isPasteShortcut(int key,
                                       Qt::KeyboardModifiers modifiers) {
   const Qt::KeyboardModifiers relevant =

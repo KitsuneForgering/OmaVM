@@ -25,6 +25,30 @@ func hostLinkDir() (string, error) {
 	return filepath.Join(home, "OmaVM"), nil
 }
 
+// defaultSharedDir is the folder every Machine shares unless Settings
+// name another one or turn sharing off: next to the Machines' links, so
+// it is easy to find in the file manager.
+func defaultSharedDir() string {
+	dir, err := hostLinkDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "Shared")
+}
+
+// machineSettings is env's effective settings with the shared folder
+// resolved: "" when turned off, the default folder when none is chosen.
+func machineSettings(env core.Environment) core.EnvironmentSettings {
+	settings := env.EffectiveSettings()
+	switch {
+	case settings.SharedFolderDisabled:
+		settings.SharedPath = ""
+	case settings.SharedPath == "":
+		settings.SharedPath = defaultSharedDir()
+	}
+	return settings
+}
+
 func (b *Backend) hostLinkPath(name string) (string, error) {
 	dir, err := hostLinkDir()
 	if err != nil {

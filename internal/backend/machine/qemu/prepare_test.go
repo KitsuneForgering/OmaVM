@@ -297,6 +297,7 @@ func TestPrepareGuestRespectsSettings(t *testing.T) {
 		guest := &fakeGuest{run: guestWorks}
 		b, env := runningMachine(t, false, guest)
 		env.Settings.ClipboardDisabled = true
+		env.Settings.SharedFolderDisabled = true
 		steps, err := b.PrepareGuest(context.Background(), env)
 		if err != nil {
 			t.Fatal(err)

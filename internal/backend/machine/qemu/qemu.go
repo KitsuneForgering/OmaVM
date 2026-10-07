@@ -197,7 +197,7 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		}
 	}
 	b.growDisk(ctx, env)
-	settings := env.EffectiveSettings()
+	settings := machineSettings(env)
 	if !settings.TravelModeDisabled && env.Settings.CPUs == 0 && power.OnBattery() {
 		// Travel Mode: the host is unplugged and the user hasn't pinned
 		// CPUs explicitly, so trim this session's allocation — never the
@@ -217,10 +217,18 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 	}
 	virtiofsRunning := false
 	if settings.SharedPath != "" {
-		if err := b.startVirtiofs(ctx, b.key(env), settings); err != nil {
+		err := b.startVirtiofs(ctx, b.key(env), settings)
+		switch {
+		case err == nil:
+			virtiofsRunning = true
+		case settings.SharedPath == defaultSharedDir():
+			// The default folder is a convenience: a host without
+			// virtiofsd, or a Machine named "Shared" holding that path,
+			// still starts, without it.
+			slog.Warn("starting without the default shared folder", "machine", env.Name, "error", err)
+		default:
 			return err
 		}
-		virtiofsRunning = true
 	}
 
 	tpm, err := b.startTPM(ctx, b.key(env), ephemeral)
@@ -458,6 +466,11 @@ func qemuErr(action string, err error, out string) error {
 func (b *Backend) startVirtiofs(ctx context.Context, name string, settings core.EnvironmentSettings) error {
 	// Checked here, not only when configured: the folder may have been
 	// moved or deleted since, and the Machine should say so plainly.
+	if settings.SharedPath == defaultSharedDir() {
+		if err := os.MkdirAll(settings.SharedPath, 0o755); err != nil {
+			return core.Invalidf("couldn't create the shared folder %s: %v; choose another one in Settings or turn sharing off", settings.SharedPath, err)
+		}
+	}
 	if info, err := os.Stat(settings.SharedPath); err != nil || !info.IsDir() {
 		return core.Invalidf("shared folder %s no longer exists or is not a folder; choose another one in Settings or remove it", settings.SharedPath)
 	}
@@ -565,7 +578,13 @@ func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 	// while, not something that should die when this call's context
 	// ends (same reasoning as the GUI's own openInTerminal). It inherits
 	// its end of the display connection as fd 3.
-	cmd := exec.CommandContext(context.Background(), viewer, viewerArgs(env)...)
+	// Files dropped on the window go to the shared folder, when this
+	// session really shares one.
+	shared := ""
+	if a, ok := b.appliedConfig(b.key(env)); ok && a.virtiofs {
+		shared = machineSettings(env).SharedPath
+	}
+	cmd := exec.CommandContext(context.Background(), viewer, viewerArgs(env, shared)...)
 	cmd.ExtraFiles = []*os.File{display}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch display viewer: %w", err)
@@ -577,9 +596,9 @@ func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 // viewer itself picks the workspace and goes fullscreen, so it happens
 // however the Machine was opened: Experience Center, launcher entry or
 // `omavm open`.
-func viewerArgs(env core.Environment) []string {
+func viewerArgs(env core.Environment, shared string) []string {
 	settings := env.EffectiveSettings()
-	return []string{
+	args := []string{
 		"--display-fd", "3",
 		"--title", env.Name + " — OmaVM",
 		// Lets the viewer reconnect after losing the display (omavm open).
@@ -588,6 +607,10 @@ func viewerArgs(env core.Environment) []string {
 		"--empty-workspace", strconv.FormatBool(!settings.EmptyWorkspaceDisabled),
 		"--fullscreen", strconv.FormatBool(!settings.FullscreenDisabled),
 	}
+	if shared != "" {
+		args = append(args, "--shared-folder", shared)
+	}
+	return args
 }
 
 // attachDisplay opens a new peer-to-peer connection to the Machine's D-Bus

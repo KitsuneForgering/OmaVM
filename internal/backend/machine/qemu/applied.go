@@ -55,7 +55,7 @@ func (b *Backend) appliedConfig(name string) (applied, bool) {
 // battery. restart: a saved setting differs from what the session got and
 // only applies on the next start.
 func sessionAdjustments(env core.Environment, a applied, vsockAvailable bool) (restart, travel bool) {
-	want := env.EffectiveSettings()
+	want := machineSettings(env)
 	switch {
 	case a.cpus == want.CPUs:
 	case a.cpus < want.CPUs && env.Settings.CPUs == 0 && !want.TravelModeDisabled:
@@ -69,7 +69,10 @@ func sessionAdjustments(env core.Environment, a applied, vsockAvailable bool) (r
 	if (!want.SSHDisabled && vsockAvailable) != a.vsock {
 		restart = true
 	}
-	if (want.SharedPath != "") != a.virtiofs {
+	// The default folder is shared when it can be: a session that
+	// started without it (no virtiofsd on this host) isn't a pending
+	// change, or the card would ask for a restart forever.
+	if (want.SharedPath != "") != a.virtiofs && !(want.SharedPath == defaultSharedDir() && !a.virtiofs) {
 		restart = true
 	}
 	if want.DisconnectISO && a.cdrom {

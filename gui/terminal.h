@@ -82,6 +82,10 @@ public:
   // Shift+Insert (what Omarchy's universal paste sends to terminals) or
   // Ctrl+Shift+V.
   static bool isPasteShortcut(int key, Qt::KeyboardModifiers modifiers);
+  // Files dropped on the terminal, typed as the shell wants them: each
+  // path in single quotes, separated and followed by a space. A Box shares
+  // the host's home, so the host's path is the Box's path too.
+  static QString droppedPaths(const QStringList &paths);
   // Bytes to send for pasted text: newlines as Enter, wrapped in bracketed
   // paste markers when the program enabled them.
   QByteArray pasteSequence(const QString &text) const;

@@ -38,7 +38,8 @@ bool placeViewer(const QString &title, bool emptyWorkspace) {
 // QEMU already accepted (the backend hands it over as an inherited fd).
 int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
               const QString &envName, const QString &clipboardMode,
-              bool emptyWorkspace, bool fullscreen) {
+              bool emptyWorkspace, bool fullscreen,
+              const QString &sharedFolder) {
   if (!placeViewer(title, emptyWorkspace))
     return 0;
   app.setApplicationName(QStringLiteral("dev.omavm.viewer"));
@@ -55,6 +56,10 @@ int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
       QStringLiteral("displayConnectionFd"), connectionFd);
   engine.rootContext()->setContextProperty(QStringLiteral("displayTitle"),
                                            title);
+  // Where files dropped on the window go; empty when this session shares
+  // no folder with the guest.
+  engine.rootContext()->setContextProperty(
+      QStringLiteral("displaySharedFolder"), sharedFolder);
   // Empty when launched by an older omavm: the viewer then can't offer
   // to reconnect.
   engine.rootContext()->setContextProperty(QStringLiteral("displayEnvName"),
@@ -160,6 +165,12 @@ int main(int argc, char *argv[]) {
       QStringLiteral("The Machine shown by --display-fd, to reconnect to it"),
       QStringLiteral("name"));
   parser.addOption(environmentOption);
+  QCommandLineOption sharedFolderOption(
+      QStringLiteral("shared-folder"),
+      QStringLiteral("The folder this Machine's session shares; files dropped "
+                     "on its window are copied there"),
+      QStringLiteral("path"));
+  parser.addOption(sharedFolderOption);
   QCommandLineOption colorOption(
       QStringLiteral("color"),
       QStringLiteral("The environment's color tag, shown along the "
@@ -179,7 +190,7 @@ int main(int argc, char *argv[]) {
                      parser.value(titleOption),
                      parser.value(environmentOption),
                      parser.value(shareClipboardOption), on(emptyWorkspaceOption),
-                     on(fullscreenOption));
+                     on(fullscreenOption), parser.value(sharedFolderOption));
   // A Box's terminal only copies to this computer (OSC 52).
   if (parser.isSet(terminalOption))
     return runTerminal(app, parser.value(terminalOption),

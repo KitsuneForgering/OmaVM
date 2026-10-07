@@ -13,11 +13,19 @@ import (
 )
 
 // Tests never see the host's OVMF or swtpm: each one that needs them sets
-// up its own.
+// up its own. Nor its home: a Start creates the default shared folder
+// (~/OmaVM/Shared) and links land in ~/OmaVM.
 func TestMain(m *testing.M) {
 	firmwareDirs = nil
 	swtpmLookPath = func() (string, error) { return "", exec.ErrNotFound }
-	os.Exit(m.Run())
+	home, err := os.MkdirTemp("", "omavm-qemu-home")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
 }
 
 const secureDescriptor = `{

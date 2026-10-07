@@ -53,14 +53,15 @@ public:
                              bool shareClipboard, bool travelMode, bool vulkan,
                              bool openInEmptyWorkspace, bool launcher,
                              bool ssh, bool fullscreen,
-                             const QString &clipboardDirection = QString()) {
+                             const QString &clipboardDirection = QString(),
+                             bool sharedFolder = true) {
     insert(QStringLiteral("lastCall"),
            QVariantList{QStringLiteral("configure"), name, description, cpus,
                         cpusTouched, memoryMiB, memoryTouched, machine,
                         sharedPath, sharedReadOnly, disconnectISO, color,
                         shareClipboard, travelMode, vulkan,
                         openInEmptyWorkspace, launcher, ssh, fullscreen,
-                        clipboardDirection});
+                        clipboardDirection, sharedFolder});
   }
   // Audits what a screen reader gets from the accessibility tree under
   // item: every visible control someone can act on needs a name, and

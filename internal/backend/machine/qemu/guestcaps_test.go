@@ -18,7 +18,7 @@ func TestGuestCapabilities(t *testing.T) {
 		clipboard, sharedFolder string
 	}{
 		{"stopped is never ready", shared, nil, core.GuestNotVerified, core.GuestNotVerified},
-		{"turned off", core.EnvironmentSettings{ClipboardDisabled: true}, &guestChecks{agent: true, clipboardOpen: &yes}, core.GuestOff, core.GuestOff},
+		{"turned off", core.EnvironmentSettings{ClipboardDisabled: true, SharedFolderDisabled: true}, &guestChecks{agent: true, clipboardOpen: &yes}, core.GuestOff, core.GuestOff},
 		{"vdagent running, folder mounted", shared, &guestChecks{agent: true, clipboardOpen: &yes, virtiofsMount: &mounted, sessionHasShared: true}, core.GuestReady, core.GuestReady},
 		{"no vdagent, folder not mounted", shared, &guestChecks{agent: true, clipboardOpen: &no, virtiofsMount: &unmounted, sessionHasShared: true}, core.GuestNeedsComponent, core.GuestNeedsComponent},
 		{"folder shared after start", shared, &guestChecks{agent: true, clipboardOpen: &yes, sessionHasShared: false}, core.GuestReady, core.GuestNeedsRestart},

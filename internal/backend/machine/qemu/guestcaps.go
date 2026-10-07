@@ -37,7 +37,7 @@ func clipboardReadyHint(settings core.EnvironmentSettings) string {
 // guestCapabilities turns settings and checks into states with a next
 // step. A stopped Machine (checks == nil) is never reported ready.
 func guestCapabilities(env core.Environment, checks *guestChecks) []core.GuestCapability {
-	settings := env.EffectiveSettings()
+	settings := machineSettings(env)
 	clipboard := core.GuestCapability{ID: "clipboard", Label: "Clipboard"}
 	switch {
 	case settings.ClipboardDisabled:
@@ -53,7 +53,7 @@ func guestCapabilities(env core.Environment, checks *guestChecks) []core.GuestCa
 	shared := core.GuestCapability{ID: "shared_folder", Label: "Shared folder"}
 	switch {
 	case settings.SharedPath == "":
-		shared.State, shared.Hint = core.GuestOff, "Choose a folder in Settings to share it"
+		shared.State, shared.Hint = core.GuestOff, "Turned off in Settings"
 	case checks == nil:
 		shared.State, shared.Hint = core.GuestNotVerified, "Checked while the Machine is running. "+mountHint
 	case !checks.sessionHasShared:

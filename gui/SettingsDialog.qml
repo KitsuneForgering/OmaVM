@@ -60,6 +60,7 @@ Dialog {
         cpusPinned = !!settings.cpus
         memoryPinned = !!settings.memory_mib
         sharedPath.text = settings.shared_path || ""
+        sharedFolder.checked = !settings.shared_folder_disabled
         sharedReadOnly.checked = settings.shared_read_only || false
         disconnectISO.checked = settings.disconnect_iso || false
         selectedColor = settings.color || ""
@@ -492,14 +493,31 @@ Dialog {
             font.pixelSize: 18
             font.weight: Font.DemiBold
         }
-        RowLayout {
+        // On by default, like every host integration; the cost is said
+        // here, not hidden (Security Model).
+        CheckBox {
+            id: sharedFolder
+            objectName: "sharedFolderCheck"
             visible: dialog.machine
+            checked: true
+            text: qsTr("Share a folder with the guest")
+        }
+        Label {
+            visible: dialog.machine && sharedFolder.checked
+            Layout.fillWidth: true
+            text: qsTr("Programs in the guest can read and write everything in it. Files dropped on the Machine's window are copied there.")
+            color: backend.themeMuted
+            font.pixelSize: 12
+            wrapMode: Text.Wrap
+        }
+        RowLayout {
+            visible: dialog.machine && sharedFolder.checked
             Layout.fillWidth: true
             TextField {
                 id: sharedPath
                 Layout.fillWidth: true
                 Accessible.name: qsTr("Shared folder")
-                placeholderText: qsTr("Host folder (optional)")
+                placeholderText: qsTr("~/OmaVM/Shared (default)")
                 selectByMouse: true
             }
             Button {
@@ -509,13 +527,13 @@ Dialog {
         }
         CheckBox {
             id: sharedReadOnly
-            visible: dialog.machine && sharedPath.text.length > 0
+            visible: dialog.machine && sharedFolder.checked
             text: qsTr("Read-only in the guest")
         }
         Label {
-            visible: dialog.machine && sharedPath.text.length > 0
+            visible: dialog.machine && sharedFolder.checked
             Layout.fillWidth: true
-            text: qsTr("Mount the tag omavm-share in the guest. Changes apply on the next start.")
+            text: qsTr("Mount the tag omavm-share in the guest (Prepare the Guest does it). Changes apply on the next start.")
             color: backend.themeMuted
             wrapMode: Text.Wrap
         }
@@ -558,7 +576,7 @@ Dialog {
                 onClicked: {
                     dialog.errorText = ""
                     dialog.submitting = true
-                    backend.configure(environment.name, description.text.trim(), cpus.value, dialog.cpusTouched, memory.value, dialog.memoryTouched, dialog.machine, sharedPath.text.trim(), sharedReadOnly.checked, disconnectISO.checked, dialog.selectedColor, shareClipboard.checked, travelMode.checked, vulkan.checked, openInEmptyWorkspace.checked, launcher.checked, ssh.checked, fullscreen.checked, clipboardDirection.currentValue)
+                    backend.configure(environment.name, description.text.trim(), cpus.value, dialog.cpusTouched, memory.value, dialog.memoryTouched, dialog.machine, sharedPath.text.trim(), sharedReadOnly.checked, disconnectISO.checked, dialog.selectedColor, shareClipboard.checked, travelMode.checked, vulkan.checked, openInEmptyWorkspace.checked, launcher.checked, ssh.checked, fullscreen.checked, clipboardDirection.currentValue, sharedFolder.checked)
                 }
             }
         }
