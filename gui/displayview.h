@@ -32,6 +32,9 @@ public:
   void setConnectionFd(int fd);
   bool shareClipboard() const { return m_shareClipboard; }
   void setShareClipboard(bool enabled);
+  // Ctrl+Alt+Del straight to the guest: typed on the host, the compositor
+  // or the host itself would take it.
+  Q_INVOKABLE void sendCtrlAltDel();
 
 signals:
   void connectionFdChanged();

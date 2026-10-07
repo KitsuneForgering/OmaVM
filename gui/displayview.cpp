@@ -458,6 +458,14 @@ void DisplayView::keyPressEvent(QKeyEvent *event) {
   m_client.pressKey(qnum);
 }
 
+void DisplayView::sendCtrlAltDel() {
+  const quint32 keys[] = {evdevToQnum(29), evdevToQnum(56), evdevToQnum(111)};
+  for (quint32 qnum : keys)
+    m_client.pressKey(qnum);
+  for (int i = 2; i >= 0; --i)
+    m_client.releaseKey(keys[i]);
+}
+
 void DisplayView::keyReleaseEvent(QKeyEvent *event) {
   const quint32 qnum = qnumFor(event);
   if (qnum == 0) {

@@ -125,7 +125,7 @@ Window {
         Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
         Label {
             width: parent.width
-            text: qsTr("Ctrl+Alt+Q closes this window. %1 keeps running; shut it down from OmaVM.").arg(displayEnvName || qsTr("The Machine"))
+            text: qsTr("Point at the top edge or press Ctrl+Alt+M for %1's controls. Ctrl+Alt+Q closes this window; %1 keeps running.").arg(displayEnvName || qsTr("the Machine"))
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
         }
@@ -136,6 +136,111 @@ Window {
         }
     }
 
+    // The Machine's controls, as in Parallels' fullscreen: pointing at the
+    // top edge (or Ctrl+Alt+M) slides them in. Every button leaves the
+    // keyboard with the guest (no focus), and an action's result comes back
+    // as a short note under the bar.
+    property bool controlsShown: false
+    function showControls() { controlsShown = true; controlsTimer.restart() }
+    function act(note, action) {
+        action()
+        controlsNote.text = note
+        controlsTimer.restart()
+        view.forceActiveFocus()
+    }
+    Item {
+        // A thin strip along the top: hovering it doesn't take the guest's
+        // pointer (a HoverHandler doesn't accept presses).
+        anchors { left: parent.left; right: parent.right; top: parent.top }
+        height: 3
+        HoverHandler { onHoveredChanged: if (hovered) win.showControls() }
+    }
+    Timer {
+        id: controlsTimer
+        interval: 2500
+        onTriggered: if (!controlsHover.hovered) { win.controlsShown = false; controlsNote.text = "" }
+    }
+    Pane {
+        id: controls
+        objectName: "viewerControls"
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: win.controlsShown ? 8 : -height - 8
+        visible: y > -height - 8
+        padding: 6
+        Material.background: backend.themeSurface
+        Material.elevation: 8
+        Behavior on y { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+        HoverHandler { id: controlsHover; onHoveredChanged: if (!hovered) controlsTimer.restart() }
+
+        ColumnLayout {
+            spacing: 2
+            RowLayout {
+                spacing: 2
+                Label {
+                    text: displayEnvName
+                    font.weight: Font.DemiBold
+                    leftPadding: 10
+                    rightPadding: 10
+                }
+                ToolButton {
+                    objectName: "ctrlAltDelButton"
+                    text: qsTr("Ctrl+Alt+Del")
+                    focusPolicy: Qt.NoFocus
+                    onClicked: win.act(qsTr("Sent Ctrl+Alt+Del"), () => view.sendCtrlAltDel())
+                }
+                ToolButton {
+                    objectName: "snapshotButton"
+                    text: qsTr("Take Snapshot")
+                    focusPolicy: Qt.NoFocus
+                    onClicked: win.act(qsTr("Taking a snapshot…"), () => backend.createSnapshot(displayEnvName,
+                        qsTr("From the window, %1").arg(Qt.formatDateTime(new Date(), "yyyy-MM-dd hh:mm"))))
+                }
+                ToolButton {
+                    objectName: "fullscreenButton"
+                    text: win.visibility === Window.FullScreen ? qsTr("Exit Full Screen") : qsTr("Full Screen")
+                    focusPolicy: Qt.NoFocus
+                    onClicked: win.act("", () => win.visibility === Window.FullScreen ? win.showNormal() : win.showFullScreen())
+                }
+                ToolButton {
+                    text: qsTr("Open OmaVM")
+                    focusPolicy: Qt.NoFocus
+                    onClicked: win.act("", () => backend.showManager())
+                }
+                ToolButton {
+                    objectName: "shutDownButton"
+                    // An ordinary shutdown: the guest is asked to power off
+                    // and saves its work; never a power cut.
+                    text: qsTr("Shut Down")
+                    focusPolicy: Qt.NoFocus
+                    onClicked: win.act(qsTr("Asked %1 to shut down…").arg(displayEnvName), () => backend.stop(displayEnvName))
+                }
+            }
+            Label {
+                id: controlsNote
+                objectName: "controlsNote"
+                Layout.fillWidth: true
+                visible: text !== ""
+                color: backend.themeMuted
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                bottomPadding: 4
+            }
+        }
+    }
+    Connections {
+        target: backend
+        function onActionFinished(tag, ok, text) {
+            if (text === "")
+                return
+            controlsNote.text = text
+            win.showControls()
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Alt+M"
+        onActivated: win.controlsShown ? win.controlsShown = false : win.showControls()
+    }
     Shortcut {
         sequence: "Ctrl+Alt+Q"
         onActivated: win.close()
