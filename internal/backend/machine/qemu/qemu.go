@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -234,7 +235,10 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		"-m", strconv.Itoa(settings.MemoryMiB),
 		"-smp", strconv.Itoa(settings.CPUs),
 		"-enable-kvm",
-		"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2", b.diskPath(b.key(env))),
+		// discard=unmap: space the guest frees (fstrim, Windows' Optimize
+		// Drives) goes back to the host; QEMU's default ignores it. Clusters
+		// a snapshot still uses stay, by qcow2's own reference counts.
+		"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2,discard=unmap", b.diskPath(b.key(env))),
 		// Absolute pointer: the viewer sends guest coordinates, never
 		// relative motion that drifts from the host cursor.
 		"-device", "qemu-xhci",
@@ -251,6 +255,7 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		"-daemonize",
 	)
 	args = append(args, tpm...)
+	args = append(args, networkArgs(env, len(firmware) > 0)...)
 	graphics := detectGraphics(ctx)
 	vulkan := graphics.vulkan && !settings.VulkanDisabled
 	slog.Info("graphics", "machine", env.Name, "opengl", graphics.openGL, "vulkan", vulkan, "detail", graphics.vulkanDetail)
@@ -650,6 +655,25 @@ const bootDisk = "virtio0"
 // (tested on QEMU 11.1: "State blocked by non-migratable device
 // virtio-sound", and "virgl is not yet migratable" with 3D acceleration),
 // so snapshots of a running Machine never worked before this.
+// networkArgs spells out the network QEMU gave every Machine by default:
+// "Shared", user-mode networking (rootless; the guest reaches the network
+// through the host and nothing reaches it). The model is the board's
+// default NIC and -nic lands on the same PCI slot (checked on QEMU 11.1:
+// q35 00:01.0 e1000e, pc 00:02.0 e1000), so installed systems keep their
+// interface name and drivers; only the MAC changes from the default every
+// Machine shared to one derived from the ID, which a clone doesn't share.
+func networkArgs(env core.Environment, q35 bool) []string {
+	model := "e1000"
+	if q35 {
+		model = "e1000e"
+	}
+	h := fnv.New32a()
+	h.Write([]byte(env.ID))
+	sum := h.Sum32()
+	mac := fmt.Sprintf("52:54:00:%02x:%02x:%02x", byte(sum>>16), byte(sum>>8), byte(sum))
+	return []string{"-nic", "user,model=" + model + ",mac=" + mac}
+}
+
 func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag string) (core.Snapshot, error) {
 	running, err := b.isRunning(b.key(env))
 	if err != nil {

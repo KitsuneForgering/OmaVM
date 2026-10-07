@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -60,5 +61,23 @@ func TestDisplayArgs(t *testing.T) {
 		if got := strings.Join(displayArgs(tt.openGL, tt.vulkan, 2048, tt.virtiofs), " "); got != tt.want {
 			t.Errorf("%s: got %q, want %q", name, got, tt.want)
 		}
+	}
+}
+
+func TestNetworkIsExplicitWithAStableMACPerMachine(t *testing.T) {
+	a := core.Environment{ID: "aaaaaaaaaaaaaaaa"}
+	b := core.Environment{ID: "bbbbbbbbbbbbbbbb"}
+	first := networkArgs(a, true)
+	if got := strings.Join(first, " "); !strings.HasPrefix(got, "-nic user,model=e1000e,mac=52:54:00:") {
+		t.Errorf("q35 network = %q", got)
+	}
+	if got := strings.Join(networkArgs(a, false), " "); !strings.Contains(got, "model=e1000,") {
+		t.Errorf("pc network = %q", got)
+	}
+	if !slices.Equal(first, networkArgs(a, true)) {
+		t.Error("the MAC changed between starts")
+	}
+	if slices.Equal(first, networkArgs(b, true)) {
+		t.Error("two Machines (a clone) share a MAC")
 	}
 }

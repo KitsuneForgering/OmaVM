@@ -29,6 +29,10 @@ func TestEphemeralStartDiscardsWritesNextToTheDisk(t *testing.T) {
 	if data, _ := os.ReadFile(capture); strings.Contains(string(data), "-snapshot\n") {
 		t.Fatalf("a normal start must keep changes: %s", data)
 	}
+	// Freed guest space returns to the host; the network is spelled out.
+	if data, _ := os.ReadFile(capture); !strings.Contains(string(data), ",discard=unmap\n") || !strings.Contains(string(data), "-nic\nuser,model=e1000,mac=52:54:00:") {
+		t.Errorf("disk or network arguments missing: %s", data)
+	}
 	if err := b.StartEphemeral(context.Background(), env); err != nil {
 		t.Fatal(err)
 	}
