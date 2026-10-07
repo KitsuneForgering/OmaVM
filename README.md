@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="data/icons/dev.omavm.app.svg" alt="OmaVM icon" width="96" height="96">
-</p>
-
-<h1 align="center">OmaVM</h1>
+<h1 align="center">
+  <img src="docs/media/omavm-logo.svg" alt="OmaVM" width="360">
+</h1>
 
 <p align="center">
   <strong>Linux development environments and virtual machines, at home on Omarchy.</strong>
@@ -32,10 +30,10 @@ Boxes and a graphical viewer for Machines.
 
 <p align="center">
   <a href="docs/experience-center.png">
-    <img src="docs/experience-center.png" alt="OmaVM Experience Center with arch-desktop running and kernel-lab stopped, showing a display preview and Open and Start actions" width="944">
+    <img src="docs/experience-center.png" alt="OmaVM Experience Center showing a running Desktop with its screen preview and Open action" width="944">
   </a>
   <br>
-  <em>The Experience Center: your environments, their status, and the next action.</em>
+  <em>The Experience Center shows each environment's status and next action.</em>
 </p>
 
 The interface follows your live Omarchy theme and fits Hyprland's tiling
@@ -181,6 +179,14 @@ Launch **OmaVM** from your app launcher or run `omavm-gui`:
 3. Keep the suggested name or type your own, review the summary, and create
    it. A Windows 11 ISO starts with the 4 GB of memory its installer needs.
 4. Select **Start** (Desktop) or **Open** (Box) on its card.
+
+<p align="center">
+  <a href="docs/media/create-desktop.png">
+    <img src="docs/media/create-desktop.png" alt="Desktop creation dialog asking for an x86_64 installation ISO, with Continue disabled until one is chosen" width="680">
+  </a>
+  <br>
+  <em>Creating a Desktop: choose an installation ISO to continue.</em>
+</p>
 
 You can also run the GUI from the source tree with `make run-gui`.
 
