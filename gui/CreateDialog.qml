@@ -100,6 +100,12 @@ Dialog {
     // CLI yet) says nothing.
     readonly property var kvm: backend.hostCapabilities ? backend.hostCapabilities["kvm"] : undefined
     readonly property bool kvmMissing: !!kvm && kvm.available === false
+    readonly property var boxTools: {
+        const caps = backend.hostCapabilities || {}
+        return ["distrobox", "container-engine"].filter(id => caps[id] && caps[id].available === false && caps[id].hint)
+                                               .map(id => caps[id].hint)
+    }
+    readonly property string boxNote: boxTools.join(". ")
     // Desktops still work without OVMF or swtpm, but Windows 11 refuses to
     // install without Secure Boot and a TPM: what to install, said quietly.
     readonly property var windowsHints: {
@@ -264,6 +270,7 @@ Dialog {
                     Layout.fillWidth: true
                     Accessible.name: qsTr("Development Box")
                     Accessible.description: qsTr("Linux tools and apps sharing your home folder and this computer's kernel")
+                          + (dialog.boxNote ? ". " + dialog.boxNote : "")
                     checkable: true
                     checked: !dialog.machine
                     padding: 16
@@ -317,6 +324,14 @@ Dialog {
                         : qsTr("Choose a Linux userspace. Distrobox integrates its terminal, files and graphical apps with Omarchy.")
                     wrapMode: Text.Wrap
                     color: backend.themeMuted
+                }
+                Label {
+                    objectName: "boxWarning"
+                    Layout.fillWidth: true
+                    visible: !dialog.machine && dialog.boxNote !== ""
+                    text: qsTr("Development Boxes need a few host tools. %1.").arg(dialog.boxNote)
+                    wrapMode: Text.Wrap
+                    color: backend.themeRed
                 }
                 ComboBox {
                     id: boxImage

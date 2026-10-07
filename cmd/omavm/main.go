@@ -827,7 +827,7 @@ commands:
   prepare NAME [--json] [--progress]                       set up a running Machine's guest through its guest
                                                            agent: installs the clipboard agent, mounts the shared
                                                            folder, checks sound and resolution (changes the guest)
-  host [--json]                                            show what this computer offers Machines
+  host [--json]                                            check this computer for Boxes and Machines
   settings NAME [--description TEXT] [--cpus N] [--color C] view or change settings
     [--share-clipboard=BOOL] [--travel-mode=BOOL]           (on by default)
     [--clipboard-direction both|to-host|to-guest]          one-way clipboard (Machines)

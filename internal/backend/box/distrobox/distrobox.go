@@ -21,6 +21,33 @@ type Backend struct{}
 func New() *Backend           { return &Backend{} }
 func (*Backend) Name() string { return "distrobox" }
 
+// InspectHost checks the tools a new Box needs before the creation wizard
+// asks the user to choose an image. An installed engine may still be
+// unavailable at runtime; Distrobox reports that failure during creation.
+func (*Backend) InspectHost(context.Context) ([]core.HostCapability, error) {
+	_, distroboxErr := exec.LookPath("distrobox")
+	engineFound := false
+	for _, engine := range containerEngines() {
+		if _, err := exec.LookPath(engine); err == nil {
+			engineFound = true
+			break
+		}
+	}
+	distrobox := core.HostCapability{ID: "distrobox", Label: "Distrobox", Available: distroboxErr == nil, Detail: "installed"}
+	if distroboxErr != nil {
+		distrobox.Detail = "not installed"
+		distrobox.Hint = "Install Distrobox with: sudo pacman -S distrobox"
+	}
+	containerEngine := core.HostCapability{ID: "container-engine", Label: "Container engine", Available: engineFound, Detail: "installed"}
+	if !engineFound {
+		containerEngine.Detail = "Podman or Docker is not installed"
+		containerEngine.Hint = "Install Podman with: sudo pacman -S podman"
+	}
+	return []core.HostCapability{
+		distrobox, containerEngine,
+	}, nil
+}
+
 var accentFold = func() map[rune]rune {
 	fold := map[rune]rune{}
 	for base, accented := range map[rune]string{

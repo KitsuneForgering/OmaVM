@@ -16,6 +16,14 @@ type Backend struct {
 func New(primary, legacy core.Backend) *Backend { return &Backend{primary: primary, legacy: legacy} }
 func (b *Backend) Name() string                 { return b.primary.Name() }
 
+func (b *Backend) InspectHost(ctx context.Context) ([]core.HostCapability, error) {
+	inspector, ok := b.primary.(core.HostInspector)
+	if !ok {
+		return nil, nil
+	}
+	return inspector.InspectHost(ctx)
+}
+
 func (b *Backend) forEnv(env core.Environment) core.Backend {
 	if env.Backend == "podman" || env.Backend == "docker" {
 		return b.legacy

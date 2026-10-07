@@ -52,6 +52,31 @@ Item {
         name: "CreateDialogHost"
         when: windowShown
 
+        function test_missingBoxToolsAreShownBeforeCreating() {
+            const component = Qt.createComponent("qrc:/CreateDialog.qml")
+            const dialog = component.createObject(root)
+            const warning = findChild(dialog, "boxWarning")
+            dialog.open()
+            tryVerify(() => dialog.opened)
+            dialog.machine = false
+            dialog.step = 1
+            verify(!warning.visible, "unknown must say nothing")
+            backend.hostCapabilities = {
+                distrobox: { available: false, hint: "Install Distrobox" },
+                "container-engine": { available: false, hint: "Install Podman" }
+            }
+            verify(warning.visible)
+            verify(warning.text.indexOf("Install Distrobox") >= 0)
+            verify(warning.text.indexOf("Install Podman") >= 0)
+            backend.hostCapabilities = {
+                distrobox: { available: true },
+                "container-engine": { available: true }
+            }
+            verify(!warning.visible)
+            backend.hostCapabilities = {}
+            dialog.destroy()
+        }
+
         // Without KVM a Desktop can be created but never starts: the
         // choice says so before anything is created, with the fix.
         function test_missingKVMIsSaidBeforeCreating() {

@@ -31,6 +31,20 @@ func (f *fakeBackend) Exec(context.Context, core.Environment, []string) error {
 }
 func (f *fakeBackend) Remove(context.Context, core.Environment) error { return f.record("remove") }
 
+type fakeHostBackend struct{ *fakeBackend }
+
+func (*fakeHostBackend) InspectHost(context.Context) ([]core.HostCapability, error) {
+	return []core.HostCapability{{ID: "distrobox", Available: false}}, nil
+}
+
+func TestHostChecksReachThePrimaryBoxBackend(t *testing.T) {
+	b := New(&fakeHostBackend{&fakeBackend{name: "distrobox"}}, &fakeBackend{name: "podman"})
+	caps, err := b.InspectHost(context.Background())
+	if err != nil || len(caps) != 1 || caps[0].ID != "distrobox" {
+		t.Fatalf("host capabilities = %+v, %v", caps, err)
+	}
+}
+
 func TestNewBoxesUseDistrobox(t *testing.T) {
 	primary := &fakeBackend{name: "distrobox"}
 	legacy := &fakeBackend{name: "podman"}

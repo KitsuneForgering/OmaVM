@@ -12,6 +12,30 @@ import (
 	"github.com/KitsuneForgering/OmaVM/internal/core"
 )
 
+func TestInspectHostShowsMissingBoxTools(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+	check := func(want bool) {
+		t.Helper()
+		caps, err := New().InspectHost(context.Background())
+		if err != nil || len(caps) != 2 {
+			t.Fatalf("capabilities = %+v, %v", caps, err)
+		}
+		for _, cap := range caps {
+			if cap.Available != want || (cap.Hint == "") != want {
+				t.Errorf("capability %+v, want available=%t", cap, want)
+			}
+		}
+	}
+	check(false)
+	for _, name := range []string{"distrobox", "podman"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(true)
+}
+
 func TestCreateUsesStableUniqueDistroboxName(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "args")
