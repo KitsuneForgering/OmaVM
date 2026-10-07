@@ -27,6 +27,13 @@ jobs:
           go test ./...
           make dist VERSION="${GITHUB_REF_NAME#v}"
 
+      - name: Smoke test packaged binaries
+        run: |
+          mkdir -p build/release-smoke
+          tar -xzf "build/dist/omavm-${GITHUB_REF_NAME#v}-x86_64-linux.tar.gz" -C build/release-smoke
+          build/release-smoke/bin/omavm --help >/dev/null
+          QT_QPA_PLATFORM=offscreen build/release-smoke/bin/omavm-gui --help >/dev/null
+
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}

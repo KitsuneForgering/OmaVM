@@ -126,6 +126,7 @@ int main(int argc, char *argv[]) {
   QQuickStyle::setStyle(QStringLiteral("Material"));
 
   QCommandLineParser parser;
+  parser.addHelpOption();
   QCommandLineOption viewerOption(
       QStringLiteral("display-fd"),
       QStringLiteral("Show a Machine's display over an inherited connection"),
