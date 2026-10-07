@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/KitsuneForgering/OmaVM/internal/core"
@@ -33,6 +34,21 @@ func TestGuestCapabilities(t *testing.T) {
 			if c.Hint == "" {
 				t.Errorf("%s: %s has no next step", tt.name, c.ID)
 			}
+		}
+	}
+}
+
+func TestClipboardReadyHintFollowsDirection(t *testing.T) {
+	open := true
+	for _, tt := range []struct{ direction, want string }{
+		{core.ClipboardBoth, "both ways"},
+		{core.ClipboardToHost, "from the guest to this computer"},
+		{core.ClipboardToGuest, "from this computer to the guest"},
+	} {
+		env := core.Environment{Kind: core.Machine, Settings: core.EnvironmentSettings{ClipboardDirection: tt.direction}}
+		hint := guestCapabilities(env, &guestChecks{clipboardOpen: &open})[0].Hint
+		if !strings.Contains(hint, tt.want) {
+			t.Errorf("%s: %q does not say %q", tt.direction, hint, tt.want)
 		}
 	}
 }

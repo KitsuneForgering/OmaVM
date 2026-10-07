@@ -265,7 +265,7 @@ func (b *Backend) prepareClipboard(ctx context.Context, env core.Environment, gu
 		step.Result, step.Detail = core.StepSkipped, "Turned off in Settings"
 		return step, nil
 	case channels["clipboard"]:
-		step.Result, step.Detail = core.StepReady, "Text already copies both ways while its window is active"
+		step.Result, step.Detail = core.StepReady, "Already working: "+clipboardReadyHint(settings)
 		return step, nil
 	case guest.confined:
 		step.Result, step.Detail = core.StepManual, guest.confinedBecause()+". In the guest, run: "+guest.installCommand("spice-vdagent")+", then sign out of its desktop and back in"
@@ -280,7 +280,7 @@ func (b *Backend) prepareClipboard(ctx context.Context, env core.Environment, gu
 		return step, fmt.Errorf("installing spice-vdagent failed (exit %d): %s", code, lastLines(out, 3))
 	}
 	if open, _ := guestChannels(b.qmpPath(b.key(env))); open["clipboard"] {
-		step.Result, step.Detail = core.StepDone, "Text copies both ways while its window is active"
+		step.Result, step.Detail = core.StepDone, clipboardReadyHint(settings)
 		return step, nil
 	}
 	// spice-vdagent's session part starts with the guest's desktop.

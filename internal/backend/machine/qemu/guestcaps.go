@@ -23,6 +23,17 @@ type guestChecks struct {
 	sessionHasShared bool    // the session was started with the folder
 }
 
+func clipboardReadyHint(settings core.EnvironmentSettings) string {
+	switch settings.ClipboardDirection {
+	case core.ClipboardToHost:
+		return "Text copies from the guest to this computer while its window is active"
+	case core.ClipboardToGuest:
+		return "Text copies from this computer to the guest while its window is active"
+	default:
+		return "Text copies both ways while its window is active"
+	}
+}
+
 // guestCapabilities turns settings and checks into states with a next
 // step. A stopped Machine (checks == nil) is never reported ready.
 func guestCapabilities(env core.Environment, checks *guestChecks) []core.GuestCapability {
@@ -34,7 +45,7 @@ func guestCapabilities(env core.Environment, checks *guestChecks) []core.GuestCa
 	case checks == nil || checks.clipboardOpen == nil:
 		clipboard.State, clipboard.Hint = core.GuestNotVerified, "Checked while the Machine is running"
 	case *checks.clipboardOpen:
-		clipboard.State, clipboard.Hint = core.GuestReady, "Text copies both ways while its window is active"
+		clipboard.State, clipboard.Hint = core.GuestReady, clipboardReadyHint(settings)
 	default:
 		clipboard.State, clipboard.Hint = core.GuestNeedsComponent, "Install spice-vdagent in the guest and sign in to its desktop. "+prepareHint
 	}

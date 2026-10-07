@@ -275,6 +275,7 @@ func TestPrepareGuestConfirmsTheClipboardWhenItConnects(t *testing.T) {
 func TestPrepareGuestLeavesWorkingIntegrationsAlone(t *testing.T) {
 	guest := &fakeGuest{run: guestWorks, mounted: true, clipboardOpen: true}
 	b, env := runningMachine(t, true, guest)
+	env.Settings.ClipboardDirection = core.ClipboardToHost
 	steps, err := b.PrepareGuest(context.Background(), env)
 	if err != nil {
 		t.Fatal(err)
@@ -282,6 +283,9 @@ func TestPrepareGuestLeavesWorkingIntegrationsAlone(t *testing.T) {
 	got := resultsOf(steps)
 	if got["clipboard"].Result != core.StepReady || got["shared_folder"].Result != core.StepReady {
 		t.Errorf("got %+v", got)
+	}
+	if !strings.Contains(got["clipboard"].Detail, "from the guest to this computer") {
+		t.Errorf("clipboard direction: %q", got["clipboard"].Detail)
 	}
 	if guest.ran("spice-vdagent") || guest.ran("fstab") {
 		t.Errorf("changed a guest that already worked: %q", guest.scripts)
