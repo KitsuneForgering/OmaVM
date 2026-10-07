@@ -122,7 +122,7 @@ Pane {
                     implicitWidth: 10
                     implicitHeight: 10
                     radius: 5
-                    color: card.environment.settings ? card.environment.settings.color || "transparent" : "transparent"
+                    color: card.environment.settings && card.environment.settings.color ? backend.themeTagColors[card.environment.settings.color] || card.environment.settings.color : "transparent"
                 }
                 Label {
                     id: nameLabel

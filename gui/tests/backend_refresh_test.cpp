@@ -279,7 +279,8 @@ void BackendRefreshTest::themeChangeKeepsReadableText() {
   };
   QVERIFY(writeTheme("mode = \"dark\"\nbackground = \"#08090a\"\n"
                      "lighter_background = \"#16181b\"\n"
-                     "foreground = \"#717a86\"\nmuted = \"#717a86\"\n"));
+                     "foreground = \"#717a86\"\nmuted = \"#717a86\"\n"
+                     "magenta = \"#c77dff\"\n"));
 
   const QByteArray oldHome = qgetenv("HOME");
   qputenv("HOME", home.path().toUtf8());
@@ -297,6 +298,11 @@ void BackendRefreshTest::themeChangeKeepsReadableText() {
   QCOMPARE(backend.themeMode(), QStringLiteral("dark"));
   QCOMPARE(backend.themeForeground(), QStringLiteral("#ffffff"));
   QCOMPARE(backend.themeMuted(), QStringLiteral("#ffffff"));
+  // Color tags take the theme's hues; one the theme lacks stays plain.
+  QCOMPARE(backend.themeTagColors().value(QStringLiteral("purple")).toString(),
+           QStringLiteral("#c77dff"));
+  QCOMPARE(backend.themeTagColors().value(QStringLiteral("orange")).toString(),
+           QStringLiteral("orange"));
 
   QVERIFY(writeTheme("mode = \"light\"\nbackground = \"#f7f7f7\"\n"
                      "lighter_background = \"#ffffff\"\n"

@@ -31,6 +31,20 @@ Item {
             }
         }
 
+        // Memory reads and types in GB (or MB with an M); the value the
+        // CLI gets stays in MiB.
+        function test_memoryIsShownInGigabytes() {
+            const box = Qt.createComponent("qrc:/MemorySpinBox.qml").createObject(root)
+            const en = Qt.locale("en_US")
+            compare(box.textFromValue(2048, en), "2 GB")
+            compare(box.textFromValue(2560, en), "2.5 GB")
+            compare(box.textFromValue(768, en), "768 MB")
+            compare(box.valueFromText("4", en), 4096)
+            compare(box.valueFromText("1,5 GB", en), 1536)
+            compare(box.valueFromText("768 MB", en), 768)
+            box.destroy()
+        }
+
         // Saving without touching CPU/memory must not pin them: a pinned
         // CPU count turns Travel Mode's battery reduction off for good.
         function test_saveDoesNotPinHardware() {

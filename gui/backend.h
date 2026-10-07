@@ -43,6 +43,8 @@ class Backend final : public QObject {
   Q_PROPERTY(QString themeDarkSurface READ themeDarkSurface NOTIFY themeChanged)
   Q_PROPERTY(QString themeGreen READ themeGreen NOTIFY themeChanged)
   Q_PROPERTY(QString themeRed READ themeRed NOTIFY themeChanged)
+  // Color tag name (core.EnvironmentColors) -> the theme's own hue for it.
+  Q_PROPERTY(QVariantMap themeTagColors READ themeTagColors NOTIFY themeChanged)
 
 public:
   explicit Backend(QObject *parent = nullptr);
@@ -69,6 +71,7 @@ public:
   QString themeDarkSurface() const { return m_themeDarkSurface; }
   QString themeGreen() const { return m_themeGreen; }
   QString themeRed() const { return m_themeRed; }
+  QVariantMap themeTagColors() const { return m_themeTagColors; }
 
   // Quitting while an action runs would destroy its QProcess, which kills
   // `omavm` mid-operation (a Restart cut between Stop and Start leaves the
@@ -205,6 +208,7 @@ private:
   QString m_themeDarkSurface = QStringLiteral("#080808");
   QString m_themeGreen = QStringLiteral("#65a765");
   QString m_themeRed = QStringLiteral("#d35f5f");
+  QVariantMap m_themeTagColors;
 };
 
 // Hyprland integration, exposed for tests.

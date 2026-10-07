@@ -34,7 +34,7 @@ Window {
         anchors { left: parent.left; right: parent.right; top: parent.top }
         height: known ? 4 : 0
         visible: known
-        color: known ? terminalColor : "transparent"
+        color: known ? backend.themeTagColors[terminalColor] || terminalColor : "transparent"
     }
 
     TerminalView {

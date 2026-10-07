@@ -169,6 +169,8 @@ public slots:
           "themeRed"})
       backend->insert(QString::fromLatin1(color), QStringLiteral("#808080"));
     backend->insert(QStringLiteral("themeMode"), QStringLiteral("dark"));
+    backend->insert(QStringLiteral("themeTagColors"),
+                    QVariantMap{{QStringLiteral("blue"), QStringLiteral("#4f8dff")}});
     engine->rootContext()->setContextProperty(QStringLiteral("backend"),
                                               backend);
   }

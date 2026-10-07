@@ -127,10 +127,13 @@ Dialog {
             wrapMode: TextEdit.Wrap
             onTextChanged: if (text.length > 500) text = text.slice(0, 500)
         }
-        RowLayout {
+        Label { text: qsTr("Color tag"); color: backend.themeMuted }
+        // A Flow, not a row: eight 44 px targets are wider than a narrow
+        // dialog, and a row would push every field past its right edge.
+        Flow {
             Layout.fillWidth: true
-            spacing: 8
-            Label { text: qsTr("Color tag:"); color: backend.themeMuted }
+            Layout.topMargin: -12
+            spacing: 4
             ToolButton {
                 // Keep the visible dot compact while meeting WCAG 2.5.5's
                 // 44×44 enhanced pointer target.
@@ -147,7 +150,9 @@ Dialog {
                 // an Accessible.checked set by hand.
                 checkable: true
                 checked: dialog.selectedColor === ""
-                contentItem: Rectangle {
+                // The control stretches its contentItem: the dot sits inside
+                // it so it stays a 22 px circle.
+                contentItem: Item { Rectangle {
                     width: 22
                     height: 22
                     anchors.centerIn: parent
@@ -156,7 +161,7 @@ Dialog {
                     border.width: dialog.selectedColor === "" ? 2 : 1
                     border.color: dialog.selectedColor === "" ? backend.themeAccent : backend.themeMuted
                     Behavior on border.width { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
-                }
+                } }
                 onClicked: {
                     dialog.selectedColor = ""
                     checked = Qt.binding(() => dialog.selectedColor === "")
@@ -173,16 +178,16 @@ Dialog {
                     Accessible.role: Accessible.RadioButton
                     checkable: true
                     checked: dialog.selectedColor === modelData
-                    contentItem: Rectangle {
+                    contentItem: Item { Rectangle {
                         width: 22
                         height: 22
                         anchors.centerIn: parent
                         radius: 11
-                        color: modelData
+                        color: backend.themeTagColors[modelData] || modelData
                         border.width: dialog.selectedColor === modelData ? 3 : 1
                         border.color: dialog.selectedColor === modelData ? backend.themeAccent : backend.themeMuted
                         Behavior on border.width { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
-                    }
+                    } }
                     onClicked: {
                         dialog.selectedColor = modelData
                         checked = Qt.binding(() => dialog.selectedColor === modelData)
@@ -231,18 +236,10 @@ Dialog {
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
             }
-            Label { text: qsTr("Memory (MiB)") }
-            SpinBox {
+            Label { text: qsTr("Memory") }
+            MemorySpinBox {
                 id: memory
                 Layout.fillWidth: true
-                Accessible.name: qsTr("Memory in MiB")
-                from: 256
-                to: 262144
-                stepSize: 256
-                editable: true
-                // Typing goes into the inner text field, which is what a
-                // screen reader announces.
-                Component.onCompleted: contentItem.Accessible.name = Accessible.name
                 onValueModified: dialog.memoryTouched = true
             }
             Label {

@@ -918,6 +918,17 @@ void Backend::loadTheme() {
   take(QStringLiteral("dark_background"), m_themeDarkSurface);
   take(QStringLiteral("green"), m_themeGreen);
   take(QStringLiteral("red"), m_themeRed);
+  // Color tags are drawn in the theme's own hues (a tag is a mark, not
+  // text, so they stay as the theme has them); a name the theme lacks
+  // keeps the plain color.
+  m_themeTagColors.clear();
+  for (const auto &[tag, key] :
+       {std::pair{"red", "red"}, {"orange", "orange"}, {"yellow", "yellow"},
+        {"green", "green"}, {"blue", "blue"}, {"purple", "magenta"},
+        {"gray", "muted"}})
+    m_themeTagColors.insert(QString::fromLatin1(tag),
+                            values.value(QString::fromLatin1(key),
+                                         QString::fromLatin1(tag)));
 
   const QColor background(m_themeBackground), surface(m_themeSurface);
   m_themeForeground = readableTextColor(QColor(m_themeForeground), background,

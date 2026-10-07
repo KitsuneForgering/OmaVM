@@ -10,6 +10,7 @@
     <file alias="AppsDialog.qml">AppsDialog.qml</file>
     <file alias="ThemeScrim.qml">ThemeScrim.qml</file>
     <file alias="Icon.qml">Icon.qml</file>
+    <file alias="MemorySpinBox.qml">MemorySpinBox.qml</file>
     <file alias="Viewer.qml">Viewer.qml</file>
     <file alias="TerminalViewer.qml">TerminalViewer.qml</file>
     <file alias="icons/add.svg">icons/add.svg</file>

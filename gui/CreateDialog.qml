@@ -463,17 +463,9 @@ Dialog {
                         }
                     }
                     ColumnLayout {
-                        Label { text: qsTr("Memory (MiB)"); color: backend.themeMuted }
-                        SpinBox {
+                        Label { text: qsTr("Memory"); color: backend.themeMuted }
+                        MemorySpinBox {
                             id: memory
-                            Accessible.name: qsTr("Memory in MiB")
-                            from: 256
-                            to: 262144
-                            stepSize: 256
-                            editable: true
-                // Typing goes into the inner text field, which is what a
-                // screen reader announces.
-                Component.onCompleted: contentItem.Accessible.name = Accessible.name
                             value: 2048
                             onValueModified: dialog.memoryTouched = true
                         }
