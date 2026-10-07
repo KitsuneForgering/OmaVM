@@ -128,8 +128,13 @@ func qgaCall(conn net.Conn, dec *json.Decoder, command string, arguments any, ti
 // qemu-ga on Arch: the share mounted and readable, fsinfo listing only
 // /efi and /): the guest's /proc/mounts says. fsinfo stays as the answer
 // for an agent that won't run commands.
+//
+// It runs on every poll of the list (each few seconds per running
+// Machine), so a stuck guest gets seconds, not checkTimeout.
+const mountCheckTimeout = 2 * time.Second
+
 func virtiofsMountpoint(ctx context.Context, socketPath string) (string, error) {
-	code, out, err := guestExec(ctx, socketPath, `awk '$3 == "virtiofs" { print $2; exit }' /proc/mounts`, checkTimeout)
+	code, out, err := guestExec(ctx, socketPath, `awk '$3 == "virtiofs" { print $2; exit }' /proc/mounts`, mountCheckTimeout)
 	if err == nil && code == 0 {
 		return strings.TrimSpace(out), nil
 	}

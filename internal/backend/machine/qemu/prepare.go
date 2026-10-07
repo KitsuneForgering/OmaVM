@@ -61,6 +61,9 @@ func guestExec(ctx context.Context, socketPath, script string, timeout time.Dura
 	if err := json.Unmarshal(raw, &started); err != nil {
 		return 0, "", fmt.Errorf("guest-exec: %w", err)
 	}
+	// Short commands (the list's checks) finish in milliseconds: poll
+	// soon, then back off to 250 ms for the long ones (package installs).
+	wait := 10 * time.Millisecond
 	for {
 		raw, err := qgaCall(conn, dec, "guest-exec-status", map[string]any{"pid": started.PID}, 5*time.Second)
 		if err != nil {
@@ -88,8 +91,9 @@ func guestExec(ctx context.Context, socketPath, script string, timeout time.Dura
 		select {
 		case <-ctx.Done():
 			return 0, "", fmt.Errorf("the guest didn't finish in %s", timeout)
-		case <-time.After(250 * time.Millisecond):
+		case <-time.After(wait):
 		}
+		wait = min(2*wait, 250*time.Millisecond)
 	}
 }
 
