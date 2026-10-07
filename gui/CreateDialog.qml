@@ -69,6 +69,34 @@ Dialog {
         return ""
     }
 
+    // A name suggested from what was chosen, as Parallels names a VM after
+    // its system: the ISO's file name without architecture, language and
+    // edition noise ("Win11_24H2_English_x64.iso" -> "Win11 24H2"), or
+    // the Box's distribution; " 2", " 3"… when it is taken.
+    property string suggestedName: ""
+    function suggestName() {
+        let base
+        if (machine) {
+            const noise = ["x64", "x86", "x86_64", "amd64", "i386", "i686", "english", "international",
+                           "dvd", "dvd1", "live", "desktop", "netinst", "install", "iso", "boot", "anyboot", "multi", "release"]
+            base = image.text.trim().split("/").pop().replace(/\.iso$/i, "")
+                .split(/[\s_-]+/).filter(t => t && noise.indexOf(t.toLowerCase()) < 0).join(" ")
+        } else {
+            base = boxes[boxImage.currentIndex].image ? boxes[boxImage.currentIndex].label
+                 : image.text.trim().split("/").pop().split(":")[0]
+        }
+        base = base ? base.charAt(0).toUpperCase() + base.slice(1) : (machine ? qsTr("Desktop") : qsTr("Box"))
+        const taken = (backend.environments || []).map(e => e.name)
+        let candidate = base
+        for (let n = 2; taken.indexOf(candidate) >= 0; n++)
+            candidate = base + " " + n
+        return candidate
+    }
+    // Windows 11's installer refuses less than 4 GB of memory. Recognized
+    // by the ISO's name only: a recommendation shown and editable, never
+    // a claim about what the ISO is.
+    readonly property bool windowsElevenIso: machine && /win(dows)?[\s_-]*11/i.test(image.text.split("/").pop())
+
     function resetForm() {
         step = 0
         machine = true
@@ -77,6 +105,7 @@ Dialog {
         nameError = ""
         nameTouched = false
         name.clear()
+        suggestedName = ""
         image.clear()
         boxImage.currentIndex = 0
         cpus.value = 2
@@ -345,6 +374,7 @@ Dialog {
                     visible: dialog.machine || dialog.boxes[boxImage.currentIndex].image === ""
                     TextField {
                         id: image
+                        objectName: "imageField"
                         Layout.fillWidth: true
                         Accessible.name: dialog.machine ? qsTr("Installation ISO") : qsTr("Container image")
                         readOnly: dialog.machine
@@ -445,6 +475,15 @@ Dialog {
                         text: name.text.trim()
                         elide: Text.ElideRight
                     }
+                    // The qcow2 is sparse (qemu.diskSize): nothing is
+                    // reserved up front, which is what people ask first.
+                    Label { visible: dialog.machine; text: qsTr("Disk:"); color: backend.themeMuted }
+                    Label {
+                        visible: dialog.machine
+                        Layout.fillWidth: true
+                        text: qsTr("grows as it's used, up to 1 TB")
+                        wrapMode: Text.Wrap
+                    }
                 }
                 RowLayout {
                     Layout.fillWidth: true
@@ -471,6 +510,15 @@ Dialog {
                         }
                     }
                     Item { Layout.fillWidth: true }
+                }
+                Label {
+                    objectName: "windowsMemoryNote"
+                    Layout.fillWidth: true
+                    visible: dialog.windowsElevenIso && memory.value >= 4096
+                    text: qsTr("Memory starts at 4 GB: the Windows 11 installer refuses less.")
+                    wrapMode: Text.Wrap
+                    color: backend.themeMuted
+                    font.pixelSize: 12
                 }
                 Rectangle {
                     Layout.fillWidth: true
@@ -516,6 +564,7 @@ Dialog {
             }
             Button {
                 id: createButton
+                objectName: "createButton"
                 text: dialog.submitting ? qsTr("Creating…") : dialog.step === dialog.lastStep ? qsTr("Create Environment") : qsTr("Continue")
                 highlighted: true
                 enabled: !dialog.submitting
@@ -531,6 +580,19 @@ Dialog {
                         if (dialog.nameError !== "") {
                             name.forceActiveFocus()
                             return
+                        }
+                    }
+                    if (dialog.step === 1) {
+                        // Suggested again only while the person hasn't
+                        // typed a name of their own.
+                        if (name.text === "" || name.text === dialog.suggestedName) {
+                            dialog.suggestedName = dialog.suggestName()
+                            name.text = dialog.suggestedName
+                            name.selectAll()
+                        }
+                        if (dialog.windowsElevenIso && !dialog.memoryTouched && memory.value < 4096) {
+                            memory.value = 4096
+                            dialog.memoryTouched = true
                         }
                     }
                     if (dialog.step < dialog.lastStep) {

@@ -52,6 +52,31 @@ Item {
         name: "CreateDialogHost"
         when: windowShown
 
+        // The name is suggested from the ISO, without architecture and
+        // language noise, unique among existing environments; a Windows 11
+        // ISO starts with the 4 GB its installer requires.
+        function test_nameAndMemoryAreSuggestedFromTheISO() {
+            backend.environments = [{ name: "Win11 24H2" }]
+            const dialog = Qt.createComponent("qrc:/CreateDialog.qml").createObject(root)
+            dialog.open()
+            tryVerify(() => dialog.opened)
+            dialog.machine = true
+            dialog.step = 1
+            findChild(dialog, "imageField").text = "/home/u/Downloads/Win11_24H2_English_x64.iso"
+            mouseClick(findChild(dialog, "createButton"))
+            compare(dialog.step, 2)
+            compare(findChild(dialog, "nameField").text, "Win11 24H2 2")
+            verify(dialog.memoryTouched)
+            verify(dialog.windowsElevenIso)
+            // A name typed by the person is kept on the way back and forth.
+            findChild(dialog, "nameField").text = "work"
+            dialog.step = 1
+            mouseClick(findChild(dialog, "createButton"))
+            compare(findChild(dialog, "nameField").text, "work")
+            backend.environments = []
+            dialog.destroy()
+        }
+
         function test_missingBoxToolsAreShownBeforeCreating() {
             const component = Qt.createComponent("qrc:/CreateDialog.qml")
             const dialog = component.createObject(root)
