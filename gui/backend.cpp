@@ -377,17 +377,21 @@ void Backend::refreshImpl(bool silent) {
                 current.insert(QStringLiteral("guestCapabilities"),
                                integration.value(QStringLiteral("capabilities")));
               }
-              // Keep the previous preview while the Machine keeps running:
-              // recapturing it every poll made cards flash. The list is
-              // small (the UI is designed around up to 30 environments),
-              // so a lookup here is simpler than another index.
-              if (current.value(QStringLiteral("status")) ==
-                  QStringLiteral("running")) {
+              // Keep the previous preview while the Machine stays in the
+              // same state: recapturing it every poll made cards flash
+              // (capturePreview refreshes it on its own schedule). A
+              // change of state fetches it again: a Machine that just shut
+              // down gets the frame it saved on the way. The list is small
+              // (the UI is designed around up to 30 environments), so a
+              // lookup here is simpler than another index.
+              {
                 for (const QVariant &previousItem :
                      std::as_const(m_environments)) {
                   const QVariantMap previous = previousItem.toMap();
                   if (previous.value(QStringLiteral("id")) ==
                           current.value(QStringLiteral("id")) &&
+                      previous.value(QStringLiteral("status")) ==
+                          current.value(QStringLiteral("status")) &&
                       previous.contains(QStringLiteral("preview"))) {
                     current.insert(QStringLiteral("preview"),
                                    previous.value(QStringLiteral("preview")));
@@ -418,40 +422,43 @@ void Backend::capturePreview(int index, int generation) {
   const QVariantMap environment = m_environments.at(index).toMap();
   const QString id = environment.value(QStringLiteral("id")).toString();
   if (environment.value(QStringLiteral("kind")).toString() !=
-          QStringLiteral("machine") ||
-      environment.value(QStringLiteral("status")).toString() !=
-          QStringLiteral("running")) {
+      QStringLiteral("machine")) {
     m_previewRetryAt.remove(id);
     return;
   }
-  if (environment.contains(QStringLiteral("preview")) ||
+  // Running: refreshed every 30 s, like a live thumbnail. Stopped: its
+  // last frame, fetched once (it can't change until it runs again).
+  const bool running = environment.value(QStringLiteral("status")).toString() ==
+                       QStringLiteral("running");
+  if ((!running && environment.contains(QStringLiteral("preview"))) ||
       QDateTime::currentMSecsSinceEpoch() < m_previewRetryAt.value(id))
     return;
   auto *preview = new QProcess(this);
   connect(preview, &QProcess::finished, this,
-          [this, preview, index, generation, id](int previewCode) {
+          [this, preview, index, generation, id, running](int previewCode) {
             const QString path =
                 QString::fromUtf8(preview->readAllStandardOutput()).trimmed();
             preview->deleteLater();
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
             if (previewCode != 0 || path.isEmpty()) {
-              m_previewRetryAt.insert(
-                  id, QDateTime::currentMSecsSinceEpoch() + 60000);
+              // A stopped Machine that never ran has no frame: ask rarely.
+              m_previewRetryAt.insert(id, now + (running ? 60000 : 600000));
               return;
             }
-            m_previewRetryAt.remove(id);
+            m_previewRetryAt.insert(id, now + 30000);
             // A poll that landed meanwhile may have reordered the list:
             // never write by a stale index.
             if (generation != m_environmentsGeneration ||
                 index >= m_environments.size())
               return;
             QVariantMap current = m_environments.at(index).toMap();
-            const QUrl previewUrl = QUrl::fromLocalFile(path);
-            if (current.value(QStringLiteral("preview")).toUrl() !=
-                previewUrl) {
-              current.insert(QStringLiteral("preview"), previewUrl);
-              m_environments[index] = current;
-              emit environmentsChanged();
-            }
+            // The file is rewritten in place: a new query makes the Image
+            // load it again (the query is ignored when reading the file).
+            QUrl previewUrl = QUrl::fromLocalFile(path);
+            previewUrl.setQuery(QStringLiteral("t=%1").arg(now));
+            current.insert(QStringLiteral("preview"), previewUrl);
+            m_environments[index] = current;
+            emit environmentsChanged();
           });
   preview->start(cliPath(), {QStringLiteral("preview"),
                              environment.value(QStringLiteral("name")).toString()});

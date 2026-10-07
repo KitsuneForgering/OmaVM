@@ -633,11 +633,15 @@ func (b *Backend) Preview(ctx context.Context, env core.Environment) (string, er
 	if err != nil {
 		return "", err
 	}
+	dst := b.previewPath(b.key(env))
 	if !running {
+		// Stopped: the last frame it showed, kept from its last session.
+		if _, err := os.Stat(dst); err == nil {
+			return dst, nil
+		}
 		return "", core.Unsupportedf("machine is not running")
 	}
 
-	dst := b.previewPath(b.key(env))
 	if err := qmpScreendump(b.qmpPath(b.key(env)), dst); err != nil {
 		return "", fmt.Errorf("screendump: %w", err)
 	}
@@ -818,6 +822,8 @@ func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
 		b.stopTPM(b.key(env))
 		return nil
 	}
+	// The Experience Center keeps showing this frame while it's off.
+	_ = qmpScreendump(b.qmpPath(b.key(env)), b.previewPath(b.key(env)))
 	wasPaused := false
 	if status, err := qmpStatus(b.qmpPath(b.key(env))); err == nil && (status == "paused" || status == "suspended") {
 		if err := qmpCommand(b.qmpPath(b.key(env)), "cont"); err != nil {

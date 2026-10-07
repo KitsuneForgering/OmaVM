@@ -95,7 +95,9 @@ Pane {
                 source: card.environment.preview || ""
                 fillMode: Image.PreserveAspectCrop
                 visible: opacity > 0
-                opacity: status === Image.Ready ? 1 : 0
+                // A stopped Machine keeps its last frame, dimmed: it is
+                // what was on screen, not what is there now.
+                opacity: status !== Image.Ready ? 0 : card.environment.status === "running" ? 1 : 0.45
                 cache: false
 
                 Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }

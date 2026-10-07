@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -81,3 +83,24 @@ func TestNetworkIsExplicitWithAStableMACPerMachine(t *testing.T) {
 		t.Error("two Machines (a clone) share a MAC")
 	}
 }
+
+// A stopped Machine shows the last frame of its last session, when there
+// is one; never a placeholder pretending it ran.
+func TestPreviewOfAStoppedMachineIsItsLastFrame(t *testing.T) {
+	b := &Backend{stateDir: t.TempDir()}
+	env := core.Environment{ID: "aaaaaaaaaaaaaaaa", Name: "vm", Kind: core.Machine}
+	if _, err := b.Preview(context.Background(), env); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("a Machine that never ran has no preview, got %v", err)
+	}
+	frame := b.previewPath(b.key(env))
+	if err := os.MkdirAll(filepath.Dir(frame), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(frame, []byte("P6\n1 1\n255\n\x00\x00\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.Preview(context.Background(), env); err != nil || got != frame {
+		t.Errorf("Preview = %q, %v; want the saved frame %q", got, err, frame)
+	}
+}
+

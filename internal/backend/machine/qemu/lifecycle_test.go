@@ -60,7 +60,8 @@ func TestSlowShutdownNeverSendsQuit(t *testing.T) {
 		t.Fatalf("slow shutdown: %v", err)
 	}
 	for command := range commands {
-		if command != "query-status" && command != "system_powerdown" {
+		// screendump only reads the screen: the frame the card keeps.
+		if command != "query-status" && command != "system_powerdown" && command != "screendump" {
 			t.Errorf("unsafe shutdown command: %s", command)
 		}
 	}
