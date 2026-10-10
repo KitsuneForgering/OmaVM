@@ -40,6 +40,14 @@ public:
     insert(QStringLiteral("lastCall"),
            QVariantList{QStringLiteral("prepareGuest"), name});
   }
+  Q_INVOKABLE void disconnectInstallationMedia(const QString &name) {
+    insert(QStringLiteral("lastCall"),
+           QVariantList{QStringLiteral("disconnectInstallationMedia"), name});
+  }
+  Q_INVOKABLE void readCredentials(const QString &name) {
+    insert(QStringLiteral("lastCall"),
+           QVariantList{QStringLiteral("readCredentials"), name});
+  }
   Q_INVOKABLE void unexportApp(const QString &name, const QString &id) {
     insert(QStringLiteral("lastCall"),
            QVariantList{QStringLiteral("unexportApp"), name, id});
@@ -156,12 +164,21 @@ class Setup : public QObject {
 
 public slots:
   void applicationAvailable() {
+    // Ahead of the system's import path, where a real Quickshell may be
+    // installed: the bar plugin must find the stand-ins. Set before any
+    // engine exists; Qt Quick Test resets an engine's own import list.
+    qputenv("QML_IMPORT_PATH", QML_STUBS_DIR);
     QQuickStyle::setStyle(QStringLiteral("Material"));
     // Builds the accessibility tree a screen reader would see.
     QAccessible::setActive(true);
   }
 
   void qmlEngineAvailable(QQmlEngine *engine) {
+    // The Quickshell bar plugin, loaded against stand-in shell modules
+    // (their import path is set in applicationAvailable).
+    engine->rootContext()->setContextProperty(
+        QStringLiteral("barPluginUrl"),
+        QUrl::fromLocalFile(QStringLiteral(BAR_PLUGIN)));
     auto *backend = new FakeBackend(engine);
     backend->insert(QStringLiteral("lastCall"), QVariantList());
     backend->insert(QStringLiteral("busy"), false);

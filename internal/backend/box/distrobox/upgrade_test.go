@@ -2,6 +2,7 @@ package distrobox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,5 +46,22 @@ exit 1
 	err := (&Backend{}).runReporting(context.Background(), "upgrade", "omavm-dev")
 	if err == nil || !strings.Contains(err.Error(), "failed retrieving file") {
 		t.Fatalf("expected the package manager's error, got %v", err)
+	}
+}
+
+// A Box's shell exiting after a failed command ends the session with that
+// status — the person's, reported as core.SessionEnded so omavm open
+// passes it on instead of printing "distrobox enter --name omavm-…: exit
+// status 1" into the terminal (seen with a real Box, 2026-10-08).
+func TestShellExitIsTheSessionsStatus(t *testing.T) {
+	fakeDistroboxUpgrade(t, "exit 1\n")
+	err := sessionEnded((&Backend{}).runInteractive(context.Background(), "enter", "--name", "omavm-dev"))
+	var ended *core.SessionEnded
+	if !errors.As(err, &ended) || ended.Code != 1 {
+		t.Fatalf("got %v, want the session ending with status 1", err)
+	}
+	fakeDistroboxUpgrade(t, "exit 0\n")
+	if err := sessionEnded((&Backend{}).runInteractive(context.Background(), "enter", "--name", "omavm-dev")); err != nil {
+		t.Fatalf("a clean exit: %v", err)
 	}
 }

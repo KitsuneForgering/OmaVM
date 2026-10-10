@@ -22,7 +22,8 @@ func TestSessionAdjustments(t *testing.T) {
 		t.Fatal(err)
 	}
 	// What a default Machine with SSH gets at Start on AC power.
-	base := applied{cpus: 2, memoryMiB: 2048, vsock: true, cdrom: true}
+	defaultCPUs, defaultMemoryMiB := core.DefaultMachineResources()
+	base := applied{cpus: defaultCPUs, memoryMiB: defaultMemoryMiB, vsock: true, cdrom: true}
 	env := core.Environment{Name: "vm", Kind: core.Machine, Image: iso}
 	tests := []struct {
 		name            string
@@ -30,10 +31,10 @@ func TestSessionAdjustments(t *testing.T) {
 		restart, travel bool
 	}{
 		{"as started", func(*core.Environment, *applied) {}, false, false},
-		{"travel mode on battery", func(_ *core.Environment, a *applied) { a.cpus = 1 }, false, true},
-		{"pinned CPUs changed", func(e *core.Environment, _ *applied) { e.Settings.CPUs = 4 }, true, false},
-		{"pinned CPUs are never travel mode", func(e *core.Environment, a *applied) { e.Settings.CPUs = 4; a.cpus = 2 }, true, false},
-		{"memory changed", func(e *core.Environment, _ *applied) { e.Settings.MemoryMiB = 4096 }, true, false},
+		{"travel mode on battery", func(_ *core.Environment, a *applied) { a.cpus = defaultCPUs - 1 }, false, true},
+		{"pinned CPUs changed", func(e *core.Environment, _ *applied) { e.Settings.CPUs = defaultCPUs + 1 }, true, false},
+		{"pinned CPUs are never travel mode", func(e *core.Environment, a *applied) { e.Settings.CPUs = defaultCPUs + 1; a.cpus = defaultCPUs - 1 }, true, false},
+		{"memory changed", func(e *core.Environment, _ *applied) { e.Settings.MemoryMiB = defaultMemoryMiB + 1024 }, true, false},
 		{"ssh turned off", func(e *core.Environment, _ *applied) { e.Settings.SSHDisabled = true }, true, false},
 		{"folder shared", func(e *core.Environment, _ *applied) { e.Settings.SharedPath = "/home/x" }, true, false},
 		{"default folder unavailable this session", func(*core.Environment, *applied) {}, false, false},

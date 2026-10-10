@@ -93,6 +93,17 @@ type Environment struct {
 	Operation string `json:"operation,omitempty"`
 }
 
+// ReadyUbuntuImage identifies OmaVM's supported, preconfigured Ubuntu
+// Desktop. It is a system choice, not a local installation ISO path.
+const (
+	ReadyUbuntuImage = "ready:ubuntu-24.04"
+	ReadyFedoraImage = "ready:fedora-44"
+)
+
+func IsReadyImage(image string) bool {
+	return image == ReadyUbuntuImage || image == ReadyFedoraImage
+}
+
 // Operations that take an environment out of normal use while they run.
 const (
 	OperationCreating = "creating"
@@ -176,11 +187,12 @@ type EnvironmentSettings struct {
 func (e Environment) EffectiveSettings() EnvironmentSettings {
 	settings := e.Settings
 	if e.Kind == Machine {
+		cpus, memory := DefaultMachineResources()
 		if settings.CPUs == 0 {
-			settings.CPUs = 2
+			settings.CPUs = cpus
 		}
 		if settings.MemoryMiB == 0 {
-			settings.MemoryMiB = 2048
+			settings.MemoryMiB = memory
 		}
 	}
 	if settings.SnapshotLimit == 0 {

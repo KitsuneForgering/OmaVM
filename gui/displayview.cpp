@@ -105,12 +105,20 @@ DisplayView::DisplayView(QQuickItem *parent) : QQuickItem(parent) {
             m_dmabufMode = true;
             sendResize();
             update();
+            noteFrameReceived();
           });
   connect(&m_client, &DisplayClient::imageScanout, this, [this] {
     m_dmabufMode = false;
     m_imageDirty = true;
     sendResize();
     update();
+    noteFrameReceived();
+  });
+  connect(&m_client, &DisplayClient::mouseAbsoluteChanged, this, [this] {
+    if (m_client.mouseAbsolute() && !m_operatingSystemStarted) {
+      m_operatingSystemStarted = true;
+      emit operatingSystemStarted();
+    }
   });
   connect(&m_client, &DisplayClient::frameUpdated, this, [this] {
     if (!m_dmabufMode)
@@ -153,7 +161,14 @@ DisplayView::DisplayView(QQuickItem *parent) : QQuickItem(parent) {
     connect(win, &QWindow::activeChanged, this, &DisplayView::syncClipboard);
     // Emitted on the render thread once a frame is on screen.
     connect(win, &QQuickWindow::frameSwapped, this,
-            [this] { m_client.frameRendered(); }, Qt::QueuedConnection);
+            [this] {
+              m_client.frameRendered();
+              if (m_frameOnScreen && !m_frameAnnounced) {
+                m_frameAnnounced = true;
+                emit frameShown();
+              }
+            },
+            Qt::QueuedConnection);
   });
 
   m_resizeTimer.setSingleShot(true);
@@ -171,7 +186,11 @@ void DisplayView::setConnectionFd(int fd) {
     return;
   m_connectionFd = fd;
   emit connectionFdChanged();
-  m_client.connectToFd(fd);
+  // Connecting is synchronous and may fail at once; deferred, so whoever
+  // created this item (QML, the viewer's --ready-fd report) is listening
+  // for connectionFailed by then.
+  QMetaObject::invokeMethod(
+      this, [this, fd] { m_client.connectToFd(fd); }, Qt::QueuedConnection);
   forceActiveFocus();
 }
 
@@ -287,8 +306,15 @@ QSGNode *DisplayView::updatePaintNode(QSGNode *oldNode,
                                       UpdatePaintNodeData *) {
   // Runs on the render thread while the GUI thread is blocked, so the
   // client's state is safe to read here.
+  //
+  // A replaced texture is freed only after the node points at its
+  // successor (or is gone): QSGSimpleTextureNode::setTexture dereferences
+  // its argument, so it can neither be cleared with nullptr nor be left
+  // holding a deleted texture.
+  GpuFrame retiredGpu;
+  QSGTexture *retiredImage = nullptr;
   if (m_pendingDmabuf.fd >= 0) {
-    const GpuFrame previous = m_gpu;
+    retiredGpu = m_gpu;
     m_gpu = {};
     if (!importDmabuf()) {
       QMetaObject::invokeMethod(
@@ -300,9 +326,6 @@ QSGNode *DisplayView::updatePaintNode(QSGNode *oldNode,
           },
           Qt::QueuedConnection);
     }
-    if (oldNode)
-      static_cast<QSGSimpleTextureNode *>(oldNode)->setTexture(nullptr);
-    destroyGpuFrame(previous);
   }
 
   QSGTexture *texture = nullptr;
@@ -311,9 +334,7 @@ QSGNode *DisplayView::updatePaintNode(QSGNode *oldNode,
   } else {
     if (m_imageDirty) {
       m_imageDirty = false;
-      if (oldNode)
-        static_cast<QSGSimpleTextureNode *>(oldNode)->setTexture(nullptr);
-      delete m_imageTexture;
+      retiredImage = m_imageTexture;
       m_imageTexture = nullptr;
       // A shallow copy: it keeps a shared mapping alive until uploaded.
       const QImage frame = m_client.frame();
@@ -323,27 +344,31 @@ QSGNode *DisplayView::updatePaintNode(QSGNode *oldNode,
     }
     texture = m_imageTexture;
   }
-  if (!texture) {
-    delete oldNode;
-    return nullptr;
-  }
 
   auto *node = static_cast<QSGSimpleTextureNode *>(oldNode);
-  if (!node) {
-    node = new QSGSimpleTextureNode;
-    node->setFiltering(QSGTexture::Linear);
+  if (!texture) {
+    delete node;
+    node = nullptr;
+  } else {
+    if (!node) {
+      node = new QSGSimpleTextureNode;
+      node->setFiltering(QSGTexture::Linear);
+    }
+    node->setTexture(texture);
+    node->setRect(displayRect());
+    m_frameOnScreen = true;
+    // QEMU's y0_top is relative to GL's bottom-up window framebuffer (its
+    // own GTK UI flips when it is false); the scene graph samples top-down,
+    // so the flip is needed in the opposite case.
+    node->setTextureCoordinatesTransform(
+        m_dmabufMode && m_dmabuf.y0Top ? QSGSimpleTextureNode::MirrorVertically
+                                       : QSGSimpleTextureNode::NoTransform);
+    // The dma-buf's contents change in place: redraw even when the texture
+    // object is the same.
+    node->markDirty(QSGNode::DirtyMaterial);
   }
-  node->setTexture(texture);
-  node->setRect(displayRect());
-  // QEMU's y0_top is relative to GL's bottom-up window framebuffer (its
-  // own GTK UI flips when it is false); the scene graph samples top-down,
-  // so the flip is needed in the opposite case.
-  node->setTextureCoordinatesTransform(
-      m_dmabufMode && m_dmabuf.y0Top ? QSGSimpleTextureNode::MirrorVertically
-                                     : QSGSimpleTextureNode::NoTransform);
-  // The dma-buf's contents change in place: redraw even when the texture
-  // object is the same.
-  node->markDirty(QSGNode::DirtyMaterial);
+  destroyGpuFrame(retiredGpu);
+  delete retiredImage;
   return node;
 }
 
@@ -482,7 +507,23 @@ void DisplayView::focusOutEvent(QFocusEvent *event) {
   // A key held while switching away (Super+number) never gets its release
   // here; left pressed, the guest would see it stuck.
   releaseKeys();
+  // In relative mode the next motion is a delta from the last position;
+  // the host pointer moves freely meanwhile, so that origin is stale.
+  m_havePointer = false;
   QQuickItem::focusOutEvent(event);
+}
+
+void DisplayView::hoverLeaveEvent(QHoverEvent *event) {
+  // Same as losing focus: re-entering elsewhere must not jump the guest.
+  m_havePointer = false;
+  QQuickItem::hoverLeaveEvent(event);
+}
+
+void DisplayView::noteFrameReceived() {
+  if (m_frameReceived)
+    return;
+  m_frameReceived = true;
+  emit frameReceived();
 }
 
 void DisplayView::releaseKeys() {

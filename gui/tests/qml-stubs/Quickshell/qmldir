@@ -1,0 +1,4 @@
+module Quickshell
+# Never used: a qmldir declaring nothing reads as "not here" and Qt
+# goes on to an installed Quickshell.
+Placeholder 1.0 Placeholder.qml

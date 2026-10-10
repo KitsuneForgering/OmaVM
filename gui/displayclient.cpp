@@ -13,6 +13,7 @@
 #include <memory>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -143,9 +144,25 @@ int takeFd(GDBusMethodInvocation *invocation, gint32 handle) {
   GUnixFDList *list =
       g_dbus_message_get_unix_fd_list(g_dbus_method_invocation_get_message(
           invocation));
-  if (!list)
+  // A handle outside the list is refused here; GLib would only assert.
+  if (!list || handle < 0 || handle >= g_unix_fd_list_get_length(list))
     return -1;
   return g_unix_fd_list_get(list, handle, nullptr);
+}
+
+// The largest surface side accepted: QImage counts pixels in int, and no
+// display QEMU emulates comes near it.
+constexpr quint32 MaxSide = 16384;
+
+// Bytes a raster of w×h pixels at stride takes as a QImage sees it —
+// every row a full stride, the last one included (QImage::copy() reads
+// stride × h) — or 0 when the stride is shorter than a row or a side is
+// out of range.
+gsize rasterSize(quint32 w, quint32 h, quint32 stride, int bytesPerPixel) {
+  if (w == 0 || h == 0 || w > MaxSide || h > MaxSide ||
+      gsize(stride) < gsize(w) * gsize(bytesPerPixel))
+    return 0;
+  return gsize(stride) * h;
 }
 
 // A read-only memory mapping of a guest surface, kept alive by every
@@ -484,9 +501,10 @@ void DisplayClient::handleListenerCall(const char *method,
     const QImage::Format qformat = imageFormat(format);
     g_dbus_method_invocation_return_value(invocation, nullptr);
     const int bytesPerPixel = qformat == QImage::Format_RGB16 ? 2 : 4;
-    if (qformat == QImage::Format_Invalid || w <= 0 || h <= 0 ||
-        stride < guint32(w * bytesPerPixel) ||
-        size < gsize(stride) * gsize(h - 1) + gsize(w) * bytesPerPixel) {
+    const gsize needed =
+        w > 0 && h > 0 ? rasterSize(quint32(w), quint32(h), stride, bytesPerPixel)
+                       : 0;
+    if (qformat == QImage::Format_Invalid || needed == 0 || size < needed) {
       g_variant_unref(data);
       return;
     }
@@ -518,13 +536,20 @@ void DisplayClient::handleListenerCall(const char *method,
     const int fd = takeFd(invocation, handle);
     g_dbus_method_invocation_return_value(invocation, nullptr);
     const QImage::Format qformat = imageFormat(format);
-    if (fd < 0 || qformat == QImage::Format_Invalid || w == 0 || h == 0) {
+    const gsize raster = rasterSize(
+        w, h, stride, qformat == QImage::Format_RGB16 ? 2 : 4);
+    // Mapped past the end of the file, the first read of a pixel there
+    // is a SIGBUS (found by gui/tests/displayclient_fuzz_test.cpp).
+    struct stat file;
+    if (fd < 0 || qformat == QImage::Format_Invalid || raster == 0 ||
+        fstat(fd, &file) != 0 ||
+        gsize(file.st_size) < gsize(offset) + raster) {
       if (fd >= 0)
         close(fd);
       return;
     }
     auto mapping = std::make_shared<Mapping>();
-    mapping->size = size_t(offset) + size_t(stride) * h;
+    mapping->size = size_t(offset) + raster;
     mapping->address =
         mmap(nullptr, mapping->size, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);

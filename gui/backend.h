@@ -100,6 +100,8 @@ public:
   Q_INVOKABLE void pause(const QString &name);
   Q_INVOKABLE void resume(const QString &name);
   Q_INVOKABLE void forceStop(const QString &name);
+  Q_INVOKABLE void disconnectInstallationMedia(const QString &name);
+  Q_INVOKABLE void readCredentials(const QString &name);
   Q_INVOKABLE void configure(const QString &name, const QString &description,
                              int cpus, bool cpusTouched, int memoryMiB,
                              bool memoryTouched, bool machine,
@@ -128,8 +130,16 @@ public:
   Q_INVOKABLE void prepareGuest(const QString &name);
   // From a viewer: open the Machine again (a new display connection, in a
   // new viewer), or bring up the Experience Center.
-  Q_INVOKABLE void reopenDisplay(const QString &name) const;
+  // False when `omavm open` could not even be launched.
+  Q_INVOKABLE bool reopenDisplay(const QString &name) const;
   Q_INVOKABLE void showManager() const;
+  // After a viewer loses its display: did the Machine power off (from
+  // inside, Shut Down, Stop), or did QEMU die? Answers in shutDownChecked,
+  // waiting a moment for QEMU to finish exiting.
+  Q_INVOKABLE void checkShutDown(const QString &name);
+  // A viewer that appears late (after the firmware) moves to an empty
+  // workspace right before it does, like one placed at launch.
+  Q_INVOKABLE void placeViewerWindow(const QString &title) const;
   // Brings the Experience Center's workspace into view, for a second
   // launch: Wayland doesn't let a window focus itself unasked.
   Q_INVOKABLE void focusManagerWorkspace() const;
@@ -160,13 +170,20 @@ signals:
   void busyChanged();
   void listErrorChanged();
   void themeChanged();
-  void message(const QString &text, bool error);
+  // source is the busy key of the action the text is about (environment
+  // name, "" for the list), so an error banner can be cleared by a later
+  // success of that same action and not by any other environment's.
+  void message(const QString &text, bool error,
+               const QString &source = QString());
+  void succeeded(const QString &source);
   // Correlates with the `tag` passed to run()/runForApps() so a dialog that
   // started an action (create, configure, a snapshot or app operation) can
   // tell its own request apart from any other action finishing, and keep
   // itself open with the user's input intact until its own tag reports ok.
   void imagesChanged();
   void actionFinished(const QString &tag, bool ok, const QString &text);
+  // poweredOff: the Machine is off and shut down cleanly.
+  void shutDownChecked(bool poweredOff);
 
 private:
   // Returns false (and emits an explanatory message instead of silently
@@ -184,6 +201,7 @@ private:
   void runForApps(const QStringList &arguments, const QString &name,
                   const QString &label, const QString &tag);
   void capturePreview(int index, int generation);
+  void checkShutDownAttempt(const QString &name, int attemptsLeft);
   void refreshImpl(bool silent);
   void loadTheme();
   QString cliPath() const;
@@ -205,7 +223,13 @@ private:
   // Environment id -> earliest time (ms since epoch) to retry a preview
   // that failed. Some guests never expose a surface QEMU can screendump
   // ("no surface"), and without this every 3 s poll re-ran the capture.
-  QHash<QString, qint64> m_previewRetryAt;
+  // Kept with whether it was running: a failure while stopped (a Machine
+  // that never ran has no frame) says nothing once it starts.
+  struct PreviewRetry {
+    qint64 at;
+    bool running;
+  };
+  QHash<QString, PreviewRetry> m_previewRetryAt;
   QVariantList m_apps;
   QVariantList m_downloadableImages;
   bool m_imagesLoading = false;

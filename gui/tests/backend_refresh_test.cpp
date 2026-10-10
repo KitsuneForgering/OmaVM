@@ -21,6 +21,9 @@ private slots:
   void themeChangeKeepsReadableText();
   void unchangedPollDoesNotFlash();
   void failedPreviewIsNotRetriedEveryPoll();
+  void previewIsAskedAgainOnceTheMachineStarts();
+  void messagesNameTheEnvironmentTheyAreAbout();
+  void viewerTellsAPowerOffFromACrash();
   void quitWaitsForRunningAction();
   void pickedFilesBecomeLocalPaths();
   void boxTerminalIsTaggedAsTerminal();
@@ -420,6 +423,127 @@ void BackendRefreshTest::failedPreviewIsNotRetriedEveryPoll() {
   QCOMPARE(count("preview"), 1);
   // One process per poll: status and guest tools come with the list.
   QCOMPARE(count("status") + count("integration"), 0);
+}
+
+// A Machine that never ran has no last frame, and that miss used to hold
+// the next preview back for ten minutes — also after it started.
+void BackendRefreshTest::previewIsAskedAgainOnceTheMachineStarts() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QString marker = dir.filePath(QStringLiteral("calls"));
+  const QString state = dir.filePath(QStringLiteral("state"));
+  QFile cli(dir.filePath(QStringLiteral("omavm")));
+  QVERIFY(cli.open(QIODevice::WriteOnly));
+  cli.write(
+      "#!/bin/sh\n"
+      "printf '%s\\n' \"$1\" >> \"$OMAVM_TEST_CALLS\"\n"
+      "case \"$1\" in\n"
+      "  list) printf '[{\"id\":\"m\",\"name\":\"vm\",\"kind\":\"machine\","
+      "\"settings\":{},\"status\":{\"state\":\"%s\"}}]' "
+      "\"$(cat \"$OMAVM_TEST_STATE\")\" ;;\n"
+      "  preview) echo 'machine is not running' >&2; exit 5 ;;\n"
+      "esac\n");
+  cli.close();
+  QVERIFY(cli.setPermissions(QFile::ReadOwner | QFile::WriteOwner |
+                             QFile::ExeOwner));
+  const auto setState = [&](const QByteArray &value) {
+    QFile f(state);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(value);
+  };
+  setState("stopped");
+  qputenv("OMAVM_TEST_CALLS", marker.toUtf8());
+  qputenv("OMAVM_TEST_STATE", state.toUtf8());
+  qputenv("PATH", dir.path().toUtf8() + ':' + qgetenv("PATH"));
+
+  const auto count = [&](const QByteArray &command) {
+    QFile calls(marker);
+    if (!calls.open(QIODevice::ReadOnly))
+      return 0;
+    return int(calls.readAll().split('\n').count(command));
+  };
+  Backend backend;
+  backend.poll();
+  QTRY_COMPARE(count("preview"), 1);
+  backend.poll();
+  QTRY_COMPARE(count("list"), 2);
+  QTest::qWait(100);
+  QCOMPARE(count("preview"), 1);
+
+  setState("running");
+  backend.poll();
+  QTRY_COMPARE(count("preview"), 2);
+}
+
+// An error banner is cleared by a later success of the same action only:
+// another environment's Start finishing must not hide it.
+void BackendRefreshTest::messagesNameTheEnvironmentTheyAreAbout() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  QFile cli(dir.filePath(QStringLiteral("omavm")));
+  QVERIFY(cli.open(QIODevice::WriteOnly));
+  cli.write("#!/bin/sh\n"
+            "[ \"$1\" = list ] && { printf '[]'; exit 0; }\n"
+            "[ \"$2\" = broken ] && { echo 'no disk' >&2; exit 1; }\n"
+            "exit 0\n");
+  cli.close();
+  QVERIFY(cli.setPermissions(QFile::ReadOwner | QFile::WriteOwner |
+                             QFile::ExeOwner));
+  qputenv("PATH", dir.path().toUtf8() + ':' + qgetenv("PATH"));
+
+  Backend backend;
+  QSignalSpy messages(&backend, &Backend::message);
+  QSignalSpy succeeded(&backend, &Backend::succeeded);
+  backend.start(QStringLiteral("broken"));
+  QTRY_COMPARE(messages.size(), 1);
+  QCOMPARE(messages.first().at(0).toString(), QStringLiteral("no disk"));
+  QCOMPARE(messages.first().at(1).toBool(), true);
+  QCOMPARE(messages.first().at(2).toString(), QStringLiteral("broken"));
+
+  backend.start(QStringLiteral("fine"));
+  QTRY_VERIFY(!succeeded.isEmpty());
+  QCOMPARE(succeeded.first().at(0).toString(), QStringLiteral("fine"));
+}
+
+// A viewer whose display closed: the Machine powered off (close the
+// viewer), or QEMU died (keep it, to say so). QEMU may still be exiting
+// at the first look.
+void BackendRefreshTest::viewerTellsAPowerOffFromACrash() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QString calls = dir.filePath(QStringLiteral("calls"));
+  QFile cli(dir.filePath(QStringLiteral("omavm")));
+  QVERIFY(cli.open(QIODevice::WriteOnly));
+  // "exiting": running on the first two looks, then stopped.
+  cli.write("#!/bin/sh\n"
+            "echo x >> \"$OMAVM_TEST_CALLS\"\n"
+            "n=$(wc -l < \"$OMAVM_TEST_CALLS\")\n"
+            "case \"$2\" in\n"
+            "  exiting) if [ \"$n\" -le 2 ]; then echo '{\"state\":\"running\"}';"
+            " else echo '{\"state\":\"stopped\"}'; fi ;;\n"
+            "  crashed) echo '{\"state\":\"stopped\",\"ended_unexpectedly\":true}' ;;\n"
+            "  alive) echo '{\"state\":\"running\"}' ;;\n"
+            "esac\n");
+  cli.close();
+  QVERIFY(cli.setPermissions(QFile::ReadOwner | QFile::WriteOwner |
+                             QFile::ExeOwner));
+  qputenv("OMAVM_TEST_CALLS", calls.toUtf8());
+  qputenv("PATH", dir.path().toUtf8() + ':' + qgetenv("PATH"));
+
+  Backend backend;
+  QSignalSpy checked(&backend, &Backend::shutDownChecked);
+  backend.checkShutDown(QStringLiteral("exiting"));
+  QTRY_COMPARE(checked.size(), 1);
+  QCOMPARE(checked.takeFirst().at(0).toBool(), true);
+
+  backend.checkShutDown(QStringLiteral("crashed"));
+  QTRY_COMPARE(checked.size(), 1);
+  QCOMPARE(checked.takeFirst().at(0).toBool(), false);
+
+  // Still running after ~3 s: the display was lost, the Machine wasn't.
+  backend.checkShutDown(QStringLiteral("alive"));
+  QTRY_COMPARE_WITH_TIMEOUT(checked.size(), 1, 6000);
+  QCOMPARE(checked.takeFirst().at(0).toBool(), false);
 }
 
 // Closing the Experience Center mid-action used to destroy the QProcess,

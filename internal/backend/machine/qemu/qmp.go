@@ -131,7 +131,7 @@ func qmpExecuteTimeout(socketPath, command string, arguments map[string]any, tim
 
 // qmpDiskSnapshots lists the internal snapshots of the boot disk as QEMU
 // sees them right now, to settle a snapshot command left without a reply.
-func qmpDiskSnapshots(socketPath string) (map[string]bool, error) {
+func qmpDiskSnapshots(socketPath, device string) (map[string]bool, error) {
 	raw, err := qmpExecute(socketPath, "query-block", nil)
 	if err != nil {
 		return nil, err
@@ -150,7 +150,7 @@ func qmpDiskSnapshots(socketPath string) (map[string]bool, error) {
 		return nil, fmt.Errorf("decode query-block: %w", err)
 	}
 	for _, d := range devices {
-		if d.Device != bootDisk || d.Inserted == nil {
+		if d.Device != device || d.Inserted == nil {
 			continue
 		}
 		names := map[string]bool{}
@@ -159,7 +159,7 @@ func qmpDiskSnapshots(socketPath string) (map[string]bool, error) {
 		}
 		return names, nil
 	}
-	return nil, fmt.Errorf("disk %s not found", bootDisk)
+	return nil, fmt.Errorf("disk %s not found", device)
 }
 
 // qmpAddDisplayClient hands QEMU one end of a peer-to-peer connection to

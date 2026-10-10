@@ -58,6 +58,115 @@ private slots:
     QCOMPARE(finished.at(0).at(0).toInt(), 128 + SIGTERM);
   }
 
+  // Every key the terminfo entry for TERM=xterm-256color declares, read
+  // from the system's own database (infocmp), with the keypad in the mode
+  // that entry's smkx sets: what ncurses programs in a Box (vim, htop,
+  // less, tmux) will recognize, checked key by key.
+  void everyKeyMatchesTheTerminfoEntry() {
+    QProcess infocmp;
+    infocmp.start(QStringLiteral("infocmp"),
+                  {QStringLiteral("-1"), QStringLiteral("-x"),
+                   QStringLiteral("xterm-256color")});
+    if (!infocmp.waitForFinished(5000) || infocmp.exitCode() != 0)
+      QSKIP("needs infocmp with the xterm-256color entry");
+    QHash<QString, QByteArray> caps;
+    const auto unescape = [](const QByteArray &v) {
+      QByteArray out;
+      for (qsizetype i = 0; i < v.size(); ++i) {
+        if (v[i] == '\\' && i + 1 < v.size()) {
+          const char c = v[++i];
+          out += c == 'E' || c == 'e' ? '\x1b' : c;
+        } else if (v[i] == '^' && i + 1 < v.size()) {
+          const char c = v[++i];
+          out += c == '?' ? '\x7f' : char(c & 0x1f);
+        } else {
+          out += v[i];
+        }
+      }
+      return out;
+    };
+    for (QByteArray line : infocmp.readAllStandardOutput().split('\n')) {
+      line = line.trimmed();
+      if (line.endsWith(','))
+        line.chop(1);
+      const qsizetype eq = line.indexOf('=');
+      if (eq > 0)
+        caps.insert(QString::fromLatin1(line.left(eq)), unescape(line.mid(eq + 1)));
+    }
+    QVERIFY(caps.contains(QStringLiteral("smkx")));
+
+    TerminalSession session;
+    session.resize(80, 24);
+    session.feed(caps.value(QStringLiteral("smkx")));
+
+    struct Key {
+      int key;
+      const char *base; // terminfo name without modifiers
+      const char *shift = nullptr;
+    };
+    const Key plain[] = {
+        {Qt::Key_Up, "kcuu1"},    {Qt::Key_Down, "kcud1"},
+        {Qt::Key_Right, "kcuf1"}, {Qt::Key_Left, "kcub1"},
+        {Qt::Key_Home, "khome"},  {Qt::Key_End, "kend"},
+        {Qt::Key_Insert, "kich1"}, {Qt::Key_Delete, "kdch1"},
+        {Qt::Key_PageUp, "kpp"},  {Qt::Key_PageDown, "knp"},
+    };
+    int checked = 0;
+    QStringList wrong;
+    const auto check = [&](const QString &cap, int key,
+                           Qt::KeyboardModifiers mods, const QString &text) {
+      if (!caps.contains(cap))
+        return;
+      ++checked;
+      const QByteArray got = session.keySequence(key, mods, text);
+      if (got != caps.value(cap))
+        wrong << QStringLiteral("%1: sends %2, terminfo says %3")
+                     .arg(cap, QString::fromLatin1(got.toPercentEncoding()),
+                          QString::fromLatin1(caps.value(cap).toPercentEncoding()));
+    };
+    for (const Key &k : plain)
+      check(QString::fromLatin1(k.base), k.key, Qt::NoModifier, {});
+    check(QStringLiteral("kbs"), Qt::Key_Backspace, Qt::NoModifier,
+          QStringLiteral("\b"));
+    check(QStringLiteral("kcbt"), Qt::Key_Backtab, Qt::ShiftModifier, {});
+    // F1-F12, then the same with Shift (kf13-24), Ctrl (kf25-36),
+    // Ctrl+Shift (kf37-48) and Alt (kf49-60).
+    const Qt::KeyboardModifiers fmods[] = {
+        Qt::NoModifier, Qt::ShiftModifier, Qt::ControlModifier,
+        Qt::ControlModifier | Qt::ShiftModifier, Qt::AltModifier};
+    for (int group = 0; group < 5; ++group)
+      for (int f = 0; f < 12; ++f)
+        check(QStringLiteral("kf%1").arg(group * 12 + f + 1), Qt::Key_F1 + f,
+              fmods[group], {});
+    // Arrows and Home/End with modifiers, xterm's extended names: the
+    // number is 1 + Shift(1) + Alt(2) + Ctrl(4).
+    const struct {
+      int key;
+      const char *name;
+    } extended[] = {{Qt::Key_Up, "kUP"},   {Qt::Key_Down, "kDN"},
+                    {Qt::Key_Left, "kLFT"}, {Qt::Key_Right, "kRIT"},
+                    {Qt::Key_Home, "kHOM"}, {Qt::Key_End, "kEND"},
+                    {Qt::Key_Delete, "kDC"}, {Qt::Key_Insert, "kIC"},
+                    {Qt::Key_PageUp, "kPRV"}, {Qt::Key_PageDown, "kNXT"}};
+    for (const auto &e : extended) {
+      for (int n = 2; n <= 7; ++n) {
+        Qt::KeyboardModifiers mods;
+        if ((n - 1) & 1)
+          mods |= Qt::ShiftModifier;
+        if ((n - 1) & 2)
+          mods |= Qt::AltModifier;
+        if ((n - 1) & 4)
+          mods |= Qt::ControlModifier;
+        // Shift alone has the bare name (kUP, kDC); the others a suffix.
+        const QString cap = QString::fromLatin1(e.name) +
+                            (n == 2 ? QString() : QString::number(n));
+        check(cap, e.key, mods, {});
+      }
+    }
+    QVERIFY2(checked > 100, qPrintable(QStringLiteral("only %1 keys checked").arg(checked)));
+    QVERIFY2(wrong.isEmpty(), qPrintable(wrong.join(QLatin1Char('\n'))));
+  }
+
   // ncurses programs (htop, mc) switch the cursor keys to application
   // mode (smkx = \E[?1h for TERM=xterm-256color) and then only recognize
   // the SS3 form the terminfo declares (kcuu1=\EOA).
@@ -442,6 +551,94 @@ private slots:
     session.feed(QByteArray("\xc3", 1));
     session.feed(QByteArray("\xa9", 1));
     QCOMPARE(cellText(session, 0, 0), QString::fromUtf8("\xc3\xa9"));
+  }
+
+  // Regression: ESC ( B was read as ESC plus a printed "B", and sgr0 is
+  // ESC ( B ESC [ m in xterm-256color — every attribute reset in vim,
+  // htop or less left a "B" behind. ESC ( 0 is ncurses' line drawing
+  // (smacs): htop's and tmux's borders came out as "lqqk".
+  void lineDrawingAndCharsetSwitches() {
+    TerminalSession session;
+    session.resize(20, 4);
+    session.feed(QByteArrayLiteral("\x1b(0lqk\r\nx x\r\nmqj\x1b(B ok\x1b(B\x1b[m"));
+    QStringList rows;
+    for (int row = 0; row < 3; ++row) {
+      QString line;
+      for (int col = 0; col < 6; ++col)
+        line += cellText(session, row, col);
+      rows << line.trimmed();
+    }
+    QCOMPARE(rows, (QStringList{QStringLiteral("┌─┐"), QStringLiteral("│ │"),
+                                QStringLiteral("└─┘ ok")}));
+    // SO/SI switch to G1 and back.
+    TerminalSession shifted;
+    shifted.resize(20, 2);
+    shifted.feed(QByteArrayLiteral("\x1b)0a\x0eq\x0fq"));
+    QCOMPARE(cellText(shifted, 0, 0) + cellText(shifted, 0, 1) + cellText(shifted, 0, 2),
+             QStringLiteral("a─q"));
+  }
+
+  // Everything the xterm-256color entry says this terminal understands,
+  // as tput writes it: none of it may leave text on the screen (an
+  // unknown sequence typically shows up as "[3m" or "?1049h" garbage).
+  void everyTerminfoCapabilityIsUnderstood() {
+    const QList<QStringList> caps = {
+        {"bel"}, {"blink"}, {"bold"}, {"cbt"}, {"civis"}, {"clear"},
+        {"cnorm"}, {"cr"}, {"csr", "2", "20"}, {"cub", "3"}, {"cub1"},
+        {"cud", "2"}, {"cud1"}, {"cuf", "4"}, {"cuf1"}, {"cup", "5", "10"},
+        {"cuu", "1"}, {"cuu1"}, {"cvvis"}, {"dch", "2"}, {"dch1"}, {"dim"},
+        {"dl", "1"}, {"dl1"}, {"ech", "3"}, {"ed"}, {"el"}, {"el1"},
+        {"flash"}, {"home"}, {"hpa", "10"}, {"ht"}, {"hts"}, {"ich", "2"},
+        {"il", "1"}, {"il1"}, {"ind"}, {"indn", "2"}, {"invis"}, {"nel"},
+        {"oc"}, {"op"}, {"rc"}, {"rev"}, {"ri"}, {"rin", "2"}, {"ritm"},
+        {"rmacs"}, {"rmam"}, {"rmcup"}, {"rmir"}, {"rmkx"}, {"rmm"},
+        {"rmso"}, {"rmul"}, {"sc"}, {"setab", "21"}, {"setaf", "196"},
+        {"sgr", "1", "1", "1", "1", "0", "1", "0", "0", "0"}, {"sgr0"},
+        {"sitm"}, {"smacs"}, {"smam"}, {"smcup"}, {"smir"}, {"smkx"},
+        {"smm"}, {"smso"}, {"smul"}, {"tbc"}, {"vpa", "5"},
+        {"smxx"}, {"rmxx"}, {"E3"}, {"BD"}, {"BE"}, {"fd"}, {"fe"},
+        {"Ss", "2"}, {"Se"}, {"rs1"}, {"rs2"}, {"is2"}};
+    int checked = 0;
+    QStringList garbage;
+    for (const QStringList &cap : caps) {
+      QProcess tput;
+      tput.start(QStringLiteral("tput"),
+                 QStringList{QStringLiteral("-T"), QStringLiteral("xterm-256color")} + cap);
+      if (!tput.waitForFinished(5000))
+        QSKIP("needs tput");
+      const QByteArray bytes = tput.readAllStandardOutput();
+      if (tput.exitCode() != 0 || bytes.isEmpty())
+        continue; // not in this ncurses' entry
+      ++checked;
+      TerminalSession session;
+      session.resize(80, 24);
+      session.feed(bytes);
+      for (int row = 0; row < 24; ++row)
+        for (int col = 0; col < 80; ++col)
+          if (!cellText(session, row, col).trimmed().isEmpty()) {
+            garbage << QStringLiteral("%1 left \"%2\" at %3,%4 (sent %5)")
+                           .arg(cap.join(QLatin1Char(' ')), cellText(session, row, col))
+                           .arg(row).arg(col)
+                           .arg(QString::fromLatin1(bytes.toPercentEncoding()));
+            row = 24;
+            break;
+          }
+    }
+    QVERIFY2(checked > 60, qPrintable(QStringLiteral("only %1 capabilities checked").arg(checked)));
+    QVERIFY2(garbage.isEmpty(), qPrintable(garbage.join(QLatin1Char('\n'))));
+  }
+
+  // What a program in the terminal learns about it from its environment:
+  // the terminfo entry it follows, and that it draws 24-bit color.
+  void programsSeeTheTerminalsCapabilities() {
+    TerminalSession session;
+    QSignalSpy finished(&session, &TerminalSession::finished);
+    session.startProgram("/bin/sh", {"-c", "printf '%s %s' \"$TERM\" \"$COLORTERM\""}, 80, 24);
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() > 0, 5000);
+    QString line;
+    for (int col = 0; col < 80; ++col)
+      line += cellText(session, 0, col);
+    QCOMPARE(line.trimmed(), QStringLiteral("xterm-256color truecolor"));
   }
 
   void realPtyEchoAndExit() {

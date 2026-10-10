@@ -33,6 +33,10 @@ Pane {
         if (!image)
             return ""
         if (env.kind === "machine") {
+            if (image === "ready:ubuntu-24.04")
+                return qsTr("Ubuntu 24.04 LTS")
+            if (image === "ready:fedora-44")
+                return qsTr("Fedora 44")
             const file = image.split("/").pop()
             return file.replace(/\.iso$/i, "")
         }
@@ -51,6 +55,10 @@ Pane {
         return tag && tag !== "latest" ? repo + " " + tag : repo
     }
     readonly property bool machine: environment.kind === "machine"
+    readonly property bool installationMediaAttached: machine && stopped && !!environment.image
+        && environment.image !== "ready:ubuntu-24.04"
+        && environment.image !== "ready:fedora-44"
+        && !(environment.settings && environment.settings.disconnect_iso)
     // The primary action names what the person will see after the click
     // (docs/TODO.md P1): a stopped Box's click opens its terminal, so it
     // says Open; a stopped Desktop boots first, so Start — and both say
@@ -127,6 +135,7 @@ Pane {
                     color: card.environment.settings && card.environment.settings.color ? backend.themeTagColors[card.environment.settings.color] || card.environment.settings.color : "transparent"
                 }
                 Label {
+                    textFormat: Text.PlainText
                     id: nameLabel
                     objectName: "nameLabel"
                     Layout.fillWidth: true
@@ -142,6 +151,7 @@ Pane {
                 }
             }
             Label {
+                textFormat: Text.PlainText
                 objectName: "kindLabel"
                 Layout.fillWidth: true
                 visible: card.width >= 430
@@ -154,6 +164,7 @@ Pane {
                 elide: Text.ElideRight
             }
             Label {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 visible: card.width >= 600 && !!(card.environment.settings && card.environment.settings.description)
                 text: card.environment.settings ? card.environment.settings.description || "" : ""
@@ -178,6 +189,7 @@ Pane {
                     }
                 }
                 Label {
+                    textFormat: Text.PlainText
                     objectName: "statusLabel"
                     text: card.environment.status === "running" ? qsTr("Running")
                           : card.environment.status === "paused" ? qsTr("Paused")
@@ -197,6 +209,7 @@ Pane {
             // Why a Machine is paused or needs attention (a full host
             // disk, a missing container): the state alone doesn't say.
             Label {
+                textFormat: Text.PlainText
                 objectName: "statusDetailLabel"
                 Layout.fillWidth: true
                 visible: (card.paused || card.failed) && !!card.environment.statusDetail
@@ -207,6 +220,7 @@ Pane {
             // Before it happens: the host's disk is nearly full, and the
             // Machine would pause when it runs out.
             Label {
+                textFormat: Text.PlainText
                 objectName: "statusWarningLabel"
                 Layout.fillWidth: true
                 visible: !card.paused && !!card.environment.statusWarning
@@ -214,9 +228,27 @@ Pane {
                 color: backend.themeRed
                 wrapMode: Text.WordWrap
             }
+            Label {
+                textFormat: Text.PlainText
+                objectName: "installationMediaHint"
+                Layout.fillWidth: true
+                visible: card.installationMediaAttached
+                text: qsTr("Installation media is still connected. If installation is complete, choose to boot from the disk next time.")
+                color: backend.themeMuted
+                wrapMode: Text.WordWrap
+            }
+            Button {
+                objectName: "installationMediaSettings"
+                visible: card.installationMediaAttached
+                text: card.width < 430 ? qsTr("Use disk") : qsTr("Boot from disk next time")
+                Accessible.description: qsTr("Disconnect %1's installation media on its next start; you can reconnect it in Settings").arg(card.environment.name)
+                enabled: !card.busy
+                onClicked: backend.disconnectInstallationMedia(card.environment.name)
+            }
             // What the running session got differs from its settings: the
             // saved ones wait for a restart, or Travel Mode trimmed CPUs.
             Label {
+                textFormat: Text.PlainText
                 objectName: "restartNeededLabel"
                 Layout.fillWidth: true
                 visible: card.active && !!card.environment.restartNeeded
@@ -225,6 +257,7 @@ Pane {
                 wrapMode: Text.WordWrap
             }
             Label {
+                textFormat: Text.PlainText
                 objectName: "travelModeLabel"
                 Layout.fillWidth: true
                 visible: card.active && !!card.environment.travelMode
@@ -235,6 +268,7 @@ Pane {
             // The stage a long creation reported (which image layer is
             // downloading): a real step, never an invented percentage.
             Label {
+                textFormat: Text.PlainText
                 objectName: "progressLabel"
                 readonly property string stage: (backend.progress && backend.progress[card.environment.name]) || ""
                 Layout.fillWidth: true
@@ -247,6 +281,7 @@ Pane {
             }
             // Never hidden by width: it says what shutting down will lose.
             Label {
+                textFormat: Text.PlainText
                 objectName: "ephemeralLabel"
                 Layout.fillWidth: true
                 visible: card.active && !!card.environment.ephemeral
@@ -255,6 +290,7 @@ Pane {
                 wrapMode: Text.WordWrap
             }
             Label {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 visible: card.environment.kind === "machine" && card.width >= 520 && !!card.environment.guestAgent
                 text: card.environment.guestAgent === "connected" ? qsTr("Guest tools connected")

@@ -58,22 +58,39 @@ bool qmpSend(int fd, const QByteArray &command, int passFd = -1) {
          !qmpReply(fd).contains(QStringLiteral("error"));
 }
 
-int attachDisplay(const QString &qmpPath) {
+// A QMP connection past the capabilities handshake, or -1.
+int qmpConnect(const QString &qmpPath) {
   const int qmp = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   sockaddr_un address{};
   address.sun_family = AF_UNIX;
   const QByteArray path = QFile::encodeName(qmpPath);
   memcpy(address.sun_path, path.constData(), size_t(path.size()));
   if (::connect(qmp, reinterpret_cast<sockaddr *>(&address),
-                sizeof(address)) != 0) {
+                sizeof(address)) != 0 ||
+      qmpReply(qmp).isEmpty() ||
+      !qmpSend(qmp, R"({"execute":"qmp_capabilities"})")) {
     close(qmp);
     return -1;
   }
+  return qmp;
+}
+
+bool qmpRun(const QString &qmpPath, const QByteArray &command) {
+  const int qmp = qmpConnect(qmpPath);
+  if (qmp < 0)
+    return false;
+  const bool ok = qmpSend(qmp, command);
+  close(qmp);
+  return ok;
+}
+
+int attachDisplay(const QString &qmpPath) {
+  const int qmp = qmpConnect(qmpPath);
+  if (qmp < 0)
+    return -1;
   int pair[2];
   socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair);
   const bool ok =
-      !qmpReply(qmp).isEmpty() &&
-      qmpSend(qmp, R"({"execute":"qmp_capabilities"})") &&
       qmpSend(qmp, R"({"execute":"getfd","arguments":{"fdname":"t"}})",
               pair[1]) &&
       qmpSend(qmp, R"({"execute":"add_client","arguments":)"
@@ -106,7 +123,9 @@ double inkedRows(const QImage &image, int from, int to) {
 
 // Renders DisplayView offscreen (no window is shown) against a real QEMU
 // checking both frame paths end to end: the firmware's text must land at
-// the top of the view, not mirrored.
+// the top of the view, not mirrored. A guest reset then forces a new
+// scanout, so an existing texture is replaced: the 2026-10-07 viewer crash
+// (a null QSGSimpleTextureNode::setTexture) happened only there.
 class DisplayViewTest : public QObject {
   Q_OBJECT
 
@@ -179,19 +198,23 @@ void DisplayViewTest::rendersFramesUpright() {
           [&](const QString &message) { failure = message; });
   view.setConnectionFd(fd);
 
+  // Renders up to `frames` times, stopping early once the guest has drawn
+  // something (the firmware's text) if `untilInked`.
   QImage frame;
-  for (int attempt = 0; attempt < 100 && failure.isEmpty(); ++attempt) {
-    QTest::qWait(100);
-    control.polishItems();
-    control.beginFrame();
-    control.sync();
-    control.render();
-    control.endFrame();
-    frame = fbo.toImage();
-    // Wait for the firmware to have printed something.
-    if (inkedRows(frame, 0, frame.height()) > 0.05)
-      break;
-  }
+  const auto render = [&](int frames, bool untilInked) {
+    for (int attempt = 0; attempt < frames && failure.isEmpty(); ++attempt) {
+      QTest::qWait(100);
+      control.polishItems();
+      control.beginFrame();
+      control.sync();
+      control.render();
+      control.endFrame();
+      frame = fbo.toImage();
+      if (untilInked && inkedRows(frame, 0, frame.height()) > 0.05)
+        return;
+    }
+  };
+  render(100, true);
   QVERIFY2(failure.isEmpty(), qPrintable(failure));
   QVERIFY2(inkedRows(frame, 0, frame.height()) > 0.05,
            "no guest content was rendered");
@@ -202,6 +225,13 @@ void DisplayViewTest::rendersFramesUpright() {
                                                    "top %1, bottom %2")
                                         .arg(top)
                                         .arg(bottom)));
+
+  // Replacing the texture: a reset reinitializes the guest's display.
+  QVERIFY(qmpRun(qmp, R"({"execute":"system_reset"})"));
+  render(30, false);
+  QVERIFY2(failure.isEmpty(), qPrintable(failure));
+  QVERIFY2(inkedRows(frame, 0, frame.height()) > 0.05,
+           "nothing rendered after the guest's display was reset");
 }
 
 int main(int argc, char **argv) {

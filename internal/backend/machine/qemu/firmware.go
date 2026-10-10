@@ -207,8 +207,8 @@ func (b *Backend) firmwareArgs(name string) ([]string, error) {
 		args = append(args, "-global", "driver=cfi.pflash01,property=secure,value=on")
 	}
 	return append(args,
-		"-drive", fmt.Sprintf("if=pflash,format=%s,unit=0,readonly=on,file=%s", fw.Format, fw.Executable),
-		"-drive", fmt.Sprintf("if=pflash,format=%s,unit=1,file=%s", fw.NVRAMFormat, b.nvramPath(name)),
+		"-drive", fmt.Sprintf("if=pflash,format=%s,unit=0,readonly=on,file=%s", fw.Format, optValue(fw.Executable)),
+		"-drive", fmt.Sprintf("if=pflash,format=%s,unit=1,file=%s", fw.NVRAMFormat, optValue(b.nvramPath(name))),
 	), nil
 }
 

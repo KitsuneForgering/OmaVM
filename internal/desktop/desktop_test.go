@@ -1,7 +1,9 @@
 package desktop
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -200,5 +202,49 @@ func TestEntryUsesTheBundledIconOutsideTheIconTheme(t *testing.T) {
 	}
 	if entry := readEntry(t, l, env); !strings.Contains(entry, "Icon="+svg+"\n") {
 		t.Fatalf("entry doesn't use the bundled icon:\n%s", entry)
+	}
+}
+
+// End to end through a real launcher (GLib's, which GNOME and most
+// launchers use): whatever the environment is called, its entry runs
+// `omavm open NAME` with the name intact. Names from 2026-10-07's fuzzing
+// of execLine, each a way out of naive quoting.
+func TestEntryLaunchesTheEnvironmentThroughGLib(t *testing.T) {
+	gio, err := exec.LookPath("gio")
+	if err != nil {
+		t.Skip("needs gio")
+	}
+	dir := t.TempDir()
+	argv := filepath.Join(dir, "argv")
+	cli := filepath.Join(dir, "omavm")
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '[%s]\\n' \"$a\"; done > " + argv + "\n"
+	if err := os.WriteFile(cli, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := &Launcher{Dir: filepath.Join(dir, "applications"), CLI: cli}
+	for i, name := range []string{`a"b`, "c`d", "$HOME", `back\slash`, "50% off", "%u", " lead", `\"`, "it's", "a&b|c;d", "Ação 🙂"} {
+		env := core.Environment{ID: fmt.Sprintf("e%d", i), Name: name, Kind: core.Machine}
+		if err := l.Publish(env); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Remove(argv)
+		if out, err := exec.Command(gio, "launch", l.path(env)).CombinedOutput(); err != nil {
+			// A host where gio can't launch anything (no session, as on
+			// some CI runners) says nothing about the entries.
+			if i == 0 {
+				t.Skipf("gio launch doesn't work here: %v: %s", err, out)
+			}
+			t.Fatalf("gio launch: %v: %s", err, out)
+		}
+		var got []byte
+		for range 100 {
+			if got, err = os.ReadFile(argv); err == nil && len(got) > 0 {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if want := "[open]\n[" + name + "]\n"; string(got) != want {
+			t.Errorf("name %q: the entry ran %q, want %q", name, got, want)
+		}
 	}
 }

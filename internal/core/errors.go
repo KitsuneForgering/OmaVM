@@ -36,6 +36,16 @@ func Busyf(format string, args ...any) error {
 	return &classifiedError{kind: ErrBusy, err: fmt.Errorf(format, args...)}
 }
 
+// SessionEnded is an interactive session (a Box's shell, in a terminal)
+// ending with the status its last command left — the person's, as when a
+// shell exits after `false`: not OmaVM or the backend failing. Callers
+// pass the code on and say nothing of their own.
+type SessionEnded struct{ Code int }
+
+func (e *SessionEnded) Error() string {
+	return fmt.Sprintf("the session ended with status %d", e.Code)
+}
+
 type classifiedError struct {
 	kind error
 	err  error

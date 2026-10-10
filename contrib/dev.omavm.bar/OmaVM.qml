@@ -57,14 +57,24 @@ BarWidget {
   }
 
   function applyListing(output) {
+    var envs
     try {
-      var envs = JSON.parse(String(output || "[]"))
-      root.envCount = Array.isArray(envs) ? envs.length : 0
+      envs = JSON.parse(String(output || "[]"))
     } catch (e) {
       // omavm not installed, or --json not supported by this version —
       // fail quiet rather than spam the shell log every refresh tick.
       root.envCount = 0
+      return
     }
+    if (Array.isArray(envs)) {
+      root.envCount = envs.length
+      return
+    }
+    // omavm answered with an error ({"error": {...}}, e.g. a damaged
+    // registry): the environments still exist, so keep showing the last
+    // count instead of vanishing as if there were none.
+    if (envs && envs.error)
+      console.warn("omavm-bar", envs.error.message || envs.error.code)
   }
 
   readonly property int refreshIntervalSec: Math.max(5, Number(setting("refreshIntervalSec", 30)))

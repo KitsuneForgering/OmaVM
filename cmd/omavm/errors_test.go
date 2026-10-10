@@ -85,3 +85,36 @@ func TestWantsJSONIgnoresTheExecutedCommand(t *testing.T) {
 		t.Error("--json of the command run by exec taken as omavm's")
 	}
 }
+
+// The command exec ran failing is reported by its own code and its own
+// words only: omavm used to add "omavm: exec box: distrobox enter
+// --no-tty --name omavm-box-… -- false: exit status 1", naming the
+// backend's internals.
+func TestCommandExitIsTheCommandsNotOmavms(t *testing.T) {
+	failed := fmt.Errorf("exec box: %w", exec.Command("false").Run())
+	if code, ok := commandExit("exec", failed); !ok || code != 1 {
+		t.Fatalf("exec of a failing command: %d, %v", code, ok)
+	}
+	if _, ok := commandExit("ssh", failed); !ok {
+		t.Fatal("ssh passes the remote code through too")
+	}
+	if _, ok := commandExit("start", failed); ok {
+		t.Fatal("a helper failing under start is omavm failing")
+	}
+	if _, ok := commandExit("exec", errors.New("box not found")); ok {
+		t.Fatal("exec failing before the command ran is omavm failing")
+	}
+}
+
+// omavm open passes a Box shell's own exit status on silently; anything
+// else failing under open (QEMU not starting for a Machine) is omavm's
+// failure and keeps its message.
+func TestOpenPassesTheSessionStatusOnly(t *testing.T) {
+	if code, ok := commandExit("open", fmt.Errorf("open box: %w", &core.SessionEnded{Code: 3})); !ok || code != 3 {
+		t.Fatalf("a Box session ending with 3: %d, %v", code, ok)
+	}
+	qemuFailed := fmt.Errorf("start vm: %w", exec.Command("false").Run())
+	if _, ok := commandExit("open", qemuFailed); ok {
+		t.Fatal("a helper failing under open must be reported, not passed through")
+	}
+}

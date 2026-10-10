@@ -17,23 +17,24 @@ Dialog {
     readonly property int lastStep: 3
     property int step: 0
     property bool machine: true
+    property bool readyUbuntu: true
+    property string readySystem: "ubuntu"
+    property bool windowsGuided: false
+    property bool autoDownloading: false
+    closePolicy: autoDownloading ? Popup.NoAutoClose : Popup.CloseOnEscape
     property string errorText: ""
     property bool submitting: false
     // Created and listed: the window offers to open it right away.
-    signal created(string name, string kind)
+    signal created(string name, string kind, bool prepared)
     property string nameError: ""
     property bool nameTouched: false
     // Same reasoning as SettingsDialog.qml's cpusTouched/memoryTouched:
-    // the summary step shows 2 CPUs/2048 MiB as a helpful default, but
-    // sending that unconditionally to `omavm create` would pin every
-    // new Machine's hardware from birth — permanently disabling Travel
-    // Mode's automatic reduction on battery for it (the same Core bug
-    // class documented in docs/TODO.md P2, just hit at creation time
-    // instead of a later Settings save). Only actually touching a
-    // SpinBox (SpinBox.onValueModified, real user interaction only)
-    // marks it as an intentional choice.
+    // The Core chooses half the host by default. Only manual edits pin
+    // CPU or memory and override that dynamic default.
     property bool cpusTouched: false
     property bool memoryTouched: false
+    property bool windowsMinimumApplied: false
+    property bool hardwareExpanded: false
     property var boxes: [
         { label: "Fedora", image: "fedora:latest" },
         { label: "Ubuntu", image: "ubuntu:latest" },
@@ -46,6 +47,21 @@ Dialog {
     function selectedImage() {
         return machine ? image.text.trim()
                        : (boxes[boxImage.currentIndex].image || image.text.trim())
+    }
+
+    readonly property var recommendedResources: backend.hostCapabilities ? backend.hostCapabilities["machine-resources"] : undefined
+    readonly property int defaultCPUs: recommendedResources && recommendedResources.cpus ? recommendedResources.cpus : 2
+    readonly property int defaultMemoryMiB: recommendedResources && recommendedResources.memory_mib ? recommendedResources.memory_mib : 2048
+    function updateDefaultResources() {
+        if (!cpusTouched) cpus.value = defaultCPUs
+        if (!memoryTouched) memory.value = defaultMemoryMiB
+    }
+    function clearWindowsMinimum() {
+        if (windowsMinimumApplied) {
+            windowsMinimumApplied = false
+            memoryTouched = false
+            memory.value = defaultMemoryMiB
+        }
     }
 
     // Mirrors internal/core/service.go's validateEnvironmentName so a bad
@@ -79,7 +95,8 @@ Dialog {
         if (machine) {
             const noise = ["x64", "x86", "x86_64", "amd64", "i386", "i686", "english", "international",
                            "dvd", "dvd1", "live", "desktop", "netinst", "install", "iso", "boot", "anyboot", "multi", "release"]
-            base = image.text.trim().split("/").pop().replace(/\.iso$/i, "")
+            base = readyUbuntu ? (readySystem === "fedora" ? qsTr("Fedora 44") : qsTr("Ubuntu 24.04 LTS"))
+                : windowsGuided ? qsTr("Windows 11") : image.text.trim().split("/").pop().replace(/\.iso$/i, "")
                 .split(/[\s_-]+/).filter(t => t && noise.indexOf(t.toLowerCase()) < 0).join(" ")
         } else {
             base = boxes[boxImage.currentIndex].image ? boxes[boxImage.currentIndex].label
@@ -95,11 +112,14 @@ Dialog {
     // Windows 11's installer refuses less than 4 GB of memory. Recognized
     // by the ISO's name only: a recommendation shown and editable, never
     // a claim about what the ISO is.
-    readonly property bool windowsElevenIso: machine && /win(dows)?[\s_-]*11/i.test(image.text.split("/").pop())
+    readonly property bool windowsElevenIso: machine && !readyUbuntu && (windowsGuided || /win(dows)?[\s_-]*11/i.test(image.text.split("/").pop()))
 
     function resetForm() {
         step = 0
         machine = true
+        readyUbuntu = true
+        readySystem = "ubuntu"
+        windowsGuided = false
         errorText = ""
         submitting = false
         nameError = ""
@@ -108,10 +128,12 @@ Dialog {
         suggestedName = ""
         image.clear()
         boxImage.currentIndex = 0
-        cpus.value = 2
-        memory.value = 2048
         cpusTouched = false
         memoryTouched = false
+        windowsMinimumApplied = false
+        updateDefaultResources()
+        autoDownloading = false
+        hardwareExpanded = false
     }
 
     // Tracks the step a transition is animating FROM, so the content can
@@ -123,6 +145,10 @@ Dialog {
     onOpened: {
         resetForm()
         backend.refreshHost()
+    }
+    Connections {
+        target: backend
+        function onHostCapabilitiesChanged() { dialog.updateDefaultResources() }
     }
     // Said before anything is created: without hardware virtualization a
     // Desktop can be created but won't start. Unknown (no answer from the
@@ -162,12 +188,23 @@ Dialog {
     Connections {
         target: backend
         function onActionFinished(tag, ok, text) {
+            if (tag === "download" && dialog.autoDownloading) {
+                dialog.autoDownloading = false
+                if (ok) {
+                    image.text = text.trim().split("\n").pop()
+                    createButton.clicked()
+                } else {
+                    dialog.errorText = text
+                }
+                return
+            }
             if (tag !== "create") return
             dialog.submitting = false
             if (ok) {
                 dialog.errorText = ""
                 dialog.close()
-                dialog.created(name.text.trim(), dialog.machine ? "machine" : "box")
+                dialog.created(name.text.trim(), dialog.machine ? "machine" : "box",
+                               false)
             } else {
                 dialog.errorText = text
             }
@@ -177,7 +214,11 @@ Dialog {
     header: ColumnLayout {
         spacing: 8
         Label {
+            textFormat: Text.PlainText
+            objectName: "createTitle"
+            Layout.fillWidth: true
             Layout.leftMargin: 24
+            Layout.rightMargin: 24
             Layout.topMargin: 20
             text: dialog.step === 0 ? qsTr("Choose an environment")
                  : dialog.step === 1 ? qsTr("Choose what to run")
@@ -185,6 +226,7 @@ Dialog {
                                      : qsTr("Review and create")
             font.pixelSize: 22
             font.weight: Font.DemiBold
+            wrapMode: Text.Wrap
         }
         RowLayout {
             Layout.fillWidth: true
@@ -210,11 +252,15 @@ Dialog {
         currentIndex: dialog.step
         transform: Translate { id: stepTranslate }
 
-        Item {
+        ScrollView {
+            objectName: "createTypeScroll"
+            clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
-                anchors.fill: parent
+                width: parent.width
                 spacing: 14
                 Label {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: qsTr("How should this environment work?")
                     wrapMode: Text.Wrap
@@ -250,6 +296,7 @@ Dialog {
                             color: desktopChoice.checked ? backend.themeAccentText : backend.themeMuted
                         }
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: qsTr("Desktop")
                             font.bold: true
@@ -257,6 +304,7 @@ Dialog {
                             color: desktopChoice.checked ? backend.themeAccentText : backend.themeForeground
                         }
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: qsTr("A complete computer with its own kernel and graphical display.")
                             wrapMode: Text.Wrap
@@ -264,6 +312,7 @@ Dialog {
                             color: backend.themeMuted
                         }
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: qsTr("Examples: install Windows, FreeBSD, or an Arch Linux with a custom kernel.")
                             wrapMode: Text.Wrap
@@ -272,6 +321,7 @@ Dialog {
                             color: backend.themeMuted
                         }
                         Label {
+                            textFormat: Text.PlainText
                             objectName: "kvmWarning"
                             Layout.fillWidth: true
                             visible: dialog.kvmMissing
@@ -282,6 +332,7 @@ Dialog {
                             color: backend.themeRed
                         }
                         Label {
+                            textFormat: Text.PlainText
                             objectName: "windowsNote"
                             Layout.fillWidth: true
                             visible: !dialog.kvmMissing && dialog.windowsHints.length > 0
@@ -314,6 +365,7 @@ Dialog {
                             color: boxChoice.checked ? backend.themeAccentText : backend.themeMuted
                         }
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: qsTr("Development Box")
                             font.bold: true
@@ -321,6 +373,7 @@ Dialog {
                             color: boxChoice.checked ? backend.themeAccentText : backend.themeForeground
                         }
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: qsTr("A fast terminal environment sharing your Omarchy home, files and Wayland session.")
                             wrapMode: Text.Wrap
@@ -328,6 +381,7 @@ Dialog {
                             color: backend.themeMuted
                         }
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: qsTr("Examples: a Fedora terminal for a project, an Ubuntu toolchain — can also open and export graphical apps to your launcher.")
                             wrapMode: Text.Wrap
@@ -338,23 +392,27 @@ Dialog {
                     }
                     onClicked: dialog.machine = false
                 }
-                Item { Layout.fillHeight: true }
             }
         }
 
-        Item {
+        ScrollView {
+            objectName: "createSourceScroll"
+            clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
-                anchors.fill: parent
+                width: parent.width
                 spacing: 16
                 Label {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: dialog.machine
-                        ? qsTr("Install from an x86_64 ISO. OmaVM will open the graphical installer for you.")
+                        ? qsTr("Choose Ubuntu, Fedora or Windows 11 to download its ISO automatically, then follow the graphical installer. You can also choose your own x86_64 ISO.")
                         : qsTr("Choose a Linux userspace. Distrobox integrates its terminal, files and graphical apps with Omarchy.")
                     wrapMode: Text.Wrap
                     color: backend.themeMuted
                 }
                 Label {
+                    textFormat: Text.PlainText
                     objectName: "boxWarning"
                     Layout.fillWidth: true
                     visible: !dialog.machine && dialog.boxNote !== ""
@@ -369,31 +427,78 @@ Dialog {
                     model: dialog.boxes
                     textRole: "label"
                 }
-                RowLayout {
+                RadioButton {
+                    objectName: "readyUbuntuChoice"
                     Layout.fillWidth: true
-                    visible: dialog.machine || dialog.boxes[boxImage.currentIndex].image === ""
+                    visible: dialog.machine
+                    text: qsTr("Ubuntu 24.04 LTS · download ISO automatically")
+                    checked: dialog.readyUbuntu && dialog.readySystem === "ubuntu"
+                    onClicked: { dialog.readyUbuntu = true; dialog.readySystem = "ubuntu"; dialog.windowsGuided = false; dialog.clearWindowsMinimum(); image.clear() }
+                }
+                RadioButton {
+                    objectName: "readyFedoraChoice"
+                    Layout.fillWidth: true
+                    visible: dialog.machine
+                    text: qsTr("Fedora 44 · download ISO automatically")
+                    checked: dialog.readyUbuntu && dialog.readySystem === "fedora"
+                    onClicked: { dialog.readyUbuntu = true; dialog.readySystem = "fedora"; dialog.windowsGuided = false; dialog.clearWindowsMinimum(); image.clear() }
+                }
+                RadioButton {
+                    objectName: "windowsGuidedChoice"
+                    Layout.fillWidth: true
+                    visible: dialog.machine
+                    text: qsTr("Windows 11 · download ISO automatically")
+                    checked: dialog.windowsGuided
+                    onClicked: {
+                        const needsMinimum = memory.value < 4096
+                        dialog.readyUbuntu = false
+                        dialog.windowsGuided = true
+                        image.clear()
+                        if (needsMinimum) {
+                            memory.value = 4096
+                            dialog.memoryTouched = true
+                            dialog.windowsMinimumApplied = true
+                        }
+                    }
+                }
+                RadioButton {
+                    objectName: "manualIsoChoice"
+                    Layout.fillWidth: true
+                    visible: dialog.machine
+                    text: qsTr("Install from an ISO")
+                    checked: !dialog.readyUbuntu && !dialog.windowsGuided
+                    onClicked: { dialog.readyUbuntu = false; dialog.windowsGuided = false; dialog.clearWindowsMinimum(); image.clear() }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: (dialog.machine && !dialog.readyUbuntu) ||
+                             (!dialog.machine && dialog.boxes[boxImage.currentIndex].image === "")
                     TextField {
                         id: image
                         objectName: "imageField"
                         Layout.fillWidth: true
                         Accessible.name: dialog.machine ? qsTr("Installation ISO") : qsTr("Container image")
                         readOnly: dialog.machine
-                        placeholderText: dialog.machine ? qsTr("Choose a boot ISO…") : qsTr("Container image, for example opensuse/tumbleweed")
+                        placeholderText: dialog.machine ? (dialog.windowsGuided ? qsTr("Choose a Windows 11 ISO…") : qsTr("Choose a boot ISO…")) : qsTr("Container image, for example opensuse/tumbleweed")
                     }
-                    Button {
-                        visible: dialog.machine
-                        text: qsTr("Choose ISO…")
-                        onClicked: isoPicker.open()
-                    }
-                    // Only with quickget installed (the person's choice of
-                    // tool): OmaVM itself keeps no catalog of systems.
-                    Button {
-                        objectName: "downloadSystemButton"
-                        visible: dialog.machine && !!backend.hostCapabilities
-                                 && !!backend.hostCapabilities["quickget"]
-                                 && backend.hostCapabilities["quickget"].available === true
-                        text: qsTr("Download…")
-                        onClicked: downloadDialog.open()
+                    RowLayout {
+                        visible: dialog.machine && !dialog.readyUbuntu
+                        Button {
+                            objectName: "chooseIsoButton"
+                            text: qsTr("Choose ISO…")
+                            onClicked: isoPicker.open()
+                        }
+                        Button {
+                            objectName: "downloadSystemButton"
+                            visible: dialog.machine && !!backend.hostCapabilities
+                                     && !!backend.hostCapabilities["quickget"]
+                                     && backend.hostCapabilities["quickget"].available === true
+                            text: dialog.windowsGuided ? qsTr("Download Windows 11…") : qsTr("Download…")
+                            onClicked: {
+                                downloadDialog.initialQuery = dialog.windowsGuided ? "Windows 11" : ""
+                                downloadDialog.open()
+                            }
+                        }
                     }
                 }
                 Rectangle {
@@ -402,27 +507,35 @@ Dialog {
                     radius: 8
                     color: backend.themeSelection
                     Label {
+                        textFormat: Text.PlainText
                         id: note
                         anchors.fill: parent
                         anchors.margins: 12
-                        text: dialog.machine
+                        text: dialog.machine && dialog.readyUbuntu
+                            ? qsTr("OmaVM downloads the official %1 installer ISO and checks its SHA-256 checksum. Start the Desktop after creation and follow the graphical installer.").arg(dialog.readySystem === "fedora" ? qsTr("Fedora 44") : qsTr("Ubuntu 24.04 LTS"))
+                            : dialog.machine && dialog.windowsGuided
+                            ? qsTr("OmaVM requests the Windows 11 ISO from Microsoft. It provides UEFI, Secure Boot, TPM 2.0 and a disk Windows can see without extra drivers. Follow Windows Setup after the first boot.")
+                            : dialog.machine
                             ? qsTr("The ISO is installation media. It will not be copied or modified.")
                             : qsTr("Boxes share the host kernel and can still open graphical apps. Choose Desktop instead when you need a separate kernel or full boot.")
                         wrapMode: Text.Wrap
                     }
                 }
-                Item { Layout.fillHeight: true }
             }
         }
 
-        Item {
+        ScrollView {
+            clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
-                anchors.fill: parent
+                width: parent.width
                 spacing: 16
-                Label { text: dialog.machine ? qsTr("Desktop") : qsTr("Development Box"); color: backend.themeAccentText; font.weight: Font.DemiBold }
+                Label { textFormat: Text.PlainText; text: dialog.machine ? qsTr("Desktop") : qsTr("Development Box"); color: backend.themeAccentText; font.weight: Font.DemiBold }
                 Label {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
-                    text: dialog.machine ? image.text : dialog.boxes[boxImage.currentIndex].label
+                    text: dialog.machine && dialog.readyUbuntu ? (dialog.readySystem === "fedora" ? qsTr("Fedora 44 installer ISO") : qsTr("Ubuntu 24.04 LTS installer ISO"))
+                        : dialog.machine ? image.text : dialog.boxes[boxImage.currentIndex].label
                     elide: Text.ElideMiddle
                     color: backend.themeMuted
                 }
@@ -437,6 +550,7 @@ Dialog {
                     onEditingFinished: dialog.nameTouched = true
                 }
                 Label {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     visible: dialog.nameTouched && dialog.nameError !== ""
                     text: dialog.nameError
@@ -444,26 +558,29 @@ Dialog {
                     color: backend.themeRed
                 }
                 Label {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: qsTr("You can start, open and stop it from the same Experience Center as every other environment.")
                     wrapMode: Text.Wrap
                     color: backend.themeMuted
                 }
-                Item { Layout.fillHeight: true }
             }
         }
 
-        Item {
+        ScrollView {
+            objectName: "createSummaryScroll"
+            clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
-                anchors.fill: parent
+                width: parent.width
                 spacing: 16
-                Label { text: qsTr("Ready to create"); color: backend.themeAccentText; font.weight: Font.DemiBold }
+                Label { textFormat: Text.PlainText; text: qsTr("Ready to create"); color: backend.themeAccentText; font.weight: Font.DemiBold }
                 GridLayout {
                     Layout.fillWidth: true
                     columns: 2
                     columnSpacing: 16
                     rowSpacing: 6
-                    Label { text: qsTr("Type:"); color: backend.themeMuted }
+                    Label { textFormat: Text.PlainText; text: qsTr("Type:"); color: backend.themeMuted }
                     RowLayout {
                         spacing: 6
                         Icon {
@@ -471,38 +588,58 @@ Dialog {
                             color: backend.themeAccentText
                             iconSize: 16
                         }
-                        Label { text: dialog.machine ? qsTr("Desktop") : qsTr("Development Box") }
+                        Label { textFormat: Text.PlainText; text: dialog.machine ? qsTr("Desktop") : qsTr("Development Box") }
                     }
-                    Label { text: dialog.machine ? qsTr("Installation media:") : qsTr("Image:"); color: backend.themeMuted }
+                    Label { textFormat: Text.PlainText; text: dialog.machine ? qsTr("Installation media:") : qsTr("Image:"); color: backend.themeMuted }
                     Label {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
-                        text: dialog.machine ? image.text : dialog.boxes[boxImage.currentIndex].label
+                        text: dialog.machine && dialog.readyUbuntu ? (dialog.readySystem === "fedora" ? qsTr("Fedora 44 installer ISO") : qsTr("Ubuntu 24.04 LTS installer ISO"))
+                            : dialog.machine ? image.text : dialog.boxes[boxImage.currentIndex].label
                         elide: Text.ElideMiddle
                     }
-                    Label { text: qsTr("Name:"); color: backend.themeMuted }
+                    Label { textFormat: Text.PlainText; text: qsTr("Name:"); color: backend.themeMuted }
                     Label {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         text: name.text.trim()
                         elide: Text.ElideRight
                     }
                     // The qcow2 is sparse (qemu.diskSize): nothing is
                     // reserved up front, which is what people ask first.
-                    Label { visible: dialog.machine; text: qsTr("Disk:"); color: backend.themeMuted }
+                    Label { textFormat: Text.PlainText; visible: dialog.machine; text: qsTr("Disk:"); color: backend.themeMuted }
                     Label {
+                        textFormat: Text.PlainText
                         visible: dialog.machine
                         Layout.fillWidth: true
                         text: qsTr("grows as it's used, up to 1 TB")
                         wrapMode: Text.Wrap
                     }
                 }
-                RowLayout {
+                Label {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     visible: dialog.machine
-                    spacing: 16
+                    text: qsTr("%1 CPUs · %2 memory").arg(cpus.value).arg(memory.displayText)
+                    color: backend.themeMuted
+                }
+                Button {
+                    objectName: "createHardwareButton"
+                    visible: dialog.machine
+                    text: dialog.hardwareExpanded ? qsTr("Hide hardware controls") : qsTr("Adjust hardware")
+                    onClicked: dialog.hardwareExpanded = !dialog.hardwareExpanded
+                }
+                GridLayout {
+                    Layout.fillWidth: true
+                    visible: dialog.machine && dialog.hardwareExpanded
+                    columns: width < 330 ? 1 : 2
+                    columnSpacing: 16
+                    rowSpacing: 16
                     ColumnLayout {
-                        Label { text: qsTr("CPUs"); color: backend.themeMuted }
+                        Label { textFormat: Text.PlainText; text: qsTr("CPUs"); color: backend.themeMuted }
                         SpinBox {
                             id: cpus
+                            objectName: "createCPUs"
                             Accessible.name: qsTr("CPUs")
                             Component.onCompleted: contentItem.Accessible.name = Accessible.name
                             from: 1
@@ -512,20 +649,22 @@ Dialog {
                         }
                     }
                     ColumnLayout {
-                        Label { text: qsTr("Memory"); color: backend.themeMuted }
+                        Label { textFormat: Text.PlainText; text: qsTr("Memory"); color: backend.themeMuted }
                         MemorySpinBox {
                             id: memory
+                            objectName: "createMemory"
+                            from: dialog.windowsGuided ? 4096 : 256
                             value: 2048
-                            onValueModified: dialog.memoryTouched = true
+                            onValueModified: { dialog.memoryTouched = true; dialog.windowsMinimumApplied = false }
                         }
                     }
-                    Item { Layout.fillWidth: true }
                 }
                 Label {
+                    textFormat: Text.PlainText
                     objectName: "windowsMemoryNote"
                     Layout.fillWidth: true
                     visible: dialog.windowsElevenIso && memory.value >= 4096
-                    text: qsTr("Memory starts at 4 GB: the Windows 11 installer refuses less.")
+                    text: qsTr("Windows 11 needs at least 4 GB of memory; this Desktop uses %1.").arg(memory.displayText)
                     wrapMode: Text.Wrap
                     color: backend.themeMuted
                     font.pixelSize: 12
@@ -537,6 +676,7 @@ Dialog {
                     color: backend.themeSelection
                     visible: closingNote.text !== ""
                     Label {
+                        textFormat: Text.PlainText
                         id: closingNote
                         anchors.fill: parent
                         anchors.margins: 12
@@ -548,7 +688,6 @@ Dialog {
                                 : "")
                     }
                 }
-                Item { Layout.fillHeight: true }
             }
         }
     }
@@ -556,6 +695,17 @@ Dialog {
     footer: ColumnLayout {
         spacing: 0
         Label {
+            textFormat: Text.PlainText
+            Layout.fillWidth: true
+            Layout.leftMargin: 24
+            Layout.rightMargin: 24
+            visible: dialog.autoDownloading
+            text: (backend.progress && backend.progress["download"]) || qsTr("Downloading installation ISO…")
+            wrapMode: Text.Wrap
+            color: backend.themeMuted
+        }
+        Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.leftMargin: 24
             Layout.rightMargin: 24
@@ -568,20 +718,36 @@ Dialog {
             Layout.fillWidth: true
             Button {
                 text: dialog.step === 0 ? qsTr("Cancel") : qsTr("Back")
-                enabled: !dialog.submitting
+                enabled: !dialog.submitting && !dialog.autoDownloading
                 DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
                 onClicked: dialog.step === 0 ? dialog.reject() : dialog.step--
             }
             Button {
                 id: createButton
                 objectName: "createButton"
-                text: dialog.submitting ? qsTr("Creating…") : dialog.step === dialog.lastStep ? qsTr("Create Environment") : qsTr("Continue")
+                text: dialog.autoDownloading ? qsTr("Downloading…") : dialog.submitting ? qsTr("Creating…") : dialog.step === dialog.lastStep
+                      ? (dialog.width < 360 ? qsTr("Create") : qsTr("Create Environment")) : qsTr("Continue")
+                Accessible.name: dialog.step === dialog.lastStep ? qsTr("Create Environment") : text
                 highlighted: true
-                enabled: !dialog.submitting
+                enabled: !dialog.submitting && !dialog.autoDownloading
                 DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
                 onClicked: {
+                    if (dialog.step === 1 && dialog.windowsGuided && (dialog.kvmMissing || dialog.windowsHints.length > 0)) {
+                        dialog.errorText = dialog.kvmMissing
+                            ? qsTr("Windows 11 needs hardware virtualization before you continue.")
+                            : dialog.windowsNote
+                        return
+                    }
+                    dialog.errorText = ""
                     if (dialog.step === 1 && !dialog.selectedImage()) {
-                        backend.message(dialog.machine ? qsTr("Choose an installation ISO") : qsTr("Enter a container image"), true)
+                        if (dialog.machine && (dialog.readyUbuntu || dialog.windowsGuided)) {
+                            dialog.autoDownloading = true
+                            backend.downloadImage(dialog.readyUbuntu ? dialog.readySystem : "windows",
+                                                  dialog.readyUbuntu ? (dialog.readySystem === "fedora" ? "44" : "24.04") : "11",
+                                                  dialog.readySystem === "fedora" && dialog.readyUbuntu ? "Workstation" : "")
+                        } else {
+                            backend.message(dialog.machine ? qsTr("Choose an installation ISO") : qsTr("Enter a container image"), true)
+                        }
                         return
                     }
                     if (dialog.step === 2) {

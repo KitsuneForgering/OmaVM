@@ -7,6 +7,13 @@ import OmaVM 1.0
 
 Window {
     id: win
+    // Tooltips show names and CLI hints: plain text, like every Label.
+    Binding {
+        target: ToolTip.toolTip.contentItem
+        property: "textFormat"
+        value: Text.PlainText
+        when: ToolTip.toolTip.contentItem !== null && ToolTip.toolTip.contentItem.textFormat !== undefined
+    }
     width: 1280
     height: 800
     visible: false
@@ -23,12 +30,50 @@ Window {
     // (contrib/hypr/omavm-viewer.lua) already makes it fullscreen: two
     // independent requests act as a toggle and cancel each other.
     Component.onCompleted: {
+        if (displayRevealAfterFirmware)
+            revealTimer.start()
+        else
+            reveal()
+    }
+
+    // A Machine opened while off stays out of sight during its firmware
+    // and boot menu, and appears once its own system has taken over
+    // (DisplayView.operatingSystemStarted). A system without a USB tablet
+    // driver never says so: the timer shows it anyway.
+    property string pendingError: ""
+    function showDisconnected() {
+        win.reveal()
+        closeHint.opacity = 0
+        errorLabel.text = win.pendingError
+        errorPanel.visible = true
+    }
+    Connections {
+        target: backend
+        function onShutDownChecked(poweredOff) {
+            if (poweredOff)
+                Qt.quit()
+            else
+                win.showDisconnected()
+        }
+    }
+
+    function reveal() {
+        if (win.visible)
+            return
+        revealTimer.stop()
+        if (displayRevealAfterFirmware && displayEmptyWorkspace)
+            backend.placeViewerWindow(displayTitle)
         if (displayFullscreen)
             showFullScreen()
         else
             show()
         closeHint.opacity = 1
         closeHintTimer.start()
+    }
+    Timer {
+        id: revealTimer
+        interval: 30000
+        onTriggered: win.reveal()
     }
 
     // Clipboard sharing is a Machine Settings toggle (opt-out, on by
@@ -43,10 +88,16 @@ Window {
         shareClipboard: displayShareClipboard
         clipboardDirection: displayClipboardDirection
         connectionFd: displayConnectionFd
+        onOperatingSystemStarted: win.reveal()
+        // A Machine that powered off (from inside, Shut Down, Stop) takes
+        // its viewer with it; only a display lost some other way (QEMU
+        // killed or crashed) stays on screen to say so.
         onConnectionFailed: message => {
-            closeHint.opacity = 0
-            errorLabel.text = message
-            errorPanel.visible = true
+            win.pendingError = message
+            if (displayEnvName !== "")
+                backend.checkShutDown(displayEnvName)
+            else
+                win.showDisconnected()
         }
     }
 
@@ -71,6 +122,7 @@ Window {
         border.width: 3
         border.color: backend.themeAccent
         Label {
+            textFormat: Text.PlainText
             anchors.centerIn: parent
             width: parent.width - 64
             horizontalAlignment: Text.AlignHCenter
@@ -97,6 +149,7 @@ Window {
             anchors.fill: parent
             spacing: 12
             Label {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: qsTr("Disconnected from %1").arg(displayEnvName || qsTr("the Machine"))
                 font.pixelSize: 18
@@ -104,6 +157,7 @@ Window {
                 wrapMode: Text.Wrap
             }
             Label {
+                textFormat: Text.PlainText
                 id: errorLabel
                 Layout.fillWidth: true
                 color: backend.themeMuted
@@ -131,9 +185,15 @@ Window {
                     text: qsTr("Reconnect")
                     highlighted: true
                     onClicked: {
+                        const shown = win.visibility
                         win.hide()
-                        backend.reopenDisplay(displayEnvName)
-                        Qt.quit()
+                        if (backend.reopenDisplay(displayEnvName)) {
+                            Qt.quit()
+                            return
+                        }
+                        // Nothing replaces this viewer: keep it, as it was, with why.
+                        errorLabel.text = qsTr("Could not run omavm to reconnect. Check that OmaVM is installed, then try again.")
+                        win.visibility = shown
                     }
                 }
             }
@@ -154,6 +214,7 @@ Window {
         visible: opacity > 0
         Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
         Label {
+            textFormat: Text.PlainText
             width: parent.width
             text: qsTr("Point at the top edge or press Ctrl+Alt+M for %1's controls. Ctrl+Alt+Q closes this window; %1 keeps running.").arg(displayEnvName || qsTr("the Machine"))
             wrapMode: Text.Wrap
@@ -207,6 +268,7 @@ Window {
             RowLayout {
                 spacing: 2
                 Label {
+                    textFormat: Text.PlainText
                     text: displayEnvName
                     font.weight: Font.DemiBold
                     leftPadding: 10
@@ -246,6 +308,7 @@ Window {
                 }
             }
             Label {
+                textFormat: Text.PlainText
                 id: controlsNote
                 objectName: "controlsNote"
                 Layout.fillWidth: true

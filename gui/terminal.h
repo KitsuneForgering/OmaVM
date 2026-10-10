@@ -144,7 +144,14 @@ signals:
   void errorOccurred(const QString &message);
 
 private:
-  enum class ParseState { Ground, Escape, CsiParam, OscString, OscEscape };
+  enum class ParseState {
+    Ground,
+    Escape,
+    EscapeIntermediate,
+    CsiParam,
+    OscString,
+    OscEscape
+  };
 
   void onReadyRead();
   void reap();
@@ -204,6 +211,11 @@ private:
   int m_cursorCol = 0;
   bool m_cursorVisible = true;
   bool m_wrapPending = false;
+  // Character sets (ESC ( X / ESC ) X, switched by SI/SO): 'B' is ASCII,
+  // '0' DEC Special Graphics — the line drawing ncurses uses for borders.
+  char m_charsets[2] = {'B', 'B'};
+  int m_activeCharset = 0;
+  char m_escIntermediate = 0;
   bool m_autoWrap = true;
   // DECCKM (\e[?1h): cursor keys send SS3 (\eOA) instead of CSI (\e[A).
   bool m_applicationCursorKeys = false;

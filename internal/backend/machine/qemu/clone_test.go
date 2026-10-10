@@ -19,6 +19,11 @@ func TestCloneCopiesTheDiskOfAStoppedMachine(t *testing.T) {
 	if err := os.WriteFile(b.diskPath("src"), []byte("qcow2 bytes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for _, path := range []string{b.readySeedPath("src", core.ReadyFedoraImage), b.readyCredentialsPath("src")} {
+		if err := os.WriteFile(path, []byte("first boot"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := b.Clone(context.Background(), source, clone); err != nil {
 		t.Fatal(err)
 	}
@@ -27,6 +32,11 @@ func TestCloneCopiesTheDiskOfAStoppedMachine(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(b.diskPath("src")); string(data) != "qcow2 bytes" {
 		t.Fatal("the source disk changed")
+	}
+	for _, path := range []string{b.readySeedPath("dst", core.ReadyFedoraImage), b.readyCredentialsPath("dst")} {
+		if data, err := os.ReadFile(path); err != nil || string(data) != "first boot" {
+			t.Fatalf("the clone lost its first-boot setup: %s: %v", path, err)
+		}
 	}
 }
 

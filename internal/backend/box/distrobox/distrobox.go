@@ -4,6 +4,7 @@ package distrobox
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -107,7 +108,8 @@ func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 		return err
 	}
 	b.applyTravelMode(ctx, env)
-	return b.runInteractive(ctx, "enter", "--name", boxName(env))
+	// The shell exits with its last command's status: the person's.
+	return sessionEnded(b.runInteractive(ctx, "enter", "--name", boxName(env)))
 }
 
 func (b *Backend) Stop(ctx context.Context, env core.Environment) error {
@@ -441,4 +443,14 @@ func (b *Backend) runReporting(ctx context.Context, args ...string) error {
 		return fmt.Errorf("distrobox %s: %w: %s", strings.Join(args, " "), err, strings.Join(tail, "\n"))
 	}
 	return nil
+}
+
+// sessionEnded reports a shell that exited on its own, with its last
+// command's status, as the person's (core.SessionEnded), not a failure.
+func sessionEnded(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		return &core.SessionEnded{Code: exitErr.ExitCode()}
+	}
+	return err
 }

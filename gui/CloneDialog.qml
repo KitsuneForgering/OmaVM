@@ -7,6 +7,14 @@ import QtQuick.Layouts
 // copied and what it costs before anything happens (UX Principle #10).
 Dialog {
     id: dialog
+    // The title holds the environment's name: shown as typed, never read
+    // as HTML (the header is the style's own Label).
+    Binding {
+        target: dialog.header
+        property: "textFormat"
+        value: Text.PlainText
+        when: dialog.header !== null && dialog.header.textFormat !== undefined
+    }
     objectName: "cloneDialog"
     property var environment: ({})
     readonly property bool machine: environment.kind === "machine"
@@ -43,6 +51,7 @@ Dialog {
         anchors.fill: parent
         spacing: 12
         Label {
+            textFormat: Text.PlainText
             objectName: "cloneCost"
             Layout.fillWidth: true
             wrapMode: Text.Wrap
@@ -52,6 +61,7 @@ Dialog {
                 : qsTr("Copies the system of %1: its installed packages and files outside your home folder. Your home folder is shared with this computer, not copied. The copy is independent: changing one never touches the other.").arg(dialog.environment.name || "")
         }
         Label {
+            textFormat: Text.PlainText
             objectName: "stopFirst"
             Layout.fillWidth: true
             visible: !dialog.stopped
@@ -71,6 +81,7 @@ Dialog {
             onAccepted: cloneButton.clicked()
         }
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: dialog.errorText !== ""
             text: dialog.errorText

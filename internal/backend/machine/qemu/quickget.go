@@ -18,10 +18,8 @@ import (
 	"github.com/KitsuneForgering/OmaVM/internal/core"
 )
 
-// Systems to download come from quickget (Quickemu's downloader), when it
-// is installed: OmaVM keeps no catalog of its own (CLAUDE.md non-goal).
-// quickget only fetches the image (--download); the Machine is created
-// from it like from any other ISO.
+// Guided Ubuntu, Fedora and Windows 11 downloads are native. Other systems
+// come from quickget (Quickemu's downloader) when it is installed.
 
 var quickgetLookPath = func() (string, error) { return exec.LookPath("quickget") }
 
@@ -96,6 +94,15 @@ func imagesDir() (string, error) {
 var curlPercent = regexp.MustCompile(`(\d+(?:\.\d+)?)%`)
 
 func (b *Backend) DownloadImage(ctx context.Context, image core.DownloadableImage) (string, error) {
+	if image.OS == "ubuntu" && image.Release == "24.04" && image.Edition == "" {
+		return downloadOfficialISO(ctx, "Ubuntu 24.04 LTS", ubuntuISOURL, ubuntuISOFile, ubuntuISOSHA)
+	}
+	if image.OS == "fedora" && image.Release == "44" && image.Edition == "Workstation" {
+		return downloadOfficialISO(ctx, "Fedora 44 Workstation", fedoraISOURL, fedoraISOFile, fedoraISOSHA)
+	}
+	if image.OS == "windows" && image.Release == "11" && image.Edition == "" {
+		return downloadWindowsISO(ctx)
+	}
 	path, err := quickgetLookPath()
 	if err != nil {
 		return "", errNoQuickget()

@@ -7,6 +7,13 @@ import OmaVM 1.0
 
 Window {
     id: win
+    // Tooltips show names and CLI hints: plain text, like every Label.
+    Binding {
+        target: ToolTip.toolTip.contentItem
+        property: "textFormat"
+        value: Text.PlainText
+        when: ToolTip.toolTip.contentItem !== null && ToolTip.toolTip.contentItem.textFormat !== undefined
+    }
     width: 1000
     height: 640
     visible: true
@@ -86,6 +93,7 @@ Window {
             id: endedRow
             anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
             Label {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 color: backend.themeForeground
                 wrapMode: Text.Wrap
@@ -118,6 +126,7 @@ Window {
         border.color: backend.themeRed
 
         Text {
+            textFormat: Text.PlainText
             id: errorLabel
             anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 16 }
             color: backend.themeForeground

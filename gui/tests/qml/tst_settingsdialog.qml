@@ -10,7 +10,7 @@ Item {
         name: "SettingsDialog"
         when: windowShown
 
-        function saveUntouched(settings) {
+        function saveUntouched(settings, expandHardware) {
             backend.lastCall = []
             const component = Qt.createComponent("qrc:/SettingsDialog.qml")
             compare(component.status, Component.Ready, component.errorString())
@@ -19,6 +19,8 @@ Item {
             })
             dialog.open()
             tryVerify(() => dialog.opened)
+            if (expandHardware)
+                findChild(dialog.contentItem, "settingsHardwareButton").clicked()
             findChild(dialog, "saveButton").clicked()
             dialog.destroy()
             const call = backend.lastCall
@@ -45,10 +47,54 @@ Item {
             box.destroy()
         }
 
+        function test_sharedFolderIsReachableInANarrowWindow() {
+            const oldWidth = root.width
+            const oldHeight = root.height
+            root.width = 320
+            root.height = 420
+            const dialog = Qt.createComponent("qrc:/SettingsDialog.qml").createObject(root, {
+                environment: { name: "desktop", kind: "machine", settings: {} }
+            })
+            dialog.open()
+            tryVerify(() => dialog.opened)
+            const scroll = dialog.contentItem
+            verify(scroll.contentItem.contentHeight > scroll.height)
+            const path = findChild(scroll, "sharedPathField")
+            const choose = findChild(scroll, "chooseSharedFolderButton")
+            const content = findChild(scroll, "settingsContent")
+            const hardware = findChild(scroll, "settingsHardwareButton")
+            verify(!dialog.hardwareExpanded)
+            hardware.clicked()
+            verify(dialog.hardwareExpanded)
+            for (const name of ["settingsCpuSpinBox", "settingsMemorySpinBox"]) {
+                const control = findChild(scroll, name)
+                verify(control.mapToItem(root, control.width, 0).x <= dialog.x + dialog.width,
+                       name + " must fit: right=" + control.mapToItem(root, control.width, 0).x
+                       + " edge=" + (dialog.x + dialog.width) + " width=" + control.width
+                       + " parent=" + control.parent.width + " content=" + content.width
+                       + " outer=" + content.parent.width)
+            }
+            verify(path.visible && choose.visible)
+            verify(choose.mapToItem(root, 0, 0).y >= path.mapToItem(root, 0, path.height).y,
+                   "the folder action follows the full-width path field")
+            verify(path.mapToItem(root, path.width, 0).x <= dialog.x + dialog.width,
+                   "the shared path must fit: right=" + path.mapToItem(root, path.width, 0).x
+                   + " edge=" + (dialog.x + dialog.width) + " width=" + path.width
+                   + " content=" + content.width + " scroll=" + scroll.width + " dialog=" + dialog.width
+                   + " parent=" + path.parent.width)
+            verify(choose.mapToItem(root, choose.width, 0).x <= dialog.x + dialog.width,
+                   "the folder action must fit")
+            scroll.contentItem.contentY = scroll.contentItem.contentHeight - scroll.height
+            verify(scroll.contentItem.contentY > 0, "the bottom controls must be reachable")
+            dialog.destroy()
+            root.width = oldWidth
+            root.height = oldHeight
+        }
+
         // Saving without touching CPU/memory must not pin them: a pinned
         // CPU count turns Travel Mode's battery reduction off for good.
         function test_saveDoesNotPinHardware() {
-            const saved = saveUntouched({ description: "x" })
+            const saved = saveUntouched({ description: "x" }, true)
             compare(saved.cpusTouched, false)
             compare(saved.memoryTouched, false)
         }

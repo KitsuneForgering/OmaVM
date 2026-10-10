@@ -11,6 +11,9 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 namespace {
 // Placement shared by both viewer modes, done before the window exists so
 // it opens on the workspace switched to. Returns false when a window for
@@ -31,6 +34,31 @@ bool placeViewer(const QString &title, bool emptyWorkspace) {
   return true;
 }
 
+// Tells whoever launched the viewer (qemu.Backend.Open, through
+// --ready-fd) how its start went: "ok" once the guest is on screen, or
+// "error: why". Only the first report counts; the pipe is closed after it.
+class ReadyReport {
+public:
+  explicit ReadyReport(int fd) : m_fd(fd) {
+    // Nothing this viewer launches later may hold the pipe open.
+    if (m_fd >= 0)
+      fcntl(m_fd, F_SETFD, FD_CLOEXEC);
+  }
+  ~ReadyReport() { send("error: the viewer closed before the Machine appeared"); }
+  void send(const QString &line) {
+    if (m_fd < 0)
+      return;
+    const QByteArray data = line.simplified().toUtf8() + '\n';
+    [[maybe_unused]] const ssize_t written =
+        write(m_fd, data.constData(), size_t(data.size()));
+    close(m_fd);
+    m_fd = -1;
+  }
+
+private:
+  int m_fd;
+};
+
 // A Machine's display: a single view of QEMU's D-Bus display, launched by
 // the qemu backend's Open() rather than by the user picking it from the
 // Experience Center. Kept as a mode of this same binary so there's one
@@ -39,9 +67,18 @@ bool placeViewer(const QString &title, bool emptyWorkspace) {
 int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
               const QString &envName, const QString &clipboardMode,
               bool emptyWorkspace, bool fullscreen,
-              const QString &sharedFolder) {
-  if (!placeViewer(title, emptyWorkspace))
+              const QString &sharedFolder, int readyFd,
+              bool revealAfterFirmware) {
+  ReadyReport ready(readyFd);
+  // Stepping aside for a viewer already showing this Machine is success.
+  // A viewer that waits for the guest's system is placed when it appears
+  // instead: switching now would leave an empty workspace on screen while
+  // the firmware runs. It was started with the Machine, so no other viewer
+  // shows it.
+  if (!revealAfterFirmware && !placeViewer(title, emptyWorkspace)) {
+    ready.send(QStringLiteral("ok"));
     return 0;
+  }
   app.setApplicationName(QStringLiteral("dev.omavm.viewer"));
   app.setDesktopFileName(QStringLiteral("dev.omavm.viewer"));
   // Guest frames are imported as dma-bufs through EGL into GL textures.
@@ -80,9 +117,28 @@ int runViewer(QGuiApplication &app, int connectionFd, const QString &title,
   engine.rootContext()->setContextProperty(
       QStringLiteral("displayFullscreen"),
       fullscreen && !hasPersonalViewerRule(hyprConfigDir()));
+  // Hidden while the firmware runs; shown once the guest's system is up,
+  // and only then moved to an empty workspace.
+  engine.rootContext()->setContextProperty(
+      QStringLiteral("displayRevealAfterFirmware"), revealAfterFirmware);
+  engine.rootContext()->setContextProperty(
+      QStringLiteral("displayEmptyWorkspace"), emptyWorkspace);
   engine.load(QUrl(QStringLiteral("qrc:/Viewer.qml")));
   if (engine.rootObjects().isEmpty())
     return -1;
+  QObject *root = engine.rootObjects().first();
+  if (auto *view = root->findChild<DisplayView *>()) {
+    // A hidden window draws nothing: the guest's first frame is what says
+    // the display works.
+    QObject::connect(view,
+                     revealAfterFirmware ? &DisplayView::frameReceived
+                                         : &DisplayView::frameShown,
+                     &app, [&ready] { ready.send(QStringLiteral("ok")); });
+    QObject::connect(view, &DisplayView::connectionFailed, &app,
+                     [&ready](const QString &message) {
+                       ready.send(QStringLiteral("error: ") + message);
+                     });
+  }
   return app.exec();
 }
 
@@ -171,6 +227,17 @@ int main(int argc, char *argv[]) {
                      "on its window are copied there"),
       QStringLiteral("path"));
   parser.addOption(sharedFolderOption);
+  QCommandLineOption readyOption(
+      QStringLiteral("ready-fd"),
+      QStringLiteral("With --display-fd: write \"ok\" (or \"error: why\") to "
+                     "this inherited fd once the Machine is on screen"),
+      QStringLiteral("fd"), QStringLiteral("-1"));
+  parser.addOption(readyOption);
+  QCommandLineOption revealOption(
+      QStringLiteral("reveal-after-firmware"),
+      QStringLiteral("With --display-fd: stay hidden while the firmware runs "
+                     "and appear once the guest's system takes over"));
+  parser.addOption(revealOption);
   QCommandLineOption colorOption(
       QStringLiteral("color"),
       QStringLiteral("The environment's color tag, shown along the "
@@ -190,7 +257,9 @@ int main(int argc, char *argv[]) {
                      parser.value(titleOption),
                      parser.value(environmentOption),
                      parser.value(shareClipboardOption), on(emptyWorkspaceOption),
-                     on(fullscreenOption), parser.value(sharedFolderOption));
+                     on(fullscreenOption), parser.value(sharedFolderOption),
+                     parser.value(readyOption).toInt(),
+                     parser.isSet(revealOption));
   // A Box's terminal only copies to this computer (OSC 52).
   if (parser.isSet(terminalOption))
     return runTerminal(app, parser.value(terminalOption),

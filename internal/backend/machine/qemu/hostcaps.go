@@ -262,8 +262,11 @@ func (b *Backend) InspectHost(ctx context.Context) ([]core.HostCapability, error
 		kvm.Hint = "Enable virtualization in the firmware and add your user to the kvm group"
 	}
 	g := detectGraphics(ctx)
+	cpus, memory := core.DefaultMachineResources()
 	return []core.HostCapability{
 		kvm,
+		{ID: "machine-resources", Label: "Default Desktop resources", Available: true,
+			Detail: fmt.Sprintf("%d CPUs and %d MiB of RAM (half this computer)", cpus, memory), CPUs: cpus, MemoryMiB: memory},
 		{ID: "graphics-opengl", Label: "3D acceleration (OpenGL)", Available: g.openGL, Detail: g.openGLDetail},
 		{ID: "graphics-vulkan", Label: "Vulkan acceleration", Available: g.vulkan, Detail: g.vulkanDetail},
 		firmwareCapability(),

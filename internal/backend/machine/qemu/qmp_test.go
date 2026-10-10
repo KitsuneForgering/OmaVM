@@ -112,7 +112,7 @@ func TestSnapshotWithoutReplyIsReconciled(t *testing.T) {
 			for name := range snapshots {
 				list = append(list, map[string]any{"name": name})
 			}
-			enc.Encode(map[string]any{"return": []any{map[string]any{"device": bootDisk, "inserted": map[string]any{"image": map[string]any{"snapshots": list}}}}})
+			enc.Encode(map[string]any{"return": []any{map[string]any{"device": "virtio0", "inserted": map[string]any{"image": map[string]any{"snapshots": list}}}}})
 		}
 	}
 	b := &Backend{stateDir: t.TempDir()}
@@ -135,7 +135,7 @@ func TestSnapshotWithoutReplyThatDidNotHappenFails(t *testing.T) {
 	startFakeQEMU(t, b, env.Name)
 	scriptedQMPAt(t, b.qmpPath(env.Name), func(command string, enc *json.Encoder, conn net.Conn) {
 		if command == "query-block" {
-			enc.Encode(map[string]any{"return": []any{map[string]any{"device": bootDisk, "inserted": map[string]any{"image": map[string]any{}}}}})
+			enc.Encode(map[string]any{"return": []any{map[string]any{"device": "virtio0", "inserted": map[string]any{"image": map[string]any{}}}}})
 			return
 		}
 		conn.Close()

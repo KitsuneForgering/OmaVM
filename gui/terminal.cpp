@@ -95,6 +95,11 @@ void TerminalSession::startProgram(const QByteArray &program,
   }
   if (pid == 0) {
     setenv("TERM", "xterm-256color", 1);
+    // The emulator draws 24-bit color (SGR 38;2 / 48;2), which no terminfo
+    // entry says: Neovim, bat, delta and helix look for this instead, and
+    // fall back to 256 colors without it. Distrobox carries both into the
+    // Box (checked with a real one, 2026-10-08).
+    setenv("COLORTERM", "truecolor", 1);
     QList<char *> argv;
     argv.append(const_cast<char *>(program.constData()));
     for (const QByteArray &arg : args)
@@ -284,6 +289,10 @@ void TerminalSession::handleByte(unsigned char byte) {
       emit bell();
       return;
     }
+    if (byte == 0x0e || byte == 0x0f) { // SO / SI: G1 / G0
+      m_activeCharset = byte == 0x0e ? 1 : 0;
+      return;
+    }
     if (byte < 0x20)
       return;
     handleUtf8Byte(byte);
@@ -323,7 +332,16 @@ void TerminalSession::handleByte(unsigned char byte) {
       reverseIndex();
       return;
     }
+    if (byte >= 0x20 && byte <= 0x2f) {
+      // An intermediate: the sequence ends with one more (final) byte,
+      // which must not be printed — sgr0 is ESC ( B ESC [ m here.
+      m_escIntermediate = char(byte);
+      m_state = ParseState::EscapeIntermediate;
+      return;
+    }
     if (byte == 'c') {
+      m_charsets[0] = m_charsets[1] = 'B';
+      m_activeCharset = 0;
       clearGrid(m_grid);
       clearGrid(m_altGrid);
       m_cursorRow = m_cursorCol = 0;
@@ -338,6 +356,14 @@ void TerminalSession::handleByte(unsigned char byte) {
       return;
     }
     return; // unknown escape: ignore
+
+  case ParseState::EscapeIntermediate:
+    if (byte >= 0x20 && byte <= 0x2f)
+      return; // more intermediates
+    m_state = ParseState::Ground;
+    if (m_escIntermediate == '(' || m_escIntermediate == ')')
+      m_charsets[m_escIntermediate == '(' ? 0 : 1] = char(byte);
+    return; // other designations (ESC # 8, ESC % G...): nothing to do
 
   case ParseState::CsiParam:
     if (byte == '?' && m_csiParams.isEmpty()) {
@@ -453,10 +479,21 @@ void breakWideCharacterAt(QVector<TerminalCell> &row, int col) {
 }
 } // namespace
 
-void TerminalSession::putChar(const QString &ch) {
+void TerminalSession::putChar(const QString &input) {
   auto &grid = activeGrid();
   if (grid.isEmpty())
     return;
+  QString ch = input;
+  if (m_charsets[m_activeCharset] == '0' && ch.size() == 1 &&
+      ch[0].unicode() >= 0x5f && ch[0].unicode() <= 0x7e) {
+    // DEC Special Graphics, 0x5f-0x7e (VT100 manual, table 3-9).
+    static const char16_t graphics[] = {
+        0x00a0, 0x25c6, 0x2592, 0x2409, 0x240c, 0x240d, 0x240a, 0x00b0,
+        0x00b1, 0x2424, 0x240b, 0x2518, 0x2510, 0x250c, 0x2514, 0x253c,
+        0x23ba, 0x23bb, 0x2500, 0x23bc, 0x23bd, 0x251c, 0x2524, 0x2534,
+        0x252c, 0x2502, 0x2264, 0x2265, 0x03c0, 0x2260, 0x00a3, 0x00b7};
+    ch = QString(QChar(graphics[ch[0].unicode() - 0x5f]));
+  }
   const int width = cellWidth(ch);
   if (width == 0) {
     // Combining mark: part of the character just written.

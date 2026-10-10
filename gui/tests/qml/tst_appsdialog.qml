@@ -47,5 +47,30 @@ Item {
             dialog.destroy()
             backend.apps = []
         }
+
+        function test_exportActionFitsANarrowWindow() {
+            const oldWidth = root.width
+            const oldHeight = root.height
+            root.width = 320
+            root.height = 420
+            backend.appsEnvironment = "dev"
+            backend.appsError = ""
+            backend.apps = [{ id: "one", name: "A long application name", exported: true }]
+            const dialog = Qt.createComponent("qrc:/AppsDialog.qml").createObject(root, {
+                environment: { name: "dev", kind: "box" }
+            })
+            dialog.open()
+            tryVerify(() => dialog.opened)
+            const row = findChild(dialog.contentItem, "appRow-A long application name")
+            verify(row)
+            const action = findChild(row, "appAction")
+            verify(action.visible)
+            verify(action.mapToItem(root, action.width, 0).x <= dialog.x + dialog.width,
+                   "the remove action must fit inside the narrow dialog")
+            dialog.destroy()
+            backend.apps = []
+            root.width = oldWidth
+            root.height = oldHeight
+        }
     }
 }

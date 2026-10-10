@@ -90,6 +90,11 @@ func validateEnvironmentName(name string) error {
 	if strings.HasPrefix(name, "-") {
 		return Invalidf("environment name cannot start with %q", "-")
 	}
+	// The registry is JSON: bytes that aren't UTF-8 would be stored as
+	// U+FFFD, and the name as typed would never find it again.
+	if !utf8.ValidString(name) {
+		return Invalidf("environment name %q is not valid UTF-8 text", name)
+	}
 	for _, r := range name {
 		if r == '/' || r == '\\' || unicode.IsControl(r) {
 			return Invalidf("environment name cannot contain %q", string(r))
@@ -368,14 +373,19 @@ func (s *Service) Create(ctx context.Context, env Environment) (Environment, err
 	if env.Kind == Machine && env.Image == "" {
 		return Environment{}, Invalidf("a Machine needs an installation ISO to boot from (--image path/to/system.iso)")
 	}
-	if env.Kind == Machine {
+	if env.Kind == Machine && !IsReadyImage(env.Image) {
 		info, statErr := os.Stat(env.Image)
 		if statErr != nil {
 			return Environment{}, Invalidf("installation media %q: %v", env.Image, statErr)
 		}
-		if info.IsDir() {
-			return Environment{}, Invalidf("installation media %q is a directory, not an ISO file", env.Image)
+		if !info.Mode().IsRegular() {
+			return Environment{}, Invalidf("installation media %q must be a regular ISO file", env.Image)
 		}
+		media, openErr := os.Open(env.Image)
+		if openErr != nil {
+			return Environment{}, Invalidf("installation media %q cannot be read: %v", env.Image, openErr)
+		}
+		_ = media.Close()
 	}
 	if env.Settings.CPUs != 0 || env.Settings.MemoryMiB != 0 {
 		if env.Kind != Machine {
@@ -619,6 +629,19 @@ func (s *Service) Preview(ctx context.Context, name string) (string, error) {
 		return "", fmt.Errorf("preview %s: %w", name, err)
 	}
 	return path, nil
+}
+
+// Credentials reads a prepared guest's initial login for its owner.
+func (s *Service) Credentials(ctx context.Context, name string) (string, error) {
+	env, backend, err := s.resolve(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	reader, ok := backend.(CredentialReader)
+	if !ok {
+		return "", Unsupportedf("%s has no generated login", name)
+	}
+	return reader.Credentials(ctx, env)
 }
 
 func (s *Service) Stop(ctx context.Context, name string) error {

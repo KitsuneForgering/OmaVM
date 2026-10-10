@@ -99,7 +99,7 @@ func (b *Backend) startTPM(ctx context.Context, name string, ephemeral bool) ([]
 	for {
 		if _, err := os.Stat(b.tpmSocketPath(name)); err == nil {
 			return []string{
-				"-chardev", "socket,id=tpm,path=" + b.tpmSocketPath(name),
+				"-chardev", "socket,id=tpm,path=" + optValue(b.tpmSocketPath(name)),
 				"-tpmdev", "emulator,id=tpm0,chardev=tpm",
 				"-device", "tpm-crb,tpmdev=tpm0",
 			}, nil

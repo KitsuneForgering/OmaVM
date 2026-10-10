@@ -37,6 +37,9 @@ type Status struct {
 	// TravelMode means the session runs with fewer CPUs than its setting
 	// because the host was on battery when it started.
 	TravelMode bool `json:"travel_mode,omitempty"`
+	// EndedUnexpectedly means the last session stopped without shutting
+	// down: killed or crashed, not powered off. Warning says more.
+	EndedUnexpectedly bool `json:"ended_unexpectedly,omitempty"`
 }
 
 // Backend executes the lifecycle of environments of one Kind on top of a
@@ -255,9 +258,8 @@ type Launcher interface {
 	Withdraw(env Environment) error
 }
 
-// DownloadableImage is installation media a tool on the host knows how
-// to fetch (quickget). OmaVM keeps no catalog of its own: no URLs, no
-// checksums, no versions to maintain.
+// DownloadableImage identifies installation media. The guided installer
+// supports three pinned systems; quickget provides the optional broader list.
 type DownloadableImage struct {
 	Name    string `json:"name"`
 	OS      string `json:"os"`
@@ -271,6 +273,12 @@ type DownloadableImage struct {
 type ImageDownloader interface {
 	DownloadableImages(ctx context.Context) ([]DownloadableImage, error)
 	DownloadImage(ctx context.Context, image DownloadableImage) (path string, err error)
+}
+
+// CredentialReader returns the initial login of a prepared Machine. A
+// backend without generated credentials does not implement it.
+type CredentialReader interface {
+	Credentials(ctx context.Context, env Environment) (string, error)
 }
 
 // HostInspector is an optional Backend capability reporting what the host
@@ -288,4 +296,6 @@ type HostCapability struct {
 	Available bool   `json:"available"`
 	Detail    string `json:"detail,omitempty"`
 	Hint      string `json:"hint,omitempty"`
+	CPUs      int    `json:"cpus,omitempty"`
+	MemoryMiB int    `json:"memory_mib,omitempty"`
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -166,7 +167,7 @@ func TestSnapshotOfRunningMachineIsDiskOnly(t *testing.T) {
 		t.Fatalf("expected %v, got %+v", want, got)
 	}
 	for i, call := range got {
-		if call.Execute != want[i] || call.Arguments["device"] != bootDisk || call.Arguments["name"] != "before-upgrade" {
+		if call.Execute != want[i] || call.Arguments["device"] != "virtio0" || call.Arguments["name"] != "before-upgrade" {
 			t.Fatalf("call %d: %+v", i, call)
 		}
 	}
@@ -247,8 +248,13 @@ func TestTravelModeReducesCPUsOnBattery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "-smp\n1\n") {
-		t.Fatalf("expected halved default CPUs (1) on battery, got: %s", data)
+	defaultCPUs, _ := core.DefaultMachineResources()
+	travelCPUs := defaultCPUs / 2
+	if travelCPUs < 1 {
+		travelCPUs = 1
+	}
+	if !strings.Contains(string(data), fmt.Sprintf("-smp\n%d\n", travelCPUs)) {
+		t.Fatalf("expected halved default CPUs (%d) on battery, got: %s", travelCPUs, data)
 	}
 
 	// A user-pinned CPU count must never be overridden by Travel Mode.
@@ -281,8 +287,8 @@ func TestTravelModeReducesCPUsOnBattery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "-smp\n2\n") {
-		t.Fatalf("expected Travel Mode opt-out to keep default CPUs (2), got: %s", data)
+	if !strings.Contains(string(data), fmt.Sprintf("-smp\n%d\n", defaultCPUs)) {
+		t.Fatalf("expected Travel Mode opt-out to keep default CPUs (%d), got: %s", defaultCPUs, data)
 	}
 }
 
@@ -432,6 +438,25 @@ func TestStartWithoutKVMSaysHowToFixIt(t *testing.T) {
 	}
 }
 
+// A QEMU startup can fail before it checks KVM. A missing /dev/kvm must
+// not turn a socket/permission failure into misleading firmware advice.
+func TestStartSocketFailureIsNotBlamedOnKVM(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	script := "#!/bin/sh\necho 'Failed to bind socket to qga.sock: Operation not permitted' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "qemu-system-x86_64"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	saved := devRoot
+	devRoot = t.TempDir() // no kvm node, as in the observed failure
+	t.Cleanup(func() { devRoot = saved })
+	b := &Backend{stateDir: dir}
+	err := b.Start(context.Background(), core.Environment{Name: "guest", Kind: core.Machine})
+	if err == nil || strings.Contains(err.Error(), "kvm group") || !strings.Contains(err.Error(), "Failed to bind socket") {
+		t.Fatalf("expected the socket failure without KVM advice, got %v", err)
+	}
+}
+
 // QEMU deletes its pidfile on any normal exit; one left behind means the
 // process was killed or crashed, and the stopped Machine says so instead
 // of looking like it was shut down.
@@ -439,7 +464,7 @@ func TestSessionThatEndedWithoutShuttingDownIsReported(t *testing.T) {
 	b := &Backend{stateDir: t.TempDir()}
 	env := core.Environment{Name: "guest", Kind: core.Machine}
 	st, err := b.Status(context.Background(), env)
-	if err != nil || strings.Contains(st.Warning, "without shutting down") {
+	if err != nil || strings.Contains(st.Warning, "without shutting down") || st.EndedUnexpectedly {
 		t.Fatalf("a Machine that was never started: %+v, %v", st, err)
 	}
 	if err := os.MkdirAll(b.dir(env.Name), 0o700); err != nil {
@@ -450,7 +475,8 @@ func TestSessionThatEndedWithoutShuttingDownIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, err = b.Status(context.Background(), env)
-	if err != nil || st.State != core.StateStopped || !strings.Contains(st.Warning, "ended without shutting down") || !strings.Contains(st.Warning, "coredumpctl") {
+	// The viewer reads the flag to tell a crash from a power-off.
+	if err != nil || st.State != core.StateStopped || !st.EndedUnexpectedly || !strings.Contains(st.Warning, "ended without shutting down") || !strings.Contains(st.Warning, "coredumpctl") {
 		t.Fatalf("unexpected end not reported: %+v, %v", st, err)
 	}
 }

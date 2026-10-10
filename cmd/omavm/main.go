@@ -38,7 +38,19 @@ func main() {
 
 	args := os.Args[1:]
 	if err := run(args); err != nil {
-		slog.Error("command failed", "error", err)
+		if len(args) > 0 {
+			if code, ok := commandExit(args[0], err); ok {
+				slog.Info("command exited", "cmd", args[0], "code", code)
+				os.Exit(code)
+			}
+		}
+		// A read the state can't answer yet (a Machine that never ran has
+		// no last frame to preview) is expected, and the GUI asks again.
+		level := slog.LevelError
+		if len(args) > 0 && readOnly(args[0], args[1:]) && errors.Is(err, core.ErrUnsupported) {
+			level = slog.LevelDebug
+		}
+		slog.Log(context.Background(), level, "command failed", "error", err)
 		fmt.Fprintln(os.Stderr, "omavm:", err)
 		cmd := ""
 		if len(args) > 0 {
@@ -140,6 +152,8 @@ func run(args []string) error {
 		return cmdSettings(ctx, svc, rest)
 	case "preview":
 		return cmdPreview(ctx, svc, rest)
+	case "credentials":
+		return cmdCredentials(ctx, svc, rest)
 	case "snapshot":
 		return cmdSnapshot(ctx, svc, rest)
 	case "apps":
@@ -176,6 +190,7 @@ func cmdCreate(ctx context.Context, svc *core.Service, args []string) error {
 	cpus := fs.Int("cpus", 0, "virtual CPUs (Machines only, defaults to 2)")
 	memory := fs.Int("memory-mib", 0, "memory in MiB (Machines only, defaults to 2048)")
 	progress := fs.Bool("progress", false, `print each stage of a long creation on stdout as "progress: STAGE"`)
+	jsonOut := fs.Bool("json", false, "print the new environment as JSON, as in omavm list --json (its id included)")
 	if err := fs.Parse(args); err != nil {
 		return usageError{err}
 	}
@@ -200,6 +215,11 @@ func cmdCreate(ctx context.Context, svc *core.Service, args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	// Agents need the id to follow the environment; they shouldn't have
+	// to parse the sentence below.
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(env)
 	}
 	fmt.Printf("created %s (%s, backend=%s)\n", env.Name, env.Kind, env.Backend)
 	return nil
@@ -323,6 +343,18 @@ func cmdPreview(ctx context.Context, svc *core.Service, args []string) error {
 		return err
 	}
 	fmt.Println(path)
+	return nil
+}
+
+func cmdCredentials(ctx context.Context, svc *core.Service, args []string) error {
+	if len(args) != 1 {
+		return usagef("credentials: expected exactly one environment name")
+	}
+	login, err := svc.Credentials(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	fmt.Println(login)
 	return nil
 }
 
@@ -848,7 +880,7 @@ func extractValueFlag(args []string, name string) ([]string, string, error) {
 // readOnly reports whether a command only reads state.
 func readOnly(cmd string, args []string) bool {
 	switch cmd {
-	case "list", "ls", "status", "integration", "preview", "host", "help", "-h", "--help":
+	case "list", "ls", "status", "integration", "preview", "credentials", "host", "help", "-h", "--help":
 		return true
 	case "snapshot":
 		return len(args) > 0 && args[0] == "list"
@@ -898,6 +930,7 @@ commands:
     [--shared-folder=BOOL] [--shared-path DIR]             share ~/OmaVM/Shared, or DIR, with a Machine;
                                                            the guest reads and writes it (on by default)
   preview NAME                                             capture a Machine screenshot
+  credentials NAME                                         show a prepared Ubuntu Desktop's initial login
   snapshot create NAME --label TEXT                        capture the environment's current state
   snapshot list NAME [--json]                              list snapshots
   snapshot go-to NAME ID                                   restore a prior snapshot

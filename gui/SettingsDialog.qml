@@ -6,6 +6,14 @@ import QtQuick.Layouts
 
 Dialog {
     id: dialog
+    // The title holds the environment's name: shown as typed, never read
+    // as HTML (the header is the style's own Label).
+    Binding {
+        target: dialog.header
+        property: "textFormat"
+        value: Text.PlainText
+        when: dialog.header !== null && dialog.header.textFormat !== undefined
+    }
     property var environment: ({})
     readonly property bool machine: environment.kind === "machine"
     // Must match core.EnvironmentColors (internal/core/environment.go) —
@@ -43,6 +51,7 @@ Dialog {
     property bool memoryTouched: false
     property bool cpusPinned: false
     property bool memoryPinned: false
+    property bool hardwareExpanded: false
     title: qsTr("%1 Settings").arg(environment.name || qsTr("Environment"))
     modal: true
     anchors.centerIn: parent
@@ -59,6 +68,7 @@ Dialog {
         memoryTouched = false
         cpusPinned = !!settings.cpus
         memoryPinned = !!settings.memory_mib
+        hardwareExpanded = false
         sharedPath.text = settings.shared_path || ""
         sharedFolder.checked = !settings.shared_folder_disabled
         sharedReadOnly.checked = settings.shared_read_only || false
@@ -114,11 +124,16 @@ Dialog {
         contentWidth: availableWidth
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
+    Item {
+        width: Math.max(0, dialog.width - dialog.leftPadding - dialog.rightPadding)
+        implicitHeight: settingsContent.implicitHeight
     ColumnLayout {
+        id: settingsContent
+        objectName: "settingsContent"
         width: parent.width
         spacing: 16
 
-        Label { text: qsTr("General"); font.pixelSize: 18; font.weight: Font.DemiBold }
+        Label { textFormat: Text.PlainText; text: qsTr("General"); font.pixelSize: 18; font.weight: Font.DemiBold }
         TextArea {
             id: description
             Layout.fillWidth: true
@@ -128,7 +143,7 @@ Dialog {
             wrapMode: TextEdit.Wrap
             onTextChanged: if (text.length > 500) text = text.slice(0, 500)
         }
-        Label { text: qsTr("Color tag"); color: backend.themeMuted }
+        Label { textFormat: Text.PlainText; text: qsTr("Color tag"); color: backend.themeMuted }
         // A Flow, not a row: eight 44 px targets are wider than a narrow
         // dialog, and a row would push every field past its right edge.
         Flow {
@@ -197,68 +212,87 @@ Dialog {
             }
         }
 
-        Label {
+        Button {
+            objectName: "settingsHardwareButton"
             visible: dialog.machine
-            text: qsTr("Hardware")
-            font.pixelSize: 18
-            font.weight: Font.DemiBold
+            text: dialog.hardwareExpanded ? qsTr("Hide hardware controls") : qsTr("Adjust hardware")
+            onClicked: dialog.hardwareExpanded = !dialog.hardwareExpanded
         }
-        GridLayout {
+        Label {
+            textFormat: Text.PlainText
             visible: dialog.machine
             Layout.fillWidth: true
-            columns: 2
-            columnSpacing: 16
-            rowSpacing: 12
-            Label { text: qsTr("Processors") }
-            SpinBox {
-                id: cpus
-                Layout.fillWidth: true
-                Accessible.name: qsTr("CPUs")
-                Component.onCompleted: contentItem.Accessible.name = Accessible.name
-                from: 1
-                to: 64
-                onValueModified: dialog.cpusTouched = true
-            }
-            // Distinguishes "this is an explicit pin" from "this is just
-            // today's default preview" (docs/TODO.md P2 "diferenciar
-            // preferência configurada de valor efetivo") — otherwise a
-            // Machine that has never had its CPUs pinned looks identical
-            // to one deliberately pinned at the same number.
-            Label {
-                Layout.columnSpan: 2
-                Layout.fillWidth: true
-                visible: dialog.machine
-                text: dialog.cpusTouched
-                    ? qsTr("Will be pinned to this value on save.")
-                    : (dialog.cpusPinned
-                        ? qsTr("Pinned — won't change on its own.")
-                        : qsTr("Not pinned yet: adapts automatically, and Travel Mode may reduce it while on battery."))
-                color: backend.themeMuted
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
-            }
-            Label { text: qsTr("Memory") }
-            MemorySpinBox {
-                id: memory
-                Layout.fillWidth: true
-                onValueModified: dialog.memoryTouched = true
-            }
-            Label {
-                Layout.columnSpan: 2
-                Layout.fillWidth: true
-                visible: dialog.machine
-                text: dialog.memoryTouched
-                    ? qsTr("Will be pinned to this value on save.")
-                    : (dialog.memoryPinned
-                        ? qsTr("Pinned — won't change on its own.")
-                        : qsTr("Not pinned yet: this is just today's default."))
-                color: backend.themeMuted
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
+            text: qsTr("%1 CPUs · %2 memory").arg(cpus.value).arg(memory.displayText)
+            color: backend.themeMuted
+            wrapMode: Text.Wrap
+        }
+        Item {
+            visible: dialog.machine && dialog.hardwareExpanded
+            Layout.fillWidth: true
+            Layout.maximumWidth: parent.width
+            implicitHeight: hardwareGrid.implicitHeight
+            GridLayout {
+                id: hardwareGrid
+                width: parent.width
+                columns: width < 360 ? 1 : 2
+                columnSpacing: 16
+                rowSpacing: 12
+                Label { textFormat: Text.PlainText; text: qsTr("Processors") }
+                SpinBox {
+                    id: cpus
+                    objectName: "settingsCpuSpinBox"
+                    Layout.fillWidth: true
+                    Accessible.name: qsTr("CPUs")
+                    Component.onCompleted: contentItem.Accessible.name = Accessible.name
+                    from: 1
+                    to: 64
+                    onValueModified: dialog.cpusTouched = true
+                }
+                // Distinguishes "this is an explicit pin" from "this is just
+                // today's default preview" (docs/TODO.md P2 "diferenciar
+                // preferência configurada de valor efetivo") — otherwise a
+                // Machine that has never had its CPUs pinned looks identical
+                // to one deliberately pinned at the same number.
+                Label {
+                    textFormat: Text.PlainText
+                    Layout.columnSpan: hardwareGrid.columns
+                    Layout.fillWidth: true
+                    visible: dialog.machine
+                    text: dialog.cpusTouched
+                        ? qsTr("Will use this fixed CPU count on save.")
+                        : (dialog.cpusPinned
+                            ? qsTr("Fixed CPU count — won't change on its own.")
+                            : qsTr("Automatic CPU count: Travel Mode may reduce it while on battery."))
+                    color: backend.themeMuted
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
+                Label { textFormat: Text.PlainText; text: qsTr("Memory") }
+                MemorySpinBox {
+                    id: memory
+                    objectName: "settingsMemorySpinBox"
+                    Layout.fillWidth: true
+                    onValueModified: dialog.memoryTouched = true
+                }
+                Label {
+                    textFormat: Text.PlainText
+                    Layout.columnSpan: hardwareGrid.columns
+                    Layout.fillWidth: true
+                    visible: dialog.machine
+                    text: dialog.memoryTouched
+                        ? qsTr("Will use this fixed memory amount on save.")
+                        : (dialog.memoryPinned
+                            ? qsTr("Fixed memory amount — won't change on its own.")
+                            : qsTr("Automatic memory amount: this is today's default."))
+                    color: backend.themeMuted
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
             }
         }
         Label {
-            visible: dialog.machine
+            textFormat: Text.PlainText
+            visible: dialog.machine && dialog.hardwareExpanded
             Layout.fillWidth: true
             text: qsTr("Hardware changes take effect the next time the Machine starts.")
             color: backend.themeMuted
@@ -266,6 +300,7 @@ Dialog {
         }
 
         Label {
+            textFormat: Text.PlainText
             visible: dialog.machine
             text: qsTr("Graphics")
             font.pixelSize: 18
@@ -280,6 +315,7 @@ Dialog {
         }
 
         Label {
+            textFormat: Text.PlainText
             text: qsTr("Automation")
             font.pixelSize: 18
             font.weight: Font.DemiBold
@@ -316,7 +352,7 @@ Dialog {
             text: qsTr("Travel Mode: reduce CPUs automatically on battery")
             ToolTip.visible: hovered
             ToolTip.text: dialog.machine
-                ? qsTr("Only applies when you haven't pinned a custom CPU count.")
+                ? qsTr("Only applies when you haven't set a custom CPU count.")
                 : qsTr("Uses half of this computer's CPUs while on battery, and all of them again once plugged in. Checked each time the Box starts or opens.")
         }
         CheckBox {
@@ -329,6 +365,7 @@ Dialog {
         // Security Model: the reach of this channel is stated, not hidden
         // in a tooltip.
         Label {
+            textFormat: Text.PlainText
             visible: dialog.machine && ssh.checked
             Layout.fillWidth: true
             Layout.leftMargin: 32
@@ -362,6 +399,7 @@ Dialog {
         // where OmaVM can (internal/backend/machine/qemu/guestcaps.go), and the
         // next step for the rest — in text, not only in a tooltip.
         Label {
+            textFormat: Text.PlainText
             visible: dialog.machine && guestRepeater.count > 0
             text: qsTr("Working with the guest")
             font.pixelSize: 18
@@ -377,9 +415,10 @@ Dialog {
                 Layout.fillWidth: true
                 spacing: 2
                 Label {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: capabilityRow.modelData.label + ": " + (
-                        capabilityRow.modelData.state === "ready" ? qsTr("working")
+                        capabilityRow.modelData.state === "ready" ? qsTr("connected")
                         : capabilityRow.modelData.state === "needs_guest_component" ? qsTr("needs a step in the guest")
                         : capabilityRow.modelData.state === "needs_restart" ? qsTr("applies after a restart")
                         : capabilityRow.modelData.state === "off" ? qsTr("off")
@@ -407,6 +446,7 @@ Dialog {
         // agent: it changes the guest system, so only when asked, and it
         // says so before.
         Label {
+            textFormat: Text.PlainText
             visible: prepareButton.visible
             Layout.fillWidth: true
             text: qsTr("Installs the clipboard agent and mounts the shared folder inside the guest, through its guest agent, and checks sound and resolution.")
@@ -431,6 +471,7 @@ Dialog {
             }
         }
         Label {
+            textFormat: Text.PlainText
             objectName: "prepareError"
             visible: text !== ""
             Layout.fillWidth: true
@@ -447,6 +488,7 @@ Dialog {
                 Layout.fillWidth: true
                 spacing: 2
                 Label {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: stepRow.modelData.label + ": " + (
                         stepRow.modelData.result === "done" ? qsTr("set up")
@@ -476,18 +518,20 @@ Dialog {
         }
 
         Label {
-            visible: dialog.machine
+            textFormat: Text.PlainText
+            visible: dialog.machine && environment.image !== "ready:ubuntu-24.04" && environment.image !== "ready:fedora-44"
             text: qsTr("Installation media")
             font.pixelSize: 18
             font.weight: Font.DemiBold
         }
         CheckBox {
             id: disconnectISO
-            visible: dialog.machine
-            text: qsTr("Installation finished — disconnect ISO on next start")
+            visible: dialog.machine && environment.image !== "ready:ubuntu-24.04" && environment.image !== "ready:fedora-44"
+            text: qsTr("Boot from disk on next start (disconnect ISO)")
         }
 
         Label {
+            textFormat: Text.PlainText
             visible: dialog.machine
             text: qsTr("Shared folder")
             font.pixelSize: 18
@@ -503,6 +547,7 @@ Dialog {
             text: qsTr("Share a folder with the guest")
         }
         Label {
+            textFormat: Text.PlainText
             visible: dialog.machine && sharedFolder.checked
             Layout.fillWidth: true
             text: qsTr("Programs in the guest can read and write everything in it. Files dropped on the Machine's window are copied there.")
@@ -510,20 +555,21 @@ Dialog {
             font.pixelSize: 12
             wrapMode: Text.Wrap
         }
-        RowLayout {
+        TextField {
+            id: sharedPath
+            objectName: "sharedPathField"
             visible: dialog.machine && sharedFolder.checked
             Layout.fillWidth: true
-            TextField {
-                id: sharedPath
-                Layout.fillWidth: true
-                Accessible.name: qsTr("Shared folder")
-                placeholderText: qsTr("~/OmaVM/Shared (default)")
-                selectByMouse: true
-            }
-            Button {
-                text: qsTr("Choose…")
-                onClicked: folderPicker.open()
-            }
+            Layout.maximumWidth: parent.width
+            Accessible.name: qsTr("Shared folder")
+            placeholderText: qsTr("~/OmaVM/Shared (default)")
+            selectByMouse: true
+        }
+        Button {
+            objectName: "chooseSharedFolderButton"
+            visible: dialog.machine && sharedFolder.checked
+            text: qsTr("Choose…")
+            onClicked: folderPicker.open()
         }
         CheckBox {
             id: sharedReadOnly
@@ -531,12 +577,14 @@ Dialog {
             text: qsTr("Read-only in the guest")
         }
         Label {
+            textFormat: Text.PlainText
             visible: dialog.machine && sharedFolder.checked
             Layout.fillWidth: true
             text: qsTr("Mount the tag omavm-share in the guest (Prepare the Guest does it). Changes apply on the next start.")
             color: backend.themeMuted
             wrapMode: Text.Wrap
         }
+    }
     }
     }
 
@@ -549,6 +597,7 @@ Dialog {
     footer: ColumnLayout {
         spacing: 0
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.leftMargin: 24
             Layout.rightMargin: 24

@@ -45,9 +45,10 @@ for scripts and automation.
 - **Develop with another Linux distribution.** Keep a project's tools and
   packages in a Fedora, Ubuntu, Debian, Arch, or Alpine Box while working
   with files in your Omarchy home directory.
-- **Try a complete operating system.** Boot an installation ISO in a Machine
-  and use its desktop in an OmaVM window. With [quickget](https://github.com/quickemu-project/quickemu)
-  installed, OmaVM can download the ISO for you while you create it.
+- **Try a complete operating system.** Choose Ubuntu 24.04 LTS, Fedora 44 or
+  Windows 11 and OmaVM downloads the installation ISO while you create a
+  Machine. Boot it and use the graphical installer in an OmaVM window.
+  Other systems can be downloaded with [quickget](https://github.com/quickemu-project/quickemu).
 - **Test boot and kernel changes.** Give Linux its own kernel and virtual disk
   in a Machine, with snapshots to return to an earlier disk state.
 - **Bring Box applications into your desktop.** Export graphical applications
@@ -157,7 +158,12 @@ scope.
 | Machines | `qemu-img`/`qemu-system-x86_64` with `/dev/kvm` access |
 | Shared folders (Machines) | `virtiofsd` (comes with Arch's `qemu-desktop`) |
 | UEFI with Secure Boot and a TPM (Machines; Windows 11 needs both) | `edk2-ovmf`, `swtpm` |
-| Downloading a system while creating a Desktop (optional) | `quickget`, from the `quickemu` AUR package |
+| Assisted Ubuntu or Fedora Desktop | `openssl`, `dosfstools` (`mkfs.fat`), `mtools` (`mcopy`); Ubuntu also needs `gnupg` (`gpg`, `gpgv`) |
+| Downloading other systems while creating a Desktop (optional) | `quickget`, from the `quickemu` AUR package |
+
+The Arch package in `packaging/omavm` installs the Machine dependencies
+(`qemu-desktop`, `edk2-ovmf`, `swtpm`). A source install with `make install`
+does not install system packages; check the requirements above first.
 
 Opening a Machine's display needs nothing extra — the viewer is built
 into `omavm-gui`. See [Machines](#machines) below for what that gets you.
@@ -174,18 +180,24 @@ make install    # omavm + omavm-gui on PATH, .desktop entry, no root needed
 Launch **OmaVM** from your app launcher or run `omavm-gui`:
 
 1. Choose **Development Box** for Linux tools, or **Desktop** for a complete OS.
-2. Select a distribution for a Box. For a Desktop, choose a local x86_64
-   installation ISO, or **Download…** one when quickget is installed.
+2. Select a distribution for a Box. For a Desktop, choose Ubuntu 24.04,
+   Fedora 44 or Windows 11 to download its ISO automatically, or choose a local
+   x86_64 ISO. **Download…** offers other systems when quickget is installed.
 3. Keep the suggested name or type your own, review the summary, and create
-   it. A Windows 11 ISO starts with the 4 GB of memory its installer needs.
+   it. Desktops default to half the host CPU cores and RAM. Windows 11 uses at
+   least 4 GB of RAM for its installer.
 4. Select **Start** (Desktop) or **Open** (Box) on its card.
+
+Microsoft may reject an automated Windows 11 ISO request. If it does, download
+the ISO from [Microsoft's Windows 11 page](https://www.microsoft.com/en-us/software-download/windows11)
+in a browser and use **Choose ISO…** in the guided flow.
 
 <p align="center">
   <a href="docs/media/create-desktop.png">
-    <img src="docs/media/create-desktop.png" alt="Desktop creation dialog asking for an x86_64 installation ISO, with Continue disabled until one is chosen" width="680">
+    <img src="docs/media/create-desktop.png" alt="Desktop creation dialog with installation system choices" width="680">
   </a>
   <br>
-  <em>Creating a Desktop: choose an installation ISO to continue.</em>
+  <em>Creating a Desktop: choose a system or your own installation ISO.</em>
 </p>
 
 You can also run the GUI from the source tree with `make run-gui`.
@@ -201,7 +213,10 @@ omavm open radic
 
 # A Machine: install an OS from a local ISO...
 omavm create --name kernels --kind machine --image /path/to/install.iso
-# ...or download one first (needs quickget); it prints the ISO's path.
+# ...or create an assisted Linux desktop (first boot needs internet).
+omavm create --name fedora --kind machine --image ready:fedora-44 --progress
+omavm credentials fedora
+# ...or download an official ISO first; it prints the ISO's path.
 omavm images --download ubuntu 24.04
 omavm start kernels
 omavm open kernels
@@ -264,11 +279,10 @@ example, a guest that may hand text to you but must never see what you
 copy. It applies the next time the Machine's window opens.
 
 A Machine's Settings ("Working with the guest") and `omavm integration NAME`
-say, for the clipboard and the shared folder, whether each one works, as
-checked on the guest side, or what is missing: `spice-vdagent` for the
-clipboard, the mount above for the folder (checked through
-`qemu-guest-agent`), or a restart. A setting being on is never reported as
-working by itself.
+say whether the guest clipboard agent is connected and whether the shared
+folder is mounted (checked through `qemu-guest-agent`), or what is missing:
+`spice-vdagent`, the mount above, or a restart. These checks do not prove
+copy/paste or file read/write; test those actions in the guest you use.
 
 `list` and `status` accept `--json` (in any position, e.g. both
 `omavm list --json` and `omavm status radic --json` work) for
@@ -276,7 +290,10 @@ structured output aimed at agents, scripts, and the Quickshell bar
 widget below. `omavm list --status --json` adds every environment's
 current state (and, for Machines, whether guest tools answer) in one
 call, asking the container engine once for all Boxes; the GUI refreshes
-with it. The JSON shapes are covered by golden files in
+with it. `omavm create ... --json` prints the new environment in the
+same shape as a `list --json` entry, its `id` included, so a script can
+follow it without parsing the sentence `create` prints otherwise.
+The JSON shapes are covered by golden files in
 `cmd/omavm/testdata`: changing them is a deliberate, visible diff.
 
 ### Exit codes
@@ -386,7 +403,7 @@ must have a running `spice-vdagent` compatible with its graphical session. The
 QEMU guest agent shown in the environment card is a different component and
 does not prove clipboard readiness. Travel Mode (also in Settings →
 Automation, on by default) halves the Machine's default CPU allocation for
-that session while the host is running on battery, unless you've pinned a
+that session while the host is running on battery, unless you've set a
 custom CPU count. Boxes get it too: each time a Box starts or opens on
 battery, its container is limited to half of this computer's CPUs, and gets
 all of them back once you're plugged in.
@@ -472,6 +489,8 @@ Open, Stop and Delete actions — no backend/infrastructure detail is
 exposed. Creating one starts with a choice between **Desktop** (Machine) and
 **Development Box** (Box). Then select a local x86_64 installation ISO for a
 Machine, or a Linux distribution or custom container image for a Box.
+The creation review shows CPU and memory defaults; use **Adjust hardware**
+there or in Settings when you want to choose them manually.
 While a Box's image downloads, its card shows which layer it is on (the
 container engine reports layers, not bytes, so there is no percentage);
 `omavm create` shows the same stages in a terminal, and `--progress`

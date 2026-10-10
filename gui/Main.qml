@@ -6,6 +6,13 @@ import QtQuick.Window
 
 ApplicationWindow {
     id: win
+    // Tooltips show names and CLI hints: plain text, like every Label.
+    Binding {
+        target: ToolTip.toolTip.contentItem
+        property: "textFormat"
+        value: Text.PlainText
+        when: ToolTip.toolTip.contentItem !== null && ToolTip.toolTip.contentItem.textFormat !== undefined
+    }
     width: 960
     height: 640
     minimumWidth: 320
@@ -25,9 +32,10 @@ ApplicationWindow {
             anchors.fill: parent
             anchors.leftMargin: 14
             anchors.rightMargin: 8
-            Label { text: qsTr("OmaVM"); font.pixelSize: 20; font.weight: Font.DemiBold }
-            Label { text: qsTr("Experience Center"); color: backend.themeMuted; visible: win.width >= 520 }
+            Label { textFormat: Text.PlainText; text: qsTr("OmaVM"); font.pixelSize: 20; font.weight: Font.DemiBold }
+            Label { textFormat: Text.PlainText; text: qsTr("Experience Center"); color: backend.themeMuted; visible: win.width >= 520 }
             Label {
+                textFormat: Text.PlainText
                 visible: backend.busy && win.width >= 420
                 text: backend.busyAction !== "" ? qsTr("Working: %1…").arg(backend.busyAction) : qsTr("Working…")
                 color: backend.themeMuted
@@ -143,8 +151,9 @@ ApplicationWindow {
         visible: backend.environments.length === 0 && backend.listError === ""
         spacing: 14
         Icon { Layout.alignment: Qt.AlignHCenter; source: "qrc:/icons/app-mono.svg"; color: backend.themeMuted; iconSize: 58; opacity: 0.5 }
-        Label { Layout.alignment: Qt.AlignHCenter; text: qsTr("No environments yet"); font.pixelSize: 22; font.weight: Font.DemiBold }
+        Label { textFormat: Text.PlainText; Layout.alignment: Qt.AlignHCenter; text: qsTr("No environments yet"); font.pixelSize: 22; font.weight: Font.DemiBold }
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.alignment: Qt.AlignHCenter
             horizontalAlignment: Text.AlignHCenter
@@ -162,8 +171,9 @@ ApplicationWindow {
         visible: backend.environments.length === 0 && backend.listError !== ""
         spacing: 14
         Icon { Layout.alignment: Qt.AlignHCenter; source: "qrc:/icons/warning.svg"; color: backend.themeRed; iconSize: 48 }
-        Label { Layout.alignment: Qt.AlignHCenter; text: qsTr("Could not load environments"); font.pixelSize: 20; font.weight: Font.DemiBold }
+        Label { textFormat: Text.PlainText; Layout.alignment: Qt.AlignHCenter; text: qsTr("Could not load environments"); font.pixelSize: 20; font.weight: Font.DemiBold }
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.alignment: Qt.AlignHCenter
             horizontalAlignment: Text.AlignHCenter
@@ -184,10 +194,14 @@ ApplicationWindow {
     }
     CreateDialog {
         id: createDialog
-        onCreated: (name, kind) => {
+        onCreated: (name, kind, prepared) => {
             firstUse.environmentName = name
             firstUse.environmentKind = kind
+            firstUse.prepared = prepared
+            firstUse.login = ""
             firstUse.open()
+            if (prepared)
+                backend.readCredentials(name)
         }
     }
     // Creation leads to first use (docs/TODO.md P1): the terminal or the
@@ -197,8 +211,18 @@ ApplicationWindow {
     Dialog {
         id: firstUse
         objectName: "firstUseDialog"
+        // The title holds the environment's name: shown as typed, never read
+        // as HTML (the header is the style's own Label).
+        Binding {
+            target: firstUse.header
+            property: "textFormat"
+            value: Text.PlainText
+            when: firstUse.header !== null && firstUse.header.textFormat !== undefined
+        }
         property string environmentName
         property string environmentKind
+        property bool prepared: false
+        property string login: ""
         readonly property bool machine: environmentKind === "machine"
         title: qsTr("“%1” is ready").arg(environmentName)
         modal: true
@@ -208,13 +232,38 @@ ApplicationWindow {
         Component.onCompleted: {
             standardButton(Dialog.Cancel).text = qsTr("Later")
         }
-        onAboutToShow: standardButton(Dialog.Ok).text = machine ? qsTr("Start Installer") : qsTr("Open Terminal")
+        onAboutToShow: standardButton(Dialog.Ok).text = prepared ? qsTr("Start Setup")
+            : machine ? qsTr("Start Installer") : qsTr("Open Terminal")
+        Connections {
+            target: backend
+            function onActionFinished(tag, ok, text) {
+                if (tag === "credentials:" + firstUse.environmentName && ok)
+                    firstUse.login = text.trim()
+            }
+        }
         Overlay.modal: ThemeScrim {}
-        contentItem: Label {
-            text: firstUse.machine
-                ? qsTr("Start it now to boot the installation media. When the installation is done, shut it down and disconnect the media in Settings.")
-                : qsTr("Open its terminal now, or later from its card or the app launcher.")
-            wrapMode: Text.Wrap
+        // In a layout: as the contentItem itself, the label's unwrapped
+        // width fed back into the dialog's size (binding loop).
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: firstUse.prepared
+                    ? qsTr("Start the first setup. It downloads the graphical desktop and restarts automatically. Keep the Machine running and connected to the internet.")
+                    : firstUse.machine
+                    ? qsTr("Start it now to boot the installation media. When the installation is done, shut it down and disconnect the media in Settings.")
+                    : qsTr("Open its terminal now, or later from its card or the app launcher.")
+                wrapMode: Text.Wrap
+            }
+            TextArea {
+                Layout.fillWidth: true
+                visible: firstUse.prepared
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                text: firstUse.login || qsTr("Reading the initial login…")
+                Accessible.name: qsTr("Initial Ubuntu login")
+            }
         }
         onAccepted: backend.open(environmentName, environmentKind)
     }
@@ -239,10 +288,16 @@ ApplicationWindow {
             if (yesButton) yesButton.text = qsTr("Force Stop")
         }
         Overlay.modal: ThemeScrim {}
-        contentItem: Label {
-            text: qsTr("Force stop “%1”? Unsaved data in the guest may be lost.").arg(confirmForceStop.environmentName)
-            wrapMode: Text.Wrap
-            color: backend.themeRed
+        // In a layout: as the contentItem itself, the label's unwrapped
+        // width fed back into the dialog's size (binding loop).
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: qsTr("Force stop “%1”? Unsaved data in the guest may be lost.").arg(confirmForceStop.environmentName)
+                wrapMode: Text.Wrap
+                color: backend.themeRed
+            }
         }
         onAccepted: backend.forceStop(environmentName)
     }
@@ -260,12 +315,18 @@ ApplicationWindow {
             if (yesButton) yesButton.text = qsTr("Delete")
         }
         Overlay.modal: ThemeScrim {}
-        contentItem: Label {
-            text: confirmDelete.environmentKind === "machine"
-                ? qsTr("Delete “%1”? Its virtual disk and every snapshot are removed. This cannot be undone.").arg(confirmDelete.environmentName)
-                : qsTr("Delete “%1”? Its container is removed; files under your Omarchy home are not touched. This cannot be undone.").arg(confirmDelete.environmentName)
-            wrapMode: Text.Wrap
-            color: backend.themeRed
+        // In a layout: as the contentItem itself, the label's unwrapped
+        // width fed back into the dialog's size (binding loop).
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: confirmDelete.environmentKind === "machine"
+                    ? qsTr("Delete “%1”? Its virtual disk and every snapshot are removed. This cannot be undone.").arg(confirmDelete.environmentName)
+                    : qsTr("Delete “%1”? Its container is removed; files under your Omarchy home are not touched. This cannot be undone.").arg(confirmDelete.environmentName)
+                wrapMode: Text.Wrap
+                color: backend.themeRed
+            }
         }
         onAccepted: backend.remove(environmentName)
     }
@@ -277,7 +338,7 @@ ApplicationWindow {
         Material.background: backend.themeSurface
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         property alias text: toastLabel.text
-        Label { id: toastLabel; wrapMode: Text.Wrap; width: Math.min(420, implicitWidth) }
+        Label { textFormat: Text.PlainText; id: toastLabel; wrapMode: Text.Wrap; width: Math.min(420, implicitWidth) }
         Timer { id: toastTimer; interval: 4500; onTriggered: toast.close() }
     }
 
@@ -287,6 +348,9 @@ ApplicationWindow {
     Pane {
         id: errorBanner
         property string text: ""
+        // The action the error came from: only its own later success
+        // clears it, never another environment's.
+        property string source: ""
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -305,6 +369,7 @@ ApplicationWindow {
             spacing: 10
             Icon { source: "qrc:/icons/warning.svg"; color: backend.themeRed; iconSize: 18 }
             Label {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: errorBanner.text
                 color: backend.themeRed
@@ -326,15 +391,16 @@ ApplicationWindow {
 
     Connections {
         target: backend
-        function onMessage(text, error) {
+        function onMessage(text, error, source) {
             if (error) {
                 errorBanner.text = text
+                errorBanner.source = source
             } else {
                 toast.text = text; toast.open(); toastTimer.restart()
             }
         }
-        function onActionFinished(tag, ok, text) {
-            if (ok) errorBanner.text = ""
+        function onSucceeded(source) {
+            if (source === errorBanner.source) errorBanner.text = ""
         }
     }
     // Converges on the real state without the user pressing Refresh

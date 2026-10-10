@@ -7,6 +7,8 @@ Item {
     height: 200
 
     Loader { id: loader }
+    // How a label shows text when nothing in it is read as markup.
+    Text { id: plainReference; textFormat: Text.PlainText; visible: false }
 
     TestCase {
         name: "EnvironmentCard"
@@ -23,6 +25,28 @@ Item {
             menu.open()
             tryVerify(() => menu.opened)
             return menu
+        }
+
+        // Names, details and warnings are the user's or the CLI's text:
+        // shown as typed, never read as HTML ("<b>dev</b>" in bold, or an
+        // <img> loading a file).
+        function test_userTextIsNeverRichText() {
+            const html = "<b>dev</b> <i>web</i>"
+            loader.setSource("qrc:/EnvironmentCard.qml", {
+                width: 680,
+                environment: { name: html, kind: "machine", status: "paused",
+                               statusDetail: html, statusWarning: html, settings: {} }
+            })
+            tryVerify(() => loader.status === Loader.Ready)
+            for (const id of ["nameLabel", "statusDetailLabel", "statusWarningLabel"]) {
+                const label = findChild(loader.item, id)
+                verify(label, id)
+                plainReference.font = label.font
+                plainReference.text = label.text
+                compare(label.text, html)
+                fuzzyCompare(label.contentWidth, Math.min(plainReference.contentWidth, label.width), 1,
+                             id + " was rendered as rich text")
+            }
         }
 
         // A Machine paused because the host's disk filled up says so, and
@@ -74,6 +98,32 @@ Item {
             })
             tryVerify(() => loader.status === Loader.Ready)
             verify(!findChild(loader.item, "restartNeededLabel").visible, "a stopped Machine has nothing to restart")
+        }
+
+        function test_installationMediaNextStep() {
+            loader.setSource("qrc:/EnvironmentCard.qml", {
+                width: 320,
+                environment: { name: "vm", kind: "machine", image: "/tmp/linux.iso", status: "stopped", settings: {} }
+            })
+            tryVerify(() => loader.status === Loader.Ready)
+            const hint = findChild(loader.item, "installationMediaHint")
+            const action = findChild(loader.item, "installationMediaSettings")
+            verify(hint.visible && action.visible)
+            verify(hint.text.includes("If installation is complete"))
+            const edge = action.mapToItem(loader.item, action.width, 0).x
+            verify(edge <= loader.item.width + 0.5, "the media action must fit a 320px card")
+            action.clicked()
+            compare(backend.lastCall[0], "disconnectInstallationMedia")
+            compare(backend.lastCall[1], "vm")
+
+            loader.setSource("qrc:/EnvironmentCard.qml", {
+                width: 320,
+                environment: { name: "vm", kind: "machine", image: "/tmp/linux.iso", status: "stopped",
+                               settings: { disconnect_iso: true } }
+            })
+            tryVerify(() => loader.status === Loader.Ready)
+            verify(!findChild(loader.item, "installationMediaHint").visible)
+            verify(!findChild(loader.item, "installationMediaSettings").visible)
         }
 
         // The card says which system runs inside, in plain words.

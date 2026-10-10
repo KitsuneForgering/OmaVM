@@ -11,6 +11,7 @@ Dialog {
     signal downloaded(string path)
     readonly property bool busy: !!(backend.busyEnvironments && backend.busyEnvironments["download"])
     property string query: ""
+    property string initialQuery: ""
     property var chosen: null
     property string errorText: ""
     // Compared by key: each read of the list hands out new objects.
@@ -27,7 +28,8 @@ Dialog {
     Overlay.modal: ThemeScrim {}
 
     onOpened: {
-        query = ""
+        search.text = initialQuery
+        query = initialQuery
         chosen = null
         errorText = ""
         if ((backend.downloadableImages || []).length === 0)
@@ -38,7 +40,7 @@ Dialog {
     Connections {
         target: backend
         function onActionFinished(tag, ok, text) {
-            if (tag !== "download")
+            if (tag !== "download" || !dialog.opened)
                 return
             if (ok) {
                 dialog.downloaded(text.split("\n").pop())
@@ -53,6 +55,7 @@ Dialog {
         anchors.fill: parent
         spacing: 12
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: qsTr("Downloaded by quickget from each system's own site, into ~/OmaVM/Images.")
             color: backend.themeMuted
@@ -73,6 +76,7 @@ Dialog {
             running: visible
         }
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: backend.imagesLoading
             text: qsTr("Asking quickget what it can download… the first time takes a while.")
@@ -81,6 +85,7 @@ Dialog {
             wrapMode: Text.Wrap
         }
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: backend.imagesError !== "" || dialog.errorText !== ""
             text: dialog.errorText || backend.imagesError
@@ -108,6 +113,7 @@ Dialog {
             }
         }
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: dialog.busy
             text: (backend.progress && backend.progress["download"]) || qsTr("Starting the download…")

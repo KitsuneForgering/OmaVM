@@ -60,12 +60,28 @@ func errorClass(err error) (int, string) {
 // pass the remote command's own code through, like ssh and docker exec
 // do: `omavm exec box -- go test ./...` must fail the way go test failed.
 func exitCodeFor(cmd string, err error) int {
-	var exitErr *exec.ExitError
-	if (cmd == "exec" || cmd == "ssh") && errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
-		return exitErr.ExitCode()
+	if code, ok := commandExit(cmd, err); ok {
+		return code
 	}
 	code, _ := errorClass(err)
 	return code
+}
+
+// commandExit is the exit code of the command exec or ssh ran, when that
+// is what err is. That command failing is not omavm failing: the code is
+// passed through and omavm says nothing of its own (the command already
+// spoke on stderr), like ssh and docker exec.
+func commandExit(cmd string, err error) (int, bool) {
+	// A Box's shell ending with its last command's status.
+	var session *core.SessionEnded
+	if errors.As(err, &session) {
+		return session.Code, true
+	}
+	var exitErr *exec.ExitError
+	if (cmd == "exec" || cmd == "ssh") && errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
 }
 
 // writeJSONError reports a failure on stdout for a caller that asked for

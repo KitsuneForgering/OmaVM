@@ -9,6 +9,7 @@
 package qemu
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -139,6 +140,13 @@ func (b *Backend) Create(ctx context.Context, env core.Environment) error {
 	if _, err := os.Stat(disk); err == nil {
 		return nil // idempotent: disk already provisioned
 	}
+	if core.IsReadyImage(env.Image) {
+		if err := b.createReadyDesktop(ctx, env); err != nil {
+			_ = os.Remove(disk)
+			return err
+		}
+		return nil
+	}
 	out, err := runQEMU(ctx, "qemu-img", "create", "-f", "qcow2", disk, strconv.FormatInt(diskSize, 10))
 	if err != nil {
 		return qemuErr("qemu-img create", err, out)
@@ -231,6 +239,10 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		}
 	}
 
+	bus, err := b.diskBus(ctx, b.key(env))
+	if err != nil {
+		return err
+	}
 	tpm, err := b.startTPM(ctx, b.key(env), ephemeral)
 	if err != nil {
 		if virtiofsRunning {
@@ -239,14 +251,13 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		return err
 	}
 	args := append(firmware,
-		"-name", env.Name,
+		"-name", optValue(env.Name),
 		"-m", strconv.Itoa(settings.MemoryMiB),
 		"-smp", strconv.Itoa(settings.CPUs),
 		"-enable-kvm",
-		// discard=unmap: space the guest frees (fstrim, Windows' Optimize
-		// Drives) goes back to the host; QEMU's default ignores it. Clusters
-		// a snapshot still uses stay, by qcow2's own reference counts.
-		"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2,discard=unmap", b.diskPath(b.key(env))),
+	)
+	args = append(args, diskArgs(b.diskPath(b.key(env)), bus)...)
+	args = append(args,
 		// Absolute pointer: the viewer sends guest coordinates, never
 		// relative motion that drifts from the host cursor.
 		"-device", "qemu-xhci",
@@ -254,11 +265,11 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		"-device", "virtio-serial-pci",
 		"-chardev", "qemu-vdagent,id=clipboard,clipboard=on,mouse=off",
 		"-device", "virtserialport,chardev=clipboard,name=com.redhat.spice.0",
-		"-chardev", "socket,path="+b.qgaPath(b.key(env))+",server=on,wait=off,id=qga0",
+		"-chardev", "socket,path="+optValue(b.qgaPath(b.key(env)))+",server=on,wait=off,id=qga0",
 		"-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
 		"-audiodev", "pipewire,id=audio0",
 		"-device", "virtio-sound-pci,audiodev=audio0",
-		"-qmp", "unix:"+b.qmpPath(b.key(env))+",server,nowait",
+		"-qmp", "unix:"+optValue(b.qmpPath(b.key(env)))+",server,nowait",
 		"-pidfile", b.pidPath(b.key(env)),
 		"-daemonize",
 	)
@@ -270,7 +281,7 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 	args = append(args, displayArgs(graphics.openGL, vulkan, settings.MemoryMiB, virtiofsRunning)...)
 	if virtiofsRunning {
 		args = append(args,
-			"-chardev", "socket,id=virtiofs,path="+b.virtiofsPath(b.key(env)),
+			"-chardev", "socket,id=virtiofs,path="+optValue(b.virtiofsPath(b.key(env))),
 			"-device", "vhost-user-fs-pci,chardev=virtiofs,tag=omavm-share")
 	}
 	var qemuEnv []string
@@ -278,7 +289,7 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 		args = append(args, "-snapshot")
 		qemuEnv = []string{"TMPDIR=" + b.dir(b.key(env))}
 	}
-	if env.Image != "" && !settings.DisconnectISO {
+	if env.Image != "" && !core.IsReadyImage(env.Image) && !settings.DisconnectISO {
 		// The disk boots first anyway: an ISO deleted, moved or on a USB
 		// stick that isn't plugged in must not keep an installed Machine
 		// from starting (QEMU refuses a -cdrom it can't open).
@@ -289,6 +300,12 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 			args = append(args, "-cdrom", env.Image, "-boot", "order=cd,menu=on")
 		} else {
 			slog.Warn("installation media not found; starting from the disk", "machine", env.Name, "image", env.Image, "error", err)
+		}
+	}
+	if core.IsReadyImage(env.Image) {
+		if _, err := os.Stat(b.readySeedPath(b.key(env), env.Image)); err == nil {
+			args = append(args, "-drive", "if=none,id=omavmseed,file="+optValue(b.readySeedPath(b.key(env), env.Image))+",format=raw,readonly=on",
+				"-device", "virtio-blk-pci,drive=omavmseed")
 		}
 	}
 
@@ -332,15 +349,23 @@ func (b *Backend) start(ctx context.Context, env core.Environment, ephemeral boo
 			return known
 		}
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && !canOpenRW(filepath.Join(devRoot, "kvm")) {
+		if errors.As(err, &exitErr) && !canOpenRW(filepath.Join(devRoot, "kvm")) && kvmStartError(out) {
 			// QEMU's own words ("Could not access KVM kernel module")
-			// don't say what to do about it. Only when QEMU actually ran:
-			// a missing qemu-system-x86_64 already has its own message.
+			// don't say what to do about it. An inaccessible /dev/kvm
+			// alone is not enough: QEMU may have failed earlier for a
+			// different reason, such as being unable to bind a socket.
 			return core.Unsupportedf("this computer can't run Desktops yet: hardware virtualization (/dev/kvm) is missing or not accessible to your user. Enable virtualization in the firmware and add your user to the kvm group, then log in again (QEMU said: %s)", out)
 		}
 		return qemuErr("qemu-system-x86_64", err, out)
 	}
 	return nil
+}
+
+func kvmStartError(out string) bool {
+	lower := strings.ToLower(out)
+	return strings.Contains(lower, "could not access kvm") ||
+		strings.Contains(lower, "failed to initialize kvm") ||
+		strings.Contains(lower, "kvm acceleration not available")
 }
 
 // growDisk brings a stopped Machine's disk up to diskSize: Machines
@@ -561,6 +586,7 @@ func (b *Backend) stopVirtiofs(name string) error {
 // of silently no-op'ing (Security/UX principle: never hide a capability
 // gap).
 func (b *Backend) Open(ctx context.Context, env core.Environment) error {
+	afterFirmware := b.opensAfterFirmware(ctx, b.key(env))
 	if err := b.Start(ctx, env); err != nil {
 		return err
 	}
@@ -584,19 +610,70 @@ func (b *Backend) Open(ctx context.Context, env core.Environment) error {
 	if a, ok := b.appliedConfig(b.key(env)); ok && a.virtiofs {
 		shared = machineSettings(env).SharedPath
 	}
-	cmd := exec.CommandContext(context.Background(), viewer, viewerArgs(env, shared)...)
-	cmd.ExtraFiles = []*os.File{display}
-	if err := cmd.Start(); err != nil {
+	// fd 4 is how the viewer says the Machine is on screen: a viewer that
+	// launched but failed to connect, or crashed, is not an open display.
+	ready, readyWriter, err := os.Pipe()
+	if err != nil {
 		return fmt.Errorf("launch display viewer: %w", err)
 	}
-	return nil
+	defer ready.Close()
+	cmd := exec.CommandContext(context.Background(), viewer, append(viewerArgs(env, shared, afterFirmware), "--ready-fd", "4")...)
+	cmd.ExtraFiles = []*os.File{display, readyWriter}
+	err = cmd.Start()
+	readyWriter.Close()
+	if err != nil {
+		return fmt.Errorf("launch display viewer: %w", err)
+	}
+	return waitViewerReady(ready, viewerReadyTimeout)
+}
+
+// viewerReadyTimeout bounds how long Open waits for the first frame. Past
+// it the viewer is still starting, not failed: Open returns and the
+// viewer goes on.
+const viewerReadyTimeout = 15 * time.Second
+
+// waitViewerReady reads the viewer's one-line report: "ok", or
+// "error: why". Closing without one means it died before showing anything.
+func waitViewerReady(r *os.File, timeout time.Duration) error {
+	line := make(chan string, 1)
+	go func() {
+		text, _ := bufio.NewReader(r).ReadString('\n')
+		line <- strings.TrimSpace(text)
+	}()
+	select {
+	case text := <-line:
+		switch {
+		case text == "ok":
+			return nil
+		case strings.HasPrefix(text, "error: "):
+			return fmt.Errorf("display viewer: %s", strings.TrimPrefix(text, "error: "))
+		default:
+			return errors.New("the display viewer closed before showing the Machine (it may have crashed)")
+		}
+	case <-time.After(timeout):
+		slog.Info("display viewer still starting", "timeout", timeout)
+		return nil
+	}
+}
+
+// opensAfterFirmware: opened while off, a Machine with a system on its
+// disk shows up once that system is running, not through its firmware and
+// boot menu. An empty disk boots the installation media instead, whose
+// prompts ("Press any key to boot from CD") have to be seen; a running
+// Machine is past its firmware already.
+func (b *Backend) opensAfterFirmware(ctx context.Context, name string) bool {
+	if running, err := b.isRunning(name); err != nil || running {
+		return false
+	}
+	empty, err := diskNeverWritten(ctx, b.diskPath(name))
+	return err == nil && !empty
 }
 
 // viewerArgs are omavm-gui's arguments for a Machine's display. The
 // viewer itself picks the workspace and goes fullscreen, so it happens
 // however the Machine was opened: Experience Center, launcher entry or
 // `omavm open`.
-func viewerArgs(env core.Environment, shared string) []string {
+func viewerArgs(env core.Environment, shared string, afterFirmware bool) []string {
 	settings := env.EffectiveSettings()
 	args := []string{
 		"--display-fd", "3",
@@ -609,6 +686,9 @@ func viewerArgs(env core.Environment, shared string) []string {
 	}
 	if shared != "" {
 		args = append(args, "--shared-folder", shared)
+	}
+	if afterFirmware {
+		args = append(args, "--reveal-after-firmware")
 	}
 	return args
 }
@@ -666,14 +746,27 @@ func (b *Backend) Preview(ctx context.Context, env core.Environment) (string, er
 	}
 
 	if err := qmpScreendump(b.qmpPath(b.key(env)), dst); err != nil {
+		// QEMU has no surface to capture while the guest draws through
+		// GPU blobs (Venus) or hasn't drawn yet: expected, not a failure.
+		if strings.Contains(err.Error(), "no surface") {
+			return "", core.Unsupportedf("%s's screen can't be captured right now", env.Name)
+		}
 		return "", fmt.Errorf("screendump: %w", err)
 	}
 	return dst, nil
 }
 
-// bootDisk is the QMP device name QEMU gives the Machine's disk, the
-// first -drive if=virtio.
-const bootDisk = "virtio0"
+// bootDisk is the name QMP knows this Machine's disk by. A running
+// Machine has started, so its bus is recorded.
+func (b *Backend) bootDisk(name string) string {
+	return diskDevice(b.recordedDiskBus(name))
+}
+
+// optValue escapes a value inside a QEMU option list (file=...,if=...):
+// QEMU splits on commas and reads ",," as one. A state directory under a
+// home with a comma otherwise broke the disk, QMP and agent options
+// (checked on QEMU 11.1: "Invalid parameter 'b/q.sock'").
+func optValue(s string) string { return strings.ReplaceAll(s, ",", ",,") }
 
 // networkArgs spells out the network QEMU gave every Machine by default:
 // "Shared", user-mode networking (rootless; the guest reaches the network
@@ -742,11 +835,11 @@ func (b *Backend) CreateSnapshot(ctx context.Context, env core.Environment, tag 
 	if thaw != nil {
 		defer thaw()
 	}
-	if _, err := qmpExecuteTimeout(b.qmpPath(b.key(env)), "blockdev-snapshot-internal-sync", map[string]any{"device": bootDisk, "name": tag}, qmpSlowTimeout); err != nil {
+	if _, err := qmpExecuteTimeout(b.qmpPath(b.key(env)), "blockdev-snapshot-internal-sync", map[string]any{"device": b.bootDisk(b.key(env)), "name": tag}, qmpSlowTimeout); err != nil {
 		// No reply: look before deciding, rather than report a failure
 		// for a snapshot that exists (it would sit on the disk, unknown).
 		if errors.Is(err, errQMPNoReply) {
-			if names, qerr := qmpDiskSnapshots(b.qmpPath(b.key(env))); qerr == nil && names[tag] {
+			if names, qerr := qmpDiskSnapshots(b.qmpPath(b.key(env)), b.bootDisk(b.key(env))); qerr == nil && names[tag] {
 				taken.CrashConsistent = thaw == nil
 				return taken, nil
 			}
@@ -820,9 +913,9 @@ func (b *Backend) removeDiskSnapshot(ctx context.Context, env core.Environment, 
 	if b.isEphemeral(b.key(env)) {
 		return errEphemeralSnapshot(env)
 	}
-	if _, err := qmpExecuteTimeout(b.qmpPath(b.key(env)), "blockdev-snapshot-delete-internal-sync", map[string]any{"device": bootDisk, "name": tag}, qmpSlowTimeout); err != nil {
+	if _, err := qmpExecuteTimeout(b.qmpPath(b.key(env)), "blockdev-snapshot-delete-internal-sync", map[string]any{"device": b.bootDisk(b.key(env)), "name": tag}, qmpSlowTimeout); err != nil {
 		if errors.Is(err, errQMPNoReply) {
-			if names, qerr := qmpDiskSnapshots(b.qmpPath(b.key(env))); qerr == nil && !names[tag] {
+			if names, qerr := qmpDiskSnapshots(b.qmpPath(b.key(env)), b.bootDisk(b.key(env))); qerr == nil && !names[tag] {
 				return nil // it is gone: the deletion went through
 			}
 		}
@@ -995,13 +1088,14 @@ func (b *Backend) Status(ctx context.Context, env core.Environment) (core.Status
 	}
 	if !running {
 		warnings := []string{}
-		if ended := b.unexpectedEnd(b.key(env)); ended != "" {
+		ended := b.unexpectedEnd(b.key(env))
+		if ended != "" {
 			warnings = append(warnings, ended)
 		}
 		if low := lowSpaceWarning(b.dir(b.key(env))); low != "" {
 			warnings = append(warnings, low)
 		}
-		return core.Status{State: core.StateStopped, Warning: strings.Join(warnings, "; ")}, nil
+		return core.Status{State: core.StateStopped, Warning: strings.Join(warnings, "; "), EndedUnexpectedly: ended != ""}, nil
 	}
 	status, err := qmpStatus(b.qmpPath(b.key(env)))
 	if err != nil {
@@ -1035,20 +1129,7 @@ func startFailure(env core.Environment, out string) error {
 
 // hostMemoryMiB is the host's total memory, from /proc/meminfo.
 func hostMemoryMiB() (int, bool) {
-	data, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0, false
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if rest, ok := strings.CutPrefix(line, "MemTotal:"); ok {
-			kib, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(rest), " kB"))
-			if err != nil {
-				return 0, false
-			}
-			return kib / 1024, true
-		}
-	}
-	return 0, false
+	return core.HostMemoryMiB()
 }
 
 // unexpectedEnd explains a session that ended without shutting down. QEMU
@@ -1275,7 +1356,10 @@ func (b *Backend) Clone(ctx context.Context, source, clone core.Environment) err
 	// unseals its key from that TPM.
 	// So do the snapshots' copies of that state: the disk's snapshots came along.
 	snapshots := func(name string) string { return filepath.Join(b.dir(name), "snapshots") }
-	for _, path := range []func(string) string{b.firmwarePath, b.nvramPath, b.tpmStateDir, snapshots} {
+	ubuntuSeed := func(name string) string { return b.readySeedPath(name, core.ReadyUbuntuImage) }
+	fedoraSeed := func(name string) string { return b.readySeedPath(name, core.ReadyFedoraImage) }
+	// And the disk's bus: the copy holds the same installed system.
+	for _, path := range []func(string) string{b.diskBusPath, b.firmwarePath, b.nvramPath, b.tpmStateDir, b.readyCredentialsPath, ubuntuSeed, fedoraSeed, snapshots} {
 		if _, err := os.Stat(path(src)); errors.Is(err, os.ErrNotExist) {
 			continue
 		}

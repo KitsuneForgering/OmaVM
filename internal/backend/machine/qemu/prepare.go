@@ -321,6 +321,7 @@ func (b *Backend) prepareSharedFolder(ctx context.Context, env core.Environment,
 	}
 	// Confirmed the way the integration report checks it, not by the
 	// script's word.
+	b.forgetMount(key)
 	mount, err := virtiofsMountpoint(ctx, b.qgaPath(key))
 	if err != nil || mount == "" {
 		return step, fmt.Errorf("the shared folder was mounted but the guest doesn't list it (%v)", err)

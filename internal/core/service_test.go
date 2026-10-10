@@ -175,6 +175,17 @@ func TestCreateMachineRequiresInstallationMedia(t *testing.T) {
 	}
 }
 
+func TestCreateMachineRejectsDeviceAsInstallationMedia(t *testing.T) {
+	svc, _, machine := newTestService()
+	_, err := svc.Create(context.Background(), core.Environment{Name: "desktop", Kind: core.Machine, Image: os.DevNull})
+	if !errors.Is(err, core.ErrInvalidInput) || !strings.Contains(err.Error(), "regular ISO file") {
+		t.Fatalf("Create from a device = %v, want a media error before starting QEMU", err)
+	}
+	if machine.created["desktop"] {
+		t.Fatal("backend must not create a Machine from a device")
+	}
+}
+
 func TestCreateStartStopStatus(t *testing.T) {
 	ctx := context.Background()
 	svc, box, _ := newTestService()
@@ -238,7 +249,8 @@ func TestConfigureMachineSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if initial.CPUs != 2 || initial.MemoryMiB != 2048 {
+	defaultCPUs, defaultMemoryMiB := core.DefaultMachineResources()
+	if initial.CPUs != defaultCPUs || initial.MemoryMiB != defaultMemoryMiB {
 		t.Fatalf("unexpected defaults: %+v", initial)
 	}
 	description, cpus, memory := "Work desktop", 4, 4096
@@ -523,7 +535,8 @@ func TestConfigureUnrelatedFieldDoesNotPinHardwareDefaults(t *testing.T) {
 		t.Fatalf("Configure: %v", err)
 	}
 	// The returned settings are still resolved for display.
-	if settings.CPUs != 2 || settings.MemoryMiB != 2048 || settings.SnapshotLimit != 10 {
+	defaultCPUs, defaultMemoryMiB := core.DefaultMachineResources()
+	if settings.CPUs != defaultCPUs || settings.MemoryMiB != defaultMemoryMiB || settings.SnapshotLimit != 10 {
 		t.Fatalf("expected Configure's return value to show resolved defaults, got %+v", settings)
 	}
 

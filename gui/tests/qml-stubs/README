@@ -1,0 +1,4 @@
+Stand-ins for the Quickshell modules contrib/dev.omavm.bar imports, so
+tst_bar.qml can load the real plugin outside the Omarchy shell. Only the
+API the plugin uses: a test drives Process by filling its stdout
+collector and emitting streamFinished, as Quickshell does.

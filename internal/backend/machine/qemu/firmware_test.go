@@ -1,11 +1,14 @@
 package qemu
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,14 +22,42 @@ func TestMain(m *testing.M) {
 	firmwareDirs = nil
 	swtpmLookPath = func() (string, error) { return "", exec.ErrNotFound }
 	quickgetLookPath = func() (string, error) { return "", exec.ErrNotFound }
+	// The real virtiofsd waits for QEMU to connect, forever: with a fake
+	// QEMU, every test that started a Machine left one running (14 per
+	// run, 258 on this machine by 2026-10-08). Tests that share a folder
+	// use a fake virtiofsd (virtiofs_test.go).
+	virtiofsdPath = func() (string, error) { return "", exec.ErrNotFound }
 	home, err := os.MkdirTemp("", "omavm-qemu-home")
 	if err != nil {
 		panic(err)
 	}
 	os.Setenv("HOME", home)
 	code := m.Run()
+	if leaked := processesMentioning(home); len(leaked) > 0 && code == 0 {
+		fmt.Fprintf(os.Stderr, "tests left processes running:\n%s\n", strings.Join(leaked, "\n"))
+		code = 1
+	}
 	os.RemoveAll(home)
 	os.Exit(code)
+}
+
+// processesMentioning lists the command lines of this user's processes
+// that name path: helpers (virtiofsd, swtpm, QEMU) a test started and
+// never stopped.
+func processesMentioning(path string) []string {
+	var found []string
+	entries, _ := os.ReadDir("/proc")
+	for _, entry := range entries {
+		if _, err := strconv.Atoi(entry.Name()); err != nil || entry.Name() == strconv.Itoa(os.Getpid()) {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil || !bytes.Contains(cmdline, []byte(path)) {
+			continue
+		}
+		found = append(found, entry.Name()+": "+strings.ReplaceAll(string(cmdline), "\x00", " "))
+	}
+	return found
 }
 
 const secureDescriptor = `{

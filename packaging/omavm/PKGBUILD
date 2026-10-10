@@ -2,19 +2,17 @@
 
 pkgname=omavm
 pkgver=0.4.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Create, run and manage Boxes and Machines on Omarchy"
 arch=('x86_64')
 url="https://github.com/KitsuneForgering/OmaVM"
 license=('MIT')
-depends=('qt6-base' 'qt6-declarative' 'glib2' 'libglvnd' 'glibc' 'zlib')
+depends=('qt6-base' 'qt6-declarative' 'glib2' 'libglvnd' 'glibc' 'zlib'
+         'qemu-desktop' 'edk2-ovmf' 'swtpm' 'gnupg' 'dosfstools' 'mtools' 'openssl')
 makedepends=('go')
 optdepends=('distrobox: integrated Development Box environments'
             'podman: preferred Distrobox container engine'
-            'docker: alternative Distrobox container engine and legacy Boxes'
-            'qemu-desktop: Machine environments with a graphical display and shared folders (QEMU/KVM, virtiofsd)'
-            'edk2-ovmf: UEFI and Secure Boot for new Machines'
-            'swtpm: a TPM 2.0 for Machines (Windows 11)')
+            'docker: alternative Distrobox container engine and legacy Boxes')
 install=omavm.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('8420c9bc34008db0e27babeb0ff36a50742683107374d93b685be0855e15710e')

@@ -5,6 +5,14 @@ import QtQuick.Layouts
 
 Dialog {
     id: dialog
+    // The title holds the environment's name: shown as typed, never read
+    // as HTML (the header is the style's own Label).
+    Binding {
+        target: dialog.header
+        property: "textFormat"
+        value: Text.PlainText
+        when: dialog.header !== null && dialog.header.textFormat !== undefined
+    }
     property var environment: ({})
     readonly property bool busy: !!(backend.busyEnvironments && backend.busyEnvironments[environment.name])
     // True once backend.apps actually reflects this dialog's environment —
@@ -73,6 +81,7 @@ Dialog {
         spacing: 12
 
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: qsTr("Export an application so it appears alongside your other apps.")
             color: backend.themeMuted
@@ -80,6 +89,7 @@ Dialog {
         }
 
         Label {
+            textFormat: Text.PlainText
             objectName: "resultLabel"
             Layout.fillWidth: true
             visible: dialog.resultText !== ""
@@ -93,7 +103,7 @@ Dialog {
             visible: dialog.matches && dialog.busy && dialog.pendingId === ""
             spacing: 8
             BusyIndicator { implicitWidth: 18; implicitHeight: 18; running: true }
-            Label { text: qsTr("Refreshing…"); color: backend.themeMuted; font.pixelSize: 12 }
+            Label { textFormat: Text.PlainText; text: qsTr("Refreshing…"); color: backend.themeMuted; font.pixelSize: 12 }
         }
 
         ColumnLayout {
@@ -103,7 +113,7 @@ Dialog {
             spacing: 10
             Item { Layout.fillHeight: true }
             BusyIndicator { Layout.alignment: Qt.AlignHCenter; running: !dialog.matches }
-            Label { Layout.alignment: Qt.AlignHCenter; text: qsTr("Loading applications…"); color: backend.themeMuted }
+            Label { textFormat: Text.PlainText; Layout.alignment: Qt.AlignHCenter; text: qsTr("Loading applications…"); color: backend.themeMuted }
             Item { Layout.fillHeight: true }
         }
 
@@ -115,6 +125,7 @@ Dialog {
             Item { Layout.fillHeight: true }
             Icon { Layout.alignment: Qt.AlignHCenter; source: "qrc:/icons/warning.svg"; color: backend.themeRed; iconSize: 36 }
             Label {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignHCenter
                 horizontalAlignment: Text.AlignHCenter
@@ -131,6 +142,7 @@ Dialog {
         }
 
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: dialog.matches && backend.appsError === "" && backend.apps.length === 0
             text: qsTr("No exportable applications found.")
@@ -182,12 +194,14 @@ Dialog {
                         Layout.fillWidth: true
                         spacing: 0
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: modelData.name
                             elide: Text.ElideRight
                         }
                         // In words, not only the icon's color.
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             visible: modelData.exported || appRow.pending
                             text: appRow.pending

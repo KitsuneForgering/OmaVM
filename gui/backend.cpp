@@ -13,6 +13,7 @@
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QTimer>
 #include <QJsonObject>
 #include <QStandardPaths>
 
@@ -345,6 +346,7 @@ void Backend::refreshImpl(bool silent) {
             if (!m_listError.isEmpty()) {
               m_listError.clear();
               emit listErrorChanged();
+              emit succeeded(QString());
             }
             const QJsonDocument document = QJsonDocument::fromJson(output);
             QVariantList next;
@@ -431,8 +433,10 @@ void Backend::capturePreview(int index, int generation) {
   // last frame, fetched once (it can't change until it runs again).
   const bool running = environment.value(QStringLiteral("status")).toString() ==
                        QStringLiteral("running");
+  const auto retry = m_previewRetryAt.constFind(id);
   if ((!running && environment.contains(QStringLiteral("preview"))) ||
-      QDateTime::currentMSecsSinceEpoch() < m_previewRetryAt.value(id))
+      (retry != m_previewRetryAt.cend() && retry->running == running &&
+       QDateTime::currentMSecsSinceEpoch() < retry->at))
     return;
   auto *preview = new QProcess(this);
   connect(preview, &QProcess::finished, this,
@@ -443,10 +447,11 @@ void Backend::capturePreview(int index, int generation) {
             const qint64 now = QDateTime::currentMSecsSinceEpoch();
             if (previewCode != 0 || path.isEmpty()) {
               // A stopped Machine that never ran has no frame: ask rarely.
-              m_previewRetryAt.insert(id, now + (running ? 60000 : 600000));
+              m_previewRetryAt.insert(
+                  id, {now + (running ? 60000 : 600000), running});
               return;
             }
-            m_previewRetryAt.insert(id, now + 30000);
+            m_previewRetryAt.insert(id, {now + 30000, running});
             // A poll that landed meanwhile may have reordered the list:
             // never write by a stale index.
             if (generation != m_environmentsGeneration ||
@@ -496,7 +501,7 @@ void Backend::run(const QString &key, const QStringList &arguments,
             endBusy(key);
             const QString text = QStringLiteral("Could not start omavm: ") +
                                  process->errorString();
-            emit message(text, true);
+            emit message(text, true, key);
             if (!tag.isEmpty())
               emit actionFinished(tag, false, text);
             process->deleteLater();
@@ -518,13 +523,14 @@ void Backend::run(const QString &key, const QStringList &arguments,
               const QString text = errorText.isEmpty()
                                        ? QStringLiteral("Action failed")
                                        : errorText;
-              emit message(text, true);
+              emit message(text, true, key);
               if (!tag.isEmpty())
                 emit actionFinished(tag, false, text);
               return;
             }
+            emit succeeded(key);
             if (toastOutput && !output.isEmpty())
-              emit message(output, false);
+              emit message(output, false, key);
             if (!tag.isEmpty())
               emit actionFinished(tag, true, output);
           });
@@ -547,7 +553,9 @@ void Backend::createEnvironment(const QString &name, const QString &image,
   // pin every new Machine's hardware from birth, permanently disabling
   // Travel Mode's automatic reduction on battery for it (same bug class
   // as Backend::configure, docs/TODO.md P2).
-  if (kind == QStringLiteral("box"))
+  const bool prepared = image == QStringLiteral("ready:ubuntu-24.04") ||
+                        image == QStringLiteral("ready:fedora-44");
+  if (kind == QStringLiteral("box") || prepared)
     arguments << QStringLiteral("--progress");
   if (kind == QStringLiteral("machine")) {
     if (cpusTouched)
@@ -556,7 +564,7 @@ void Backend::createEnvironment(const QString &name, const QString &image,
       arguments << QStringLiteral("--memory-mib") << QString::number(memoryMiB);
   }
   run(name, arguments, QStringLiteral("creating %1").arg(name),
-      QStringLiteral("create"));
+      QStringLiteral("create"), true, !prepared);
 }
 
 void Backend::start(const QString &name) {
@@ -583,6 +591,18 @@ void Backend::forceStop(const QString &name) {
   run(name, {QStringLiteral("force-stop"), name},
       QStringLiteral("force stopping %1").arg(name),
       QStringLiteral("force-stop"));
+}
+void Backend::disconnectInstallationMedia(const QString &name) {
+  run(name,
+      {QStringLiteral("settings"), name,
+       QStringLiteral("--disconnect-iso=true")},
+      QStringLiteral("disconnecting installation media from %1").arg(name),
+      QStringLiteral("disconnect-iso"));
+}
+void Backend::readCredentials(const QString &name) {
+  run(name, {QStringLiteral("credentials"), name},
+      QStringLiteral("reading initial login for %1").arg(name),
+      QStringLiteral("credentials:") + name, false, false);
 }
 void Backend::configure(const QString &name, const QString &description,
                         int cpus, bool cpusTouched, int memoryMiB,
@@ -656,7 +676,7 @@ void Backend::runForApps(const QStringList &arguments, const QString &name,
             endBusy(name);
             const QString text = QStringLiteral("Could not start omavm: ") +
                                  process->errorString();
-            emit message(text, true);
+            emit message(text, true, name);
             emit actionFinished(tag, false, text);
             process->deleteLater();
           });
@@ -669,18 +689,60 @@ void Backend::runForApps(const QStringList &arguments, const QString &name,
         if (code != 0) {
           const QString text =
               errorText.isEmpty() ? QStringLiteral("Action failed") : errorText;
-          emit message(text, true);
+          emit message(text, true, name);
           emit actionFinished(tag, false, text);
           return;
         }
+        emit succeeded(name);
         emit actionFinished(tag, true, QString());
         refreshApps(name);
       });
   process->start(cliPath(), arguments);
 }
 
-void Backend::reopenDisplay(const QString &name) const {
-  QProcess::startDetached(cliPath(), {QStringLiteral("open"), name});
+bool Backend::reopenDisplay(const QString &name) const {
+  return QProcess::startDetached(cliPath(), {QStringLiteral("open"), name});
+}
+
+void Backend::checkShutDown(const QString &name) {
+  checkShutDownAttempt(name, 15);
+}
+
+void Backend::checkShutDownAttempt(const QString &name, int attemptsLeft) {
+  auto *process = new QProcess(this);
+  connect(process, &QProcess::finished, this,
+          [this, process, name, attemptsLeft](int code) {
+            const QJsonObject status =
+                QJsonDocument::fromJson(process->readAllStandardOutput())
+                    .object();
+            process->deleteLater();
+            const QString state = status.value(QStringLiteral("state")).toString();
+            // The display closes a moment before QEMU is gone.
+            if (code == 0 && state != QStringLiteral("stopped") &&
+                attemptsLeft > 1) {
+              QTimer::singleShot(200, this, [this, name, attemptsLeft] {
+                checkShutDownAttempt(name, attemptsLeft - 1);
+              });
+              return;
+            }
+            emit shutDownChecked(
+                code == 0 && state == QStringLiteral("stopped") &&
+                !status.value(QStringLiteral("ended_unexpectedly")).toBool());
+          });
+  connect(process, &QProcess::errorOccurred, this,
+          [this, process](QProcess::ProcessError error) {
+            if (error != QProcess::FailedToStart)
+              return;
+            process->deleteLater();
+            emit shutDownChecked(false);
+          });
+  process->start(cliPath(), {QStringLiteral("status"), name,
+                             QStringLiteral("--json")});
+}
+
+void Backend::placeViewerWindow(const QString &title) const {
+  if (placeInEmptyWorkspace(title) == WorkspacePlacement::Unavailable)
+    qWarning("omavm: no empty workspace found; opening on the current one");
 }
 
 void Backend::focusManagerWorkspace() const {
@@ -797,7 +859,7 @@ void Backend::refreshApps(const QString &name) {
             m_appsError = text;
             m_appsEnvironment = name;
             emit appsChanged();
-            emit message(text, true);
+            emit message(text, true, name);
             process->deleteLater();
           });
   connect(process, &QProcess::finished, this, [this, process, name](int code) {
@@ -812,7 +874,7 @@ void Backend::refreshApps(const QString &name) {
                         : errorText;
       m_appsEnvironment = name;
       emit appsChanged();
-      emit message(m_appsError, true);
+      emit message(m_appsError, true, name);
       return;
     }
     const QJsonDocument document = QJsonDocument::fromJson(output);
@@ -952,8 +1014,12 @@ void Backend::open(const QString &name, const QString &kind) {
                           flag(emptyWorkspace)};
     if (!color.isEmpty())
       arguments << QStringLiteral("--color") << color;
-    QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                            arguments);
+    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                                 arguments))
+      emit message(QStringLiteral("Could not open the terminal for %1: "
+                                  "omavm-gui did not start.")
+                       .arg(name),
+                   true, name);
     return;
   }
   run(name, {QStringLiteral("open"), name}, QStringLiteral("opening %1").arg(name),

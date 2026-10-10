@@ -5,6 +5,14 @@ import QtQuick.Layouts
 
 Dialog {
     id: dialog
+    // The title holds the environment's name: shown as typed, never read
+    // as HTML (the header is the style's own Label).
+    Binding {
+        target: dialog.header
+        property: "textFormat"
+        value: Text.PlainText
+        when: dialog.header !== null && dialog.header.textFormat !== undefined
+    }
     property var environment: ({})
     readonly property bool busy: !!(backend.busyEnvironments && backend.busyEnvironments[environment.name])
     readonly property var snapshots: environment.snapshots || []
@@ -67,11 +75,13 @@ Dialog {
         anchors.fill: parent
         spacing: 12
 
-        RowLayout {
+        ColumnLayout {
             Layout.fillWidth: true
             TextField {
                 id: newLabel
+                objectName: "snapshotLabelField"
                 Layout.fillWidth: true
+                Layout.maximumWidth: parent.width
                 Accessible.name: qsTr("Snapshot label")
                 placeholderText: qsTr("Label (e.g. Before system upgrade)")
                 selectByMouse: true
@@ -80,6 +90,7 @@ Dialog {
             }
             Button {
                 id: createButton
+                objectName: "snapshotCreateButton"
                 text: dialog.creating ? qsTr("Creating…") : qsTr("Create")
                 highlighted: true
                 enabled: !dialog.creating && !dialog.busy && !dialog.ephemeral && newLabel.text.trim().length > 0
@@ -92,6 +103,7 @@ Dialog {
         }
 
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             opacity: dialog.createError !== "" ? 1 : 0
             visible: opacity > 0
@@ -102,6 +114,7 @@ Dialog {
         }
 
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: dialog.snapshots.length >= dialog.retentionLimit
                 ? qsTr("Keeping the most recent %1 snapshots. Creating another one will remove the oldest: “%2”.")
@@ -113,6 +126,7 @@ Dialog {
         }
 
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: !dialog.canGoTo
             objectName: "runningHint"
@@ -125,6 +139,7 @@ Dialog {
         }
 
         Label {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: dialog.snapshots.length === 0
             text: qsTr("No snapshots yet. Snapshots let you go back to a saved point in time.")
@@ -170,12 +185,14 @@ Dialog {
                         Layout.fillWidth: true
                         spacing: 2
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             text: modelData.label
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
                         }
                         Label {
+                            textFormat: Text.PlainText
                             Layout.fillWidth: true
                             // Taken while running without guest tools: the
                             // guest couldn't flush its disks first.
@@ -230,11 +247,17 @@ Dialog {
             if (yesButton) yesButton.text = qsTr("Go To")
         }
         Overlay.modal: ThemeScrim {}
-        contentItem: Label {
-            text: qsTr("Go to “%1” for %2? Anything that happened after this snapshot in %2 will be lost.")
-                .arg(confirmGoTo.snapshotLabel).arg(dialog.environment.name)
-            wrapMode: Text.Wrap
-            color: backend.themeRed
+        // In a layout: as the contentItem itself, the label's unwrapped
+        // width fed back into the dialog's size (binding loop).
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: qsTr("Go to “%1” for %2? Anything that happened after this snapshot in %2 will be lost.")
+                    .arg(confirmGoTo.snapshotLabel).arg(dialog.environment.name)
+                wrapMode: Text.Wrap
+                color: backend.themeRed
+            }
         }
         onAccepted: backend.goToSnapshot(dialog.environment.name, snapshotId)
     }
@@ -253,10 +276,16 @@ Dialog {
             if (yesButton) yesButton.text = qsTr("Delete")
         }
         Overlay.modal: ThemeScrim {}
-        contentItem: Label {
-            text: qsTr("Delete “%1”? This cannot be undone.").arg(confirmDeleteSnapshot.snapshotLabel)
-            wrapMode: Text.Wrap
-            color: backend.themeRed
+        // In a layout: as the contentItem itself, the label's unwrapped
+        // width fed back into the dialog's size (binding loop).
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: qsTr("Delete “%1”? This cannot be undone.").arg(confirmDeleteSnapshot.snapshotLabel)
+                wrapMode: Text.Wrap
+                color: backend.themeRed
+            }
         }
         onAccepted: backend.removeSnapshot(dialog.environment.name, snapshotId)
     }

@@ -2,7 +2,7 @@ PREFIX ?= $(HOME)/.local
 
 QS_PLUGIN_DIR ?= $(HOME)/.config/omarchy/plugins/dev.omavm.bar
 
-.PHONY: dist build build-cli build-gui test vet fmt fmt-check check run run-gui clean install uninstall uninstall-environments install-quickshell-plugin uninstall-quickshell-plugin test-display test-terminal test-backend test-qml
+.PHONY: dist build build-cli build-gui test vet fmt fmt-check check run run-gui clean install uninstall uninstall-environments install-quickshell-plugin uninstall-quickshell-plugin test-display test-terminal test-backend test-qml fuzz-display
 
 build: build-cli build-gui
 
@@ -25,6 +25,16 @@ test-display:
 	./build/display-tests/displayclient_test
 	cd build/display-tests && qmake6 ../../gui/tests/displayview_test.pro -o Makefile.view && $(MAKE) -f Makefile.view
 	./build/display-tests/displayview_test
+	cd build/display-tests && qmake6 ../../gui/tests/displayclient_fuzz_test.pro -o Makefile.fuzz && $(MAKE) -f Makefile.fuzz
+	./build/display-tests/displayclient_fuzz_test
+
+# The display protocol fuzzer under ASan/UBSan, with more seeds
+# (OMAVM_FUZZ_SEEDS, default 100): a fake QEMU calling the viewer's
+# listener with sizes at the edges.
+fuzz-display:
+	mkdir -p build/fuzz-tests
+	cd build/fuzz-tests && qmake6 ../../gui/tests/displayclient_fuzz_test.pro "QMAKE_CXXFLAGS+=-fsanitize=address,undefined -fno-omit-frame-pointer -g" "QMAKE_LFLAGS+=-fsanitize=address,undefined" && $(MAKE)
+	ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 OMAVM_FUZZ_SEEDS=$${OMAVM_FUZZ_SEEDS:-100} ./build/fuzz-tests/displayclient_fuzz_test
 
 test-terminal:
 	mkdir -p build/terminal-tests
@@ -189,6 +199,10 @@ install-quickshell-plugin:
 	rm -rf $(QS_PLUGIN_DIR)
 	mkdir -p $(QS_PLUGIN_DIR)
 	cp -r contrib/dev.omavm.bar/. $(QS_PLUGIN_DIR)/
+	@# The shell may not have $(PREFIX)/bin on its PATH (like the launcher,
+	@# above): call the installed binaries by their path.
+	sed -i -e 's|"omavm", "list"|"$(PREFIX)/bin/omavm", "list"|' \
+		-e 's|run("omavm-gui")|run("$(PREFIX)/bin/omavm-gui")|' $(QS_PLUGIN_DIR)/OmaVM.qml
 	@echo "Copied to $(QS_PLUGIN_DIR). Review the QML, then:"
 	@echo "  omarchy-shell shell rescanPlugins && omarchy plugin enable dev.omavm.bar"
 

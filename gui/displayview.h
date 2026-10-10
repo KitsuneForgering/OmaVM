@@ -40,6 +40,14 @@ signals:
   void connectionFdChanged();
   void shareClipboardChanged();
   void connectionFailed(const QString &message);
+  // Once, when the guest's first frame is on screen.
+  void frameShown();
+  // Once, when the guest sends its first frame, shown or not.
+  void frameReceived();
+  // Once, when the guest's own system takes the USB tablet over: firmware
+  // never does (OVMF leaves it alone, SeaBIOS only drives boot-protocol
+  // mice), so from here on the screen is the system's, not the firmware's.
+  void operatingSystemStarted();
 
 protected:
   QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) override;
@@ -50,6 +58,7 @@ protected:
   void mouseReleaseEvent(QMouseEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
   void hoverMoveEvent(QHoverEvent *event) override;
+  void hoverLeaveEvent(QHoverEvent *event) override;
   void wheelEvent(QWheelEvent *event) override;
   void keyPressEvent(QKeyEvent *event) override;
   void keyReleaseEvent(QKeyEvent *event) override;
@@ -69,6 +78,7 @@ private:
   void sendResize();
   void syncClipboard();
   void releaseKeys();
+  void noteFrameReceived();
   bool importDmabuf();
   static void destroyGpuFrame(GpuFrame frame);
 
@@ -83,6 +93,11 @@ private:
   DisplayClient::Dmabuf m_dmabuf;
   bool m_dmabufMode = false;
   bool m_imageDirty = false;
+  // Set on the render thread while the GUI thread is blocked in sync.
+  bool m_frameOnScreen = false;
+  bool m_frameAnnounced = false;
+  bool m_frameReceived = false;
+  bool m_operatingSystemStarted = false;
   GpuFrame m_gpu;
   QSGTexture *m_imageTexture = nullptr;
 
